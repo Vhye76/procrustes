@@ -90,6 +90,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 return self._static("index.html", "text/html; charset=utf-8")
+            if path == "/favicon.ico":
+                return self._static("procrustes.png", "image/png", cache="max-age=86400")
             if path == "/api/status":
                 return self._json(200, self.app.status())
             if path == "/api/titles":
@@ -154,12 +156,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, result)
         return self._json(404, {"error": "not found"})
 
-    def _static(self, name, content_type):
+    def _static(self, name, content_type, cache="no-store"):
         target = os.path.join(STATIC, name)
         if not os.path.isfile(target):
             return self._json(404, {"error": "missing static asset"})
         with open(target, "rb") as fh:
-            return self._send(200, fh.read(), content_type)
+            return self._send(200, fh.read(), content_type, cache=cache)
 
 
 ID_SHAPES = {

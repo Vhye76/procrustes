@@ -46,6 +46,7 @@ if [ -n "${missing}" ]; then
     exit 2
 fi
 
+#----- Writable mount points
 for path in "${MEDIA_ROOT:-/media}" "${MEDIA_ENCODE:-}" "${MEDIA_CONFIG:-}"; do
     if [ -n "${path}" ] && [ "$(stat -c %u:%g "${path}")" != "${PUID}:${PGID}" ]; then
         chown "${PUID}:${PGID}" "${path}"

@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 
-from . import audit, compare, encode, media, probe as probemod, provider as providermod
+from . import VERSION, audit, compare, encode, media, probe as probemod, provider as providermod
 from . import standards, state, tags, titles
 
 log = logging.getLogger("orchestrator")
@@ -1254,6 +1254,7 @@ class Orchestrator:
     #----- Reporting
     def status(self):
         return {
+            "version": VERSION,
             "started_at": self.started_at,
             "uptime_s": int(time.time() - self.started_at),
             "queue_depth": self.queue.qsize(),

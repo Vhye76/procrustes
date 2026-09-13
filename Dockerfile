@@ -60,6 +60,7 @@ LABEL org.opencontainers.image.title="procrustes" \
 #----- Application
 WORKDIR /opt/procrustes
 COPY app/ ./app/
+COPY media/procrustes.png ./app/static/procrustes.png
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

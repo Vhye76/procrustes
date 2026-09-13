@@ -41,7 +41,7 @@ app/
   webui.py          JSON API and dashboard
   audit.py          the background library sweep and its findings
   static/           the dashboard page, vanilla JS, no framework
-media/              the container icon, a placeholder, excluded from the image
+media/              the container icon, a placeholder, copied into app/static at build as the favicon
 Dockerfile          alpine:3.24 plus ffmpeg, mkvtoolnix, Intel media stack
 entrypoint.sh       drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
 TESTPLAN.md         container validation cases, executed by hand
@@ -1006,11 +1006,11 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.8.0.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.8.1.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  Until 2026-09-12 the 'validate' job refused a version that was already a git tag, which read a tag as proof of a prior build;  the repository does not use git tags, and the workflow no longer looks at them.
 
-'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'procrustes/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
+'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  Three consumers:  the provider User-Agent, built as 'procrustes/<VERSION> (+<repo url>)', the startup log line, and the 'version' field on '/api/status', added 2026-09-13 so the running version is readable without the log.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 
 THE WORKFLOW IS 'workflow_dispatch' ONLY.  Images are published by a manual run from the Actions tab and by nothing else.
 
@@ -1144,7 +1144,7 @@ Not in this repository, and adding them needs a decision rather than a commit:
 - Host-specific packaging.  No Unraid Community Applications template, no Docker Hub mirror.  The deliverable is the image plus a reference compose file that runs anywhere with Docker and a render node.
 - The workstation scripts.  They live in their own tree and continue to run there unchanged.
 
-ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries 'net.unraid.docker.icon'.  It is Unraid-specific and inert on every other host.  It is there because a container with no icon makes the Unraid Docker page request a placeholder that does not exist on that build, and the page auto-refreshes:  measured 2026-09-08, that filled the 128 MB '/var/log' tmpfs to 100 percent with 66 MB of syslog and 61 MB of nginx errors.  The container wrote none of it.  The icon lives at 'media/procrustes.png' and is served from the repository, matching what every other container on that host does.  It is a placeholder and is expected to be replaced.
+ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries 'net.unraid.docker.icon'.  It is Unraid-specific and inert on every other host.  It is there because a container with no icon makes the Unraid Docker page request a placeholder that does not exist on that build, and the page auto-refreshes:  measured 2026-09-08, that filled the 128 MB '/var/log' tmpfs to 100 percent with 66 MB of syslog and 61 MB of nginx errors.  The container wrote none of it.  The icon lives at 'media/procrustes.png' and is served from the repository, matching what every other container on that host does.  It is a placeholder and is expected to be replaced.  THE SAME FILE IS THE DASHBOARD FAVICON.  The Dockerfile copies it into 'app/static/' and 'webui' serves it at '/favicon.ico' as 'image/png' with a day of cache;  the page declares it with a 'link rel=icon'.  One file in the repository, two consumers, so replacing the placeholder replaces both.
 
 ## 29.  To do
 

@@ -1,7 +1,6 @@
 #----- Never needed in the image
 .git/
 .github/
-media/
 .gitignore
 .dockerignore
 README.md
