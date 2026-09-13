@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 from . import VERSION
 from . import episodes as episodemod
@@ -55,23 +56,41 @@ OG_IMAGE = re.compile(
     r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
     re.I,
 )
+TVDB_ROOT = "https://thetvdb.com/"
 TVDB_DEREFERRER = "https://thetvdb.com/dereferrer/series/%s"
 TVDB_SERIES = "https://thetvdb.com/series/%s"
 TVDB_SEASONS = "https://thetvdb.com/series/%s/allseasons/%s"
 TVDB_SPECIALS = "https://thetvdb.com/series/%s/seasons/%s/0"
+TVDB_REMOTE_ID = "https://thetvdb.com/api/GetSeriesByRemoteID.php?imdbid=%s"
+TMDB_SEARCH = "https://www.themoviedb.org/search/%s?query=%s"
+IMDB_LINK = "imdb.com/title/%s"
+CANDIDATE_LIMIT = 8
 
 PAGE_TITLE = re.compile(r"<title>\s*(.*?)\s*</title>", re.I | re.S)
 #----- TMDB titles pages 'Name (2015)' for a film and 'Name (TV Series 1984)' for a show;  TVDB 'Name (2003)' or bare.
 PAGE_YEAR = re.compile(r"\s*\((?:TV Series\s+)?(\d{4})\)\s*$")
 #----- TMDB's separator arrives as '&#8212;', an em dash once unescaped;  TVDB's is a hyphen.
 SITE_SUFFIX = re.compile(r"\s+(?:\u2014|-)\s+(?:The Movie Database \(TMDB\)|TheTVDB\.com)\s*$")
+TVDB_ENG_TITLE = re.compile(
+    r'class="change_translation_text"[^>]*data-language="eng"[^>]*data-title="([^"]*)"',
+    re.I,
+)
+TVDB_ORIGINAL_LANGUAGE = re.compile(
+    r"<strong>\s*Original Language\s*</strong>\s*<span>\s*([^<]*)", re.I
+)
+TMDB_SEARCH_HIT = re.compile(
+    r'data-media-type="(?:tv|movie)"[^>]*href="/(?:tv|movie)/(\d+)[^"]*"[^>]*>\s*'
+    r"<h2[^>]*>\s*(?:<span>)?\s*(.*?)\s*(?:</span>)?\s*</h2>\s*</a>"
+    r'(?:\s*<span class="release_date[^"]*">\s*([^<]*))?',
+    re.I | re.S,
+)
 
 EPISODE_LABEL = re.compile(
-    r'episode-label">S(\d{1,2})E(\d{1,3})</span>.*?<a[^>]*>\s*(.*?)\s*</a>',
+    r'episode-label">S(\d{1,2})E(\d{1,3})</span>.*?<a[^>]*href="([^"]*)"[^>]*>\s*(.*?)\s*</a>',
     re.I | re.S,
 )
 SPECIAL_ROW = re.compile(
-    r"<td>\s*S(\d{1,2})E(\d{1,3})\s*</td>\s*<td>\s*<a[^>]*>\s*(.*?)\s*</a>",
+    r'<td>\s*S(\d{1,2})E(\d{1,3})\s*</td>\s*<td>\s*<a[^>]*href="([^"]*)"[^>]*>\s*(.*?)\s*</a>',
     re.I | re.S,
 )
 
@@ -246,6 +265,7 @@ class Provider:
         self.client = client
         self.import_root = os.path.normpath(str(import_root)) if import_root else None
         self._tvdb_posters = {}
+        self._local = threading.local()
 
     def search_entities(self, term, limit=20):
         url = "%s?%s" % (
@@ -319,27 +339,76 @@ class Provider:
             "year": _year(released) if released else None,
         }
 
-    def verify_tmdb(self, kind, tmdb_id, names, year=None):
+    def tmdb_page(self, kind, tmdb_id):
         url = (TMDB_MOVIE if kind == "movie" else TMDB_TV) % tmdb_id
         status, body = self.client.fetch(url)
-        if status != 200:
-            return False
-        return _page_confirms(body, names, year, "tmdb %s" % tmdb_id)
+        return body if status == 200 else None
 
-    def verify_tvdb(self, tvdb_id, names, year=None):
+    def verify_tmdb(self, kind, tmdb_id, names, year=None, own_claim=False):
+        body = self.tmdb_page(kind, tmdb_id)
+        if body is None:
+            return False, None
+        return _page_confirms(
+            body, names, year, "tmdb %s" % tmdb_id,
+            earlier_ok=bool(own_claim and kind == "tv"),
+        )
+
+    def tvdb_page(self, tvdb_id):
         try:
             status, body = self.client.fetch(TVDB_SERIES % self.series_slug(tvdb_id))
         except urllib.error.HTTPError as exc:
             log.info("tvdb %s does not dereference: HTTP %s", tvdb_id, exc.code)
-            return False
+            return None
         except urllib.error.URLError as exc:
             raise ProviderError("could not reach thetvdb for %s: %s" % (tvdb_id, exc))
         except ProviderError as exc:
             log.info("tvdb %s does not lead to a series page: %s", tvdb_id, exc)
-            return False
-        if status != 200:
-            return False
+            return None
+        return body if status == 200 else None
+
+    def verify_tvdb(self, tvdb_id, names, year=None):
+        body = self.tvdb_page(tvdb_id)
+        if body is None:
+            return False, None
         return _page_confirms(body, names, year, "tvdb %s" % tvdb_id)
+
+    def tvdb_by_imdb(self, imdb_id):
+        status, body = self.client.fetch(TVDB_REMOTE_ID % imdb_id)
+        if status != 200 or not body.strip():
+            return None
+        try:
+            root = ET.fromstring(body.strip())
+        except ET.ParseError as exc:
+            log.debug("tvdb remote-id lookup for %s did not parse: %s", imdb_id, exc)
+            return None
+        series = root.find("Series")
+        if series is None:
+            return None
+        tvdb = (series.findtext("seriesid") or "").strip()
+        if not tvdb:
+            return None
+        return {
+            "tvdb": tvdb,
+            "name": (series.findtext("SeriesName") or "").strip() or None,
+            "year": _year(series.findtext("FirstAired")),
+        }
+
+    def tvdb_from_imdb(self, imdb_id, names, year=None):
+        found = self.tvdb_by_imdb(imdb_id)
+        if not found:
+            log.info("tvdb has no series for imdb %s", imdb_id)
+            return None
+        body = self.tvdb_page(found["tvdb"])
+        if body is None:
+            return None
+        if (IMDB_LINK % imdb_id) not in body:
+            log.info("tvdb %s from imdb %s does not link that id back, skipping", found["tvdb"], imdb_id)
+            return None
+        ok, _note = _page_confirms(body, names, year, "tvdb %s" % found["tvdb"])
+        if not ok:
+            log.info("tvdb %s from imdb %s did not confirm %r, skipping", found["tvdb"], imdb_id, names[0] if names else None)
+            return None
+        return found["tvdb"]
 
     def tmdb_poster(self, kind, tmdb_id):
         if not tmdb_id:
@@ -420,8 +489,8 @@ class Provider:
         log.debug("identity ladder: %s", [r[0] for r in rungs])
         return rungs
 
-    def identify_movie(self, source, container, origin=None):
-        return self._identify_from(self.movie_candidates(source, container, origin), "movie")
+    def identify_movie(self, source, container, origin=None, pinned=None):
+        return self._identify_from(self.movie_candidates(source, container, origin), "movie", pinned)
 
     #----- The show identity ladder
     def show_candidates(self, source, origin=None):
@@ -458,11 +527,25 @@ class Provider:
         log.debug("show identity ladder: %s", [r[0] for r in rungs])
         return rungs
 
-    def identify_show(self, source, origin=None):
-        return self._identify_from(self.show_candidates(source, origin), "tv")
+    def identify_show(self, source, origin=None, pinned=None):
+        return self._identify_from(self.show_candidates(source, origin), "tv", pinned)
 
     #----- The walk, shared by both kinds
-    def _identify_from(self, rungs, kind):
+    def _identify_from(self, rungs, kind, pinned=None):
+        self._local.scored = []
+        self._local.searched = None
+        if pinned:
+            resolved = self._resolve_operator(pinned, kind)
+            if resolved is not None:
+                resolved["identified_from"] = "operator"
+                resolved["missing"] = _missing(kind, resolved)
+                log.info(
+                    "identified by the operator: %s (%s) %s",
+                    resolved.get("title") or resolved.get("show"),
+                    resolved.get("year") or resolved.get("show_year"),
+                    " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
+                )
+                return resolved
         for rung, ids, name, year in rungs:
             pinned = {
                 field: (ids or {}).get(field)
@@ -472,6 +555,8 @@ class Provider:
             if pinned:
                 resolved = self._resolve_by_ids(pinned, name, year, kind)
             elif name:
+                if self._local.searched is None:
+                    self._local.searched = {"rung": rung, "name": name, "year": year}
                 resolved = self._resolve_by_search(name, year, kind)
             else:
                 resolved = None
@@ -479,7 +564,7 @@ class Provider:
                 log.debug("rung %s did not resolve", rung)
                 continue
             resolved["identified_from"] = rung
-            resolved["missing"] = [f for f in REQUIRED[kind] if not resolved.get(f)]
+            resolved["missing"] = _missing(kind, resolved)
             log.info(
                 "identified from %s: %s (%s) %s",
                 rung, resolved.get("title") or resolved.get("show"),
@@ -503,10 +588,11 @@ class Provider:
             log.info("no Wikidata entity carries %s", _describe(pinned))
             return None
         name = name or ""
-        return self._resolve_from(
+        _score, resolved = self._resolve_from(
             "ids:%s" % _describe(pinned), self.labels(qids), name,
             titles.normalise_for_match(name), year, set(), kind, cutoff=0.0, pinned=pinned,
         )
+        return resolved
 
     #----- Prefix hits already matched the whole string, so they are ordered by score but not cut;
     #----- full-text hits matched on any word and must clear the cutoff.
@@ -517,19 +603,22 @@ class Provider:
             terms = ("%s (TV series)" % title, title)
         wanted = titles.normalise_for_match(title)
         seen = set()
+        best = (None, None)
         for term in terms:
-            resolved = self._resolve_from(
+            score, resolved = self._resolve_from(
                 term, self.search_entities(term), title, wanted, year, seen, kind, cutoff=0.0,
             )
-            if resolved is not None:
+            best = _prefer(best, (score, resolved), kind)
+            if resolved is not None and not _missing(kind, resolved):
                 return resolved
         qids = [q for q in self.search_text(title) if q not in seen]
-        if not qids:
-            return None
-        return self._resolve_from(
-            "text:%s" % title, self.labels(qids), title, wanted, year, seen, kind,
-            cutoff=TITLE_CUTOFF,
-        )
+        if qids:
+            score, resolved = self._resolve_from(
+                "text:%s" % title, self.labels(qids), title, wanted, year, seen, kind,
+                cutoff=TITLE_CUTOFF,
+            )
+            best = _prefer(best, (score, resolved), kind)
+        return best[1]
 
     def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None):
         scored = []
@@ -542,28 +631,44 @@ class Provider:
                 "search %r: %s %r scored %.3f", term, candidate["id"],
                 candidate.get("label"), score,
             )
+            candidate["score"] = score
+            candidate["term"] = term
             if score < cutoff:
+                candidate["outcome"] = "below the %.2f cutoff" % cutoff
+                self._remember(candidate)
                 continue
             scored.append((score, candidate))
         accept = self._accept_movie_hit if kind == "movie" else self._accept_show_hit
+        best = (None, None)
         for score, candidate in sorted(scored, key=lambda pair: -pair[0]):
             resolved = accept(candidate, title, year, pinned)
+            self._remember(candidate)
             if resolved is None:
                 continue
+            if _missing(kind, resolved):
+                best = _prefer(best, (score, resolved), kind)
+                continue
+            if best[1] is not None and score < best[0]:
+                break
             if score < 1.0 and not pinned:
                 log.info(
                     "title %r matched %r by similarity %.3f on search %r",
                     title, resolved.get("title") or resolved.get("show"), score, term,
                 )
-            return resolved
-        return None
+            return score, resolved
+        return best
+
+    def _remember(self, candidate):
+        scored = getattr(self._local, "scored", None)
+        if scored is not None:
+            scored.append(candidate)
 
     def _accept_movie_hit(self, candidate, title, year, pinned=None):
         entity = self.entity(candidate["id"])
         ids = self.ids_from_entity(entity)
-        if not ids["tmdb"] or not ids["imdb"]:
-            return None
+        candidate["ids"] = ids
         if not _carries(ids, pinned, candidate):
+            candidate["outcome"] = "does not carry %s" % _describe(pinned)
             return None
         #----- A pinned id outranks a year read off the disk;  the page check still applies.
         if not pinned and year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
@@ -571,47 +676,223 @@ class Provider:
                 "%s %r is a %s release, not %s, skipping",
                 candidate["id"], candidate.get("label"), ids["year"], year,
             )
+            candidate["outcome"] = "released %s, not %s" % (ids["year"], year)
             return None
         label = _label(entity) or title
-        if not self.verify_tmdb("movie", ids["tmdb"], _names(entity, label), ids["year"]):
-            log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], label)
-            return None
+        names = _names(entity, label)
+        notes = []
+        if ids["tmdb"]:
+            ok, note = self.verify_tmdb("movie", ids["tmdb"], names, ids["year"])
+            if not ok:
+                log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], label)
+                candidate["outcome"] = "tmdb %s did not confirm the title" % ids["tmdb"]
+                return None
+            if note:
+                notes.append(note)
+        candidate["outcome"] = _accepted_outcome("movie", ids)
         return {
             "title": label,
             "year": ids["year"] or year,
             "tmdb": ids["tmdb"],
             "imdb": ids["imdb"],
             "qid": candidate["id"],
+            "notes": notes,
         }
 
     def _accept_show_hit(self, candidate, name, year, pinned=None):
         entity = self.entity(candidate["id"])
         ids = self.ids_from_entity(entity, kind="tv")
-        if not ids["tvdb"]:
-            return None
+        candidate["ids"] = ids
         if not _carries(ids, pinned, candidate):
+            candidate["outcome"] = "does not carry %s" % _describe(pinned)
             return None
         if not pinned and year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
             log.info(
                 "%s %r started in %s, not %s, skipping",
                 candidate["id"], candidate.get("label"), ids["year"], year,
             )
+            candidate["outcome"] = "started in %s, not %s" % (ids["year"], year)
             return None
         label = _label(entity) or name
-        if not self.verify_tvdb(ids["tvdb"], _names(entity, label), ids["year"]):
-            log.info("tvdb %s did not confirm show %r, skipping", ids["tvdb"], label)
-            return None
+        names = _names(entity, label)
+        notes = []
+        tvdb = ids["tvdb"]
+        tvdb_from = "wikidata %s" % P_TVDB if tvdb else None
+        if tvdb:
+            ok, note = self.verify_tvdb(tvdb, names, ids["year"])
+            if not ok:
+                log.info("tvdb %s did not confirm show %r, skipping", tvdb, label)
+                candidate["outcome"] = "tvdb %s did not confirm the show" % tvdb
+                return None
+            if note:
+                notes.append(note)
+        elif ids["imdb"]:
+            tvdb = self.tvdb_from_imdb(ids["imdb"], names, ids["year"])
+            if tvdb:
+                tvdb_from = "imdb %s through the TVDB remote-id lookup" % ids["imdb"]
+                notes.append("tvdb %s found through %s" % (tvdb, tvdb_from))
+                candidate["ids"] = dict(ids, tvdb=tvdb)
         tmdb = ids["tmdb"]
-        if tmdb and not self.verify_tmdb("tv", tmdb, _names(entity, label), ids["year"]):
-            log.info("tmdb %s did not confirm show %r, dropped", tmdb, label)
-            tmdb = None
+        if tmdb:
+            ok, note = self.verify_tmdb("tv", tmdb, names, ids["year"], own_claim=True)
+            if not ok:
+                log.info("tmdb %s did not confirm show %r, dropped", tmdb, label)
+                notes.append("tmdb %s did not confirm the show and was dropped" % tmdb)
+                tmdb = None
+            elif note:
+                notes.append(note)
+        candidate["outcome"] = _accepted_outcome("tv", dict(ids, tvdb=tvdb, tmdb=tmdb))
         return {
             "show": label,
             "show_year": ids["year"] or year,
-            "tvdb": ids["tvdb"],
+            "tvdb": tvdb,
+            "tvdb_from": tvdb_from,
             "tmdb": tmdb,
             "qid": candidate["id"],
+            "notes": notes,
         }
+
+
+    #----- The operator's choice, one selection per source
+    def _resolve_operator(self, chosen, kind):
+        qid = str(chosen.get("qid") or "").strip()
+        entity = self.entity(qid) if qid else {}
+        ids = self.ids_from_entity(entity, kind=kind)
+        label = _label(entity) or chosen.get("name")
+        if not label:
+            log.info("operator choice %s names no entity and no title", qid or "(none)")
+            return None
+        names = _names(entity, label) or [label]
+        year = chosen.get("year") or ids["year"]
+        notes = ["identity chosen by the operator: %s" % _describe(
+            {k: v for k, v in chosen.items() if v and k not in ("apply_to",)})]
+        result = {"qid": qid or None, "notes": notes}
+        for field, prop in ID_PROPERTIES[kind]:
+            value = chosen.get(field) or ids.get(field)
+            result[field] = str(value) if value else None
+            if not value:
+                continue
+            if chosen.get(field) and str(chosen.get(field)) != str(ids.get(field)):
+                notes.append("%s %s supplied by the operator, the entity carries %s" % (field, value, ids.get(field)))
+            if field == "imdb":
+                continue
+            if field == "tvdb":
+                ok, _note = self.verify_tvdb(value, names, None)
+            else:
+                ok, _note = self.verify_tmdb(kind, value, names, None)
+            notes.append("%s %s %s by its page" % (field, value, "confirmed" if ok else "not confirmed"))
+        if kind == "movie":
+            result.update({"title": label, "year": year})
+        else:
+            result.update({"show": label, "show_year": year,
+                           "tvdb_from": "operator" if chosen.get("tvdb") else ("wikidata %s" % P_TVDB if ids["tvdb"] else None)})
+        return result
+
+    #----- Candidates per source for a hold the operator has to settle
+    def hold_candidates(self, kind):
+        scored = list(getattr(self._local, "scored", None) or [])
+        searched = getattr(self._local, "searched", None) or {}
+        entities, seen = [], set()
+        for c in sorted(scored, key=lambda c: -(c.get("score") or 0.0)):
+            if c["id"] in seen:
+                continue
+            seen.add(c["id"])
+            ids = c.get("ids") or {}
+            entities.append({
+                "qid": c["id"],
+                "label": c.get("label"),
+                "year": ids.get("year"),
+                "tvdb": ids.get("tvdb"),
+                "tmdb": ids.get("tmdb"),
+                "imdb": ids.get("imdb"),
+                "score": round(c.get("score") or 0.0, 3),
+                "outcome": c.get("outcome") or "not evaluated",
+                "term": c.get("term"),
+            })
+        entities = entities[:CANDIDATE_LIMIT]
+        out = {"searched": searched, "wikidata": entities}
+        name = searched.get("name")
+        try:
+            if kind == "tv":
+                out["tvdb"] = self._tvdb_candidates(entities)
+                out["tmdb"] = self._tmdb_candidates("tv", name, entities, P_TMDB_TV)
+            else:
+                out["tmdb"] = self._tmdb_candidates("movie", name, entities, P_TMDB)
+                out["imdb"] = [
+                    {"id": e["imdb"], "name": e["label"], "year": e["year"],
+                     "origin": "%s %s" % (e["qid"], P_IMDB), "note": None}
+                    for e in entities if e.get("imdb")
+                ]
+        except ProviderError as exc:
+            log.info("candidate lists are incomplete, a provider could not be reached: %s", exc)
+            out["error"] = str(exc)
+        return out
+
+    def _tvdb_candidates(self, entities):
+        rows, seen = [], set()
+
+        def add(tvdb, origin, name_hint, year_hint):
+            key = str(tvdb)
+            if key in seen or len(rows) >= CANDIDATE_LIMIT:
+                return
+            seen.add(key)
+            row = {"id": key, "origin": origin, "name": name_hint, "year": year_hint,
+                   "imdb": None, "tmdb": None, "note": None}
+            body = self.tvdb_page(key)
+            if body is None:
+                row["note"] = "no series page"
+            else:
+                title, _year = _page_identity(body)
+                row["name"] = title or name_hint
+                m = re.search(r"imdb\.com/title/(tt\d+)", body)
+                row["imdb"] = m.group(1) if m else None
+                m = re.search(r"themoviedb\.org/tv/(\d+)", body)
+                row["tmdb"] = m.group(1) if m else None
+                row["note"] = "page found"
+            rows.append(row)
+
+        for e in entities:
+            if e.get("tvdb"):
+                add(e["tvdb"], "%s %s" % (e["qid"], P_TVDB), e.get("label"), e.get("year"))
+        for e in entities:
+            if e.get("tvdb") or not e.get("imdb"):
+                continue
+            found = self.tvdb_by_imdb(e["imdb"])
+            if found:
+                add(found["tvdb"], "imdb %s through the TVDB remote-id lookup" % e["imdb"],
+                    found.get("name") or e.get("label"), found.get("year"))
+        return rows
+
+    def _tmdb_candidates(self, kind, name, entities, prop):
+        rows = {}
+        if name:
+            status, body = self.client.fetch(TMDB_SEARCH % (kind, urllib.parse.quote_plus(name)))
+            if status == 200:
+                for tmdb, title, date in TMDB_SEARCH_HIT.findall(body):
+                    if tmdb in rows or len(rows) >= CANDIDATE_LIMIT:
+                        continue
+                    rows[tmdb] = {
+                        "id": tmdb,
+                        "name": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
+                        "year": _year(date),
+                        "origin": "TMDB search",
+                        "note": None,
+                    }
+        for e in entities:
+            tmdb = str(e.get("tmdb") or "")
+            if not tmdb:
+                continue
+            origin = "%s %s" % (e["qid"], prop)
+            if tmdb in rows:
+                rows[tmdb]["origin"] += ", " + origin
+                continue
+            if len(rows) >= CANDIDATE_LIMIT:
+                break
+            body = self.tmdb_page(kind, tmdb)
+            title, year = _page_identity(body) if body else (None, None)
+            rows[tmdb] = {"id": tmdb, "name": title or e.get("label"), "year": year,
+                          "origin": origin, "note": None if body else "no page"}
+        return list(rows.values())
 
     #----- Television catalogue
     def series_slug(self, tvdb_id):
@@ -634,7 +915,39 @@ class Provider:
                 if specials:
                     log.debug("%s %s: %d special(s) from the season 0 page", slug, order, len(specials))
                 found.extend(specials)
+        if found and not self._english_original(slug):
+            self._translate_titles(slug, order, found)
+        for entry in found:
+            entry.pop("href", None)
         return found
+
+    def _english_original(self, slug):
+        status, body = self.client.fetch(TVDB_SERIES % slug)
+        if status != 200:
+            return True
+        m = TVDB_ORIGINAL_LANGUAGE.search(body)
+        if not m:
+            return True
+        return html.unescape(m.group(1)).strip().lower().startswith("english")
+
+    def _translate_titles(self, slug, order, entries):
+        translated = 0
+        for entry in entries:
+            href = entry.get("href")
+            if not href:
+                continue
+            status, body = self.client.fetch(urllib.parse.urljoin(TVDB_ROOT, href))
+            if status != 200:
+                continue
+            m = TVDB_ENG_TITLE.search(body)
+            title = html.unescape(m.group(1)).strip() if m else ""
+            if title:
+                entry["title"] = title
+                translated += 1
+        log.info(
+            "%s %s: %d of %d episode titles read from the English translation",
+            slug, order, translated, len(entries),
+        )
 
     def all_orders(self, slug):
         orders = {}
@@ -646,10 +959,11 @@ class Provider:
 
     def identify(self, row, container, kind):
         source = row["source_path"]
+        pinned = row.get("pinned") or None
         if kind == "movie":
-            return self.identify_movie(source, container, row.get("origin_path"))
+            return self.identify_movie(source, container, row.get("origin_path"), pinned)
 
-        resolved = self.identify_show(source, row.get("origin_path"))
+        resolved = self.identify_show(source, row.get("origin_path"), pinned)
         if resolved is None or resolved["missing"]:
             return resolved
 
@@ -681,7 +995,10 @@ class Provider:
             "season": entry["season"],
             "episode": entry["episode"],
             "tvdb": resolved["tvdb"],
+            "tvdb_from": resolved.get("tvdb_from"),
             "tmdb": resolved["tmdb"],
+            "qid": resolved.get("qid"),
+            "notes": resolved.get("notes") or [],
             "match_method": how,
             "match_score": score,
             "order_warnings": warnings,
@@ -725,9 +1042,10 @@ def _catalogue_entries(rows):
         {
             "season": int(season),
             "episode": int(episode),
+            "href": href,
             "title": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
         }
-        for season, episode, title in rows
+        for season, episode, href, title in rows
     ]
 
 
@@ -747,35 +1065,65 @@ def _names(entity, label):
 
 def _page_identity(body):
     m = PAGE_TITLE.search(body)
-    if not m:
-        return None, None
-    text = SITE_SUFFIX.sub("", html.unescape(m.group(1)))
+    text = SITE_SUFFIX.sub("", html.unescape(m.group(1))) if m else ""
     year = None
     ym = PAGE_YEAR.search(text)
     if ym:
         year = int(ym.group(1))
         text = text[: ym.start()]
+    eng = TVDB_ENG_TITLE.search(body)
+    if eng and html.unescape(eng.group(1)).strip():
+        text = html.unescape(eng.group(1))
     return text.strip() or None, year
 
 
-def _page_confirms(body, names, year, what):
+def _page_confirms(body, names, year, what, earlier_ok=False):
     names = [n for n in names if n]
     if not names:
-        return False
+        return False, None
     page_title, page_year = _page_identity(body)
-    if year and page_year and abs(int(year) - page_year) > 1:
-        log.info("%s is titled %r from %s, not %s", what, page_title, page_year, year)
-        return False
+    best = 0.0
     if page_title:
         wanted = titles.normalise_for_match(page_title)
         best = max(_name_score(page_title, wanted, n) for n in names)
         log.debug("%s page title %r scored %.3f against %s", what, page_title, best, names[0])
-        if best >= TITLE_CUTOFF:
-            return True
+    if year and page_year and abs(int(year) - page_year) > 1:
+        if earlier_ok and page_year < int(year) and best >= 1.0:
+            note = "%s is titled %r and first aired %s on its page against %s on Wikidata" % (
+                what, page_title, page_year, year)
+            log.info(note)
+            return True, note
+        log.info("%s is titled %r from %s, not %s", what, page_title, page_year, year)
+        return False, None
+    if best >= TITLE_CUTOFF:
+        return True, None
     #----- The body fallback uses the label alone;  a short alias like 'TFA' is found somewhere in any page.
     needle = re.sub(r"[^a-z0-9]+", "", names[0].lower())
     haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
-    return needle in haystack
+    return needle in haystack, None
+
+
+def _missing(kind, resolved):
+    return [f for f in REQUIRED[kind] if not (resolved or {}).get(f)]
+
+
+def _prefer(best, other, kind):
+    if other[1] is None:
+        return best
+    if best[1] is None:
+        return other
+    if other[0] != best[0]:
+        return other if other[0] > best[0] else best
+    if _missing(kind, best[1]) and not _missing(kind, other[1]):
+        return other
+    return best
+
+
+def _accepted_outcome(kind, ids):
+    lacking = [f for f, _p in ID_PROPERTIES[kind] if not ids.get(f)]
+    if not ids.get("year"):
+        lacking.append("year")
+    return "accepted" if not lacking else "accepted, lacks %s" % ", ".join(lacking)
 
 
 def _carries(ids, pinned, candidate):

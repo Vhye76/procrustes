@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS titles (
     output_probe_json TEXT,
     reason        TEXT,
     reasons_json  TEXT,
+    candidates_json TEXT,
+    pinned_json   TEXT,
     attempts      INTEGER NOT NULL DEFAULT 0,
     retry_after   REAL,
     overridden    INTEGER NOT NULL DEFAULT 0,
@@ -144,6 +146,22 @@ CREATE TABLE IF NOT EXISTS findings (
 );
 CREATE INDEX IF NOT EXISTS findings_import ON findings(import_path);
 """
+
+ADDED_COLUMNS = (
+    ("titles", "candidates_json", "TEXT"),
+    ("titles", "pinned_json", "TEXT"),
+)
+
+JSON_COLUMNS = {
+    "probe": "probe_json",
+    "identity": "identity_json",
+    "decision": "decision_json",
+    "comparison": "compare_json",
+    "output_probe": "output_probe_json",
+    "reasons": "reasons_json",
+    "candidates": "candidates_json",
+    "pinned": "pinned_json",
+}
 
 
 #----- JSON column helpers
@@ -190,7 +208,15 @@ class Store:
         self._db.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._db.executescript(SCHEMA)
+            self._add_missing_columns()
             self._db.commit()
+
+    def _add_missing_columns(self):
+        for table, column, declaration in ADDED_COLUMNS:
+            present = {r["name"] for r in self._db.execute("PRAGMA table_info(%s)" % table)}
+            if column not in present:
+                self._db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, declaration))
+                log.info("added column %s.%s", table, column)
 
     def close(self):
         with self._lock:
@@ -206,6 +232,8 @@ class Store:
         d["comparison"] = _unjson(d.pop("compare_json", None))
         d["output_probe"] = _unjson(d.pop("output_probe_json", None))
         d["reasons"] = _unjson(d.pop("reasons_json", None)) or []
+        d["candidates"] = _unjson(d.pop("candidates_json", None))
+        d["pinned"] = _unjson(d.pop("pinned_json", None))
         d["overridden"] = bool(d.get("overridden"))
         return d
 
@@ -286,12 +314,8 @@ class Store:
         log.debug("title %s fields updated: %s", title_id, ", ".join(sorted(fields)))
         if not fields:
             return
-        for key in ("probe", "identity", "decision", "comparison", "output_probe", "reasons"):
+        for key, column in JSON_COLUMNS.items():
             if key in fields:
-                column = {"probe": "probe_json", "identity": "identity_json",
-                          "decision": "decision_json", "comparison": "compare_json",
-                          "output_probe": "output_probe_json",
-                          "reasons": "reasons_json"}[key]
                 fields[column] = _json(fields.pop(key))
         fields["updated_at"] = time.time()
         assignments = ", ".join("%s = ?" % k for k in fields)
@@ -370,6 +394,8 @@ class Store:
             output_probe=None,
             reason=None,
             reasons=None,
+            candidates=None,
+            pinned=None,
             attempts=0,
             retry_after=None,
             overridden=0,

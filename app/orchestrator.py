@@ -516,6 +516,8 @@ class Orchestrator:
                     % (anchor, identity.get("title") or identity.get("show"), ", ".join(identity["missing"]))
                 )
                 identity = None
+            if identity is None and not row.get("overridden"):
+                self._store_candidates(title_id, kind)
         if identity is None:
             if row.get("overridden"):
                 identity = self._unidentified(kind, source)
@@ -529,11 +531,15 @@ class Orchestrator:
                 return identity, []
             self.store.record(title_id, state.IDENTIFIED, problem)
             return None, [_reason(state.IDENTIFIED, problem)]
+        detail = "resolved %s from %s" % (
+            identity.get("title"), identity.get("identified_from") or "provider search")
+        for note in identity.get("notes") or []:
+            detail += "; " + note
         self.store.advance(
             title_id,
             state.IDENTIFIED,
-            "resolved %s from %s"
-            % (identity.get("title"), identity.get("identified_from") or "provider search"),
+            detail,
+            candidates=None,
             title=identity.get("title"),
             year=identity.get("year"),
             show=identity.get("show"),
@@ -546,6 +552,19 @@ class Orchestrator:
             identity=identity,
         )
         return identity, []
+
+    def _store_candidates(self, title_id, kind):
+        try:
+            candidates = self.provider.hold_candidates(kind)
+        except Exception as exc:
+            log.warning("title %s: candidate lists could not be built: %s", title_id, exc)
+            return
+        counts = ", ".join(
+            "%d %s" % (len(candidates.get(source) or []), source)
+            for source in ("wikidata", "tvdb", "tmdb", "imdb") if source in candidates
+        )
+        log.info("title %s: candidates for the operator: %s", title_id, counts)
+        self.store.update(title_id, candidates=candidates)
 
     @staticmethod
     def _unidentified(kind, source):

@@ -94,7 +94,20 @@ def title_from_filename(name):
     parts = stem.split(" - ")
     if len(parts) >= 3:
         return " - ".join(parts[2:]).strip()
+    end = _marker_end(stem)
+    if end is not None:
+        rest = re.sub(r"^[\s._-]+", "", stem[end:]).strip()
+        if rest:
+            return rest
     return stem
+
+
+def _marker_end(text):
+    for pattern in RANGE_PATTERNS + SINGLE_PATTERNS:
+        m = pattern.search(text)
+        if m:
+            return m.end()
+    return None
 
 
 #----- Matching against the provider catalogue

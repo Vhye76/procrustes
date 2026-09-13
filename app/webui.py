@@ -148,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": "bad title id"})
             action = (body.get("action") or "").lower()
             try:
-                result = self.app.decide(title_id, action)
+                result = self.app.decide(title_id, action, body)
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             return self._json(200, result)
@@ -160,6 +160,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "missing static asset"})
         with open(target, "rb") as fh:
             return self._send(200, fh.read(), content_type)
+
+
+ID_SHAPES = {
+    "qid": re.compile(r"^Q\d+$"),
+    "tvdb": re.compile(r"^\d+$"),
+    "tmdb": re.compile(r"^\d+$"),
+    "imdb": re.compile(r"^tt\d+$"),
+    "year": re.compile(r"^(19|20)\d{2}$"),
+}
+ID_FIELDS = {"movie": ("qid", "tmdb", "imdb", "year"), "tv": ("qid", "tvdb", "tmdb", "year")}
+
+
+def _chosen_identity(kind, body):
+    if kind not in ID_FIELDS:
+        raise ValueError("the title has no kind yet, retry it first")
+    chosen = {}
+    for field in ID_FIELDS[kind]:
+        value = str(body.get(field) or "").strip()
+        if not value:
+            continue
+        if not ID_SHAPES[field].match(value):
+            raise ValueError("%s %r is not a valid %s id" % (field, value, field))
+        chosen[field] = value
+    name = str(body.get("name") or "").strip()
+    if name:
+        chosen["name"] = name
+    if not chosen.get("qid") and not name:
+        raise ValueError("identify needs a Wikidata entity or a title")
+    return chosen
 
 
 #----- The server
@@ -264,10 +293,11 @@ class WebUI:
             log.debug("could not cache poster %s: %s", key, exc)
         return data, POSTER_TYPES[extension]
 
-    def decide(self, title_id, action):
+    def decide(self, title_id, action, body=None):
         row = self.store.get(title_id)
         if row is None:
             raise ValueError("no such title")
+        body = body or {}
 
         if action == "forget":
             self.annotate(row)
@@ -305,7 +335,37 @@ class WebUI:
             )
             log.info("operator discarded title %s: %s", title_id, outcome)
             return {"ok": True, "action": outcome}
-        raise ValueError("action must be one of keep, retry, override, discard, forget")
+        if action == "identify":
+            if row["stage"] != state.HELD:
+                raise ValueError("identify applies to a held title only")
+            chosen = _chosen_identity(row.get("kind"), body)
+            rows = [row]
+            if (body.get("apply_to") or "title") == "same-search":
+                rows = self._same_search(row)
+            summary = " ".join("%s=%s" % (k, v) for k, v in chosen.items() if v)
+            for target in rows:
+                self.store.update(target["id"], pinned=chosen)
+                self.store.advance(
+                    target["id"], state.DETECTED, "operator identified the title as %s" % summary
+                )
+                self.orchestrator.queue.put(target["id"])
+            log.info("operator identified %d title(s) as %s", len(rows), summary)
+            return {"ok": True, "action": "identified and requeued", "titles": [r["id"] for r in rows]}
+        raise ValueError("action must be one of keep, retry, override, discard, forget, identify")
+
+    def _same_search(self, row):
+        searched = ((row.get("candidates") or {}).get("searched") or {}).get("name")
+        if not searched:
+            return [row]
+        wanted = searched.strip().lower()
+        out = []
+        for other in self.store.held():
+            if other.get("kind") != row.get("kind"):
+                continue
+            name = ((other.get("candidates") or {}).get("searched") or {}).get("name") or ""
+            if name.strip().lower() == wanted:
+                out.append(other)
+        return out or [row]
 
     def start(self):
         context = build_ssl_context(self.cfg)

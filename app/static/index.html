@@ -136,6 +136,18 @@
   .det-head .meta .row { font-size: 12px; color: var(--dim); margin-top: 3px;
                          overflow-wrap: anywhere; }
   .det-head .meta .row.warn { color: var(--warn); }
+  .idn { border-bottom: 1px solid var(--line); }
+  .idn .h { padding: 10px 16px; font-size: 11px; color: var(--dim); text-transform: uppercase;
+            letter-spacing: .06em; border-bottom: 1px solid var(--line); }
+  .idn .h.src { background: #191c23; }
+  .idn td.pick { width: 20px; padding-right: 0; }
+  .idn .free { display: flex; gap: 10px; padding: 8px 16px; flex-wrap: wrap; align-items: center;
+               font-size: 12px; color: var(--dim); border-bottom: 1px solid var(--line); }
+  .idn input[type=text] { background: #161a21; color: var(--ink); border: 1px solid var(--line);
+                          border-radius: 6px; padding: 4px 8px; font-size: 12px; width: 150px; }
+  .idn .go { display: flex; gap: 12px; padding: 10px 16px; align-items: center; font-size: 12px;
+             color: var(--dim); }
+  .idn .empty { padding: 8px 16px; font-size: 12px; color: var(--dim); }
   .hist { padding: 10px 16px; font-size: 12px; }
   .hist .h { color: var(--dim); text-transform: uppercase; letter-spacing: .06em;
              font-size: 11px; margin-bottom: 6px; }
@@ -416,8 +428,9 @@ async function showDetail(id) {
     `<div class="e"><span class="t">${esc(clock(e.at))}</span>
        <span>${esc(e.stage)}</span><span style="color:var(--dim)">${esc(e.detail || "")}</span></div>`
   ).join("");
-  $("det-body").innerHTML = `<div class="hist"><div class="h">Stage history</div>${
+  $("det-body").innerHTML = identifyPanel(t) + `<div class="hist"><div class="h">Stage history</div>${
     hist || '<div class="empty">No history.</div>'}</div>`;
+  if (t.stage === "HELD" && t.candidates) idnEntityChanged();
 
   const acts = [];
   if (t.comparison) acts.push(`<button onclick="showCompare(${t.id})">Compare</button>`);
@@ -499,6 +512,109 @@ async function actAll(action) {
   const ids = LIST_IDS.slice();
   for (const id of ids) await decide(id, action);
   $("lst").close();
+  refresh();
+}
+
+//----- Identification, one selector per source
+const SOURCES = {tv: ["tvdb", "tmdb"], movie: ["tmdb", "imdb"]};
+const SOURCE_NAMES = {tvdb: "TVDB series", tmdb: "TMDB", imdb: "IMDb"};
+let IDN = null;
+
+function sameSearch(t) {
+  const name = (((t.candidates || {}).searched || {}).name || "").toLowerCase();
+  if (!name) return [t];
+  return Object.values(TITLES).filter(o => o.stage === "HELD" && o.kind === t.kind &&
+    ((((o.candidates || {}).searched || {}).name) || "").toLowerCase() === name);
+}
+
+function identifyPanel(t) {
+  const c = t.candidates;
+  if (t.stage !== "HELD" || !c || !SOURCES[t.kind]) return "";
+  IDN = {id: t.id, kind: t.kind, candidates: c};
+  const ent = c.wikidata || [];
+  const pick = ent.find(e => /^accepted/.test(e.outcome || "")) || ent[0] || null;
+  const searched = c.searched || {};
+  const idsOf = e => [e.tvdb ? "tvdb " + e.tvdb : "", e.tmdb ? "tmdb " + e.tmdb : "",
+                      e.imdb ? "imdb " + e.imdb : ""].filter(Boolean).join("  ");
+  let h = `<div class="idn"><div class="h">Identify${searched.name
+    ? ` - searched ${esc(searched.name)}${searched.year ? " (" + esc(searched.year) + ")" : ""} from the ${esc(searched.rung || "ladder")}` : ""}</div>`;
+  h += `<div class="h src">Wikidata entity - supplies the title and year</div>`;
+  h += ent.length ? `<table><tr><th></th><th>Entity</th><th>Year</th><th>Ids</th><th>Score</th><th>Outcome</th></tr>` +
+    ent.map(e => `<tr class="${e === pick ? "decided" : ""}">
+      <td class="pick"><input type="radio" name="idn-qid" value="${esc(e.qid)}" ${e === pick ? "checked" : ""} onchange="idnEntityChanged()"></td>
+      <td>${esc(e.label || "")}<span class="tag">${esc(e.qid)}</span></td>
+      <td>${esc(e.year || "")}</td><td class="val">${esc(idsOf(e))}</td>
+      <td>${esc(e.score)}</td><td class="gate">${esc(e.outcome || "")}</td></tr>`).join("") + `</table>`
+    : `<div class="empty">No Wikidata entity scored against the name.</div>`;
+  for (const src of SOURCES[t.kind]) {
+    const rows = c[src] || [];
+    h += `<div class="h src">${SOURCE_NAMES[src]} - supplies the ${src} id</div>`;
+    h += rows.length ? `<table><tr><th></th><th>Name</th><th>Year</th><th>Id</th><th>Origin</th><th>Note</th></tr>` +
+      rows.map(r => `<tr>
+        <td class="pick"><input type="radio" name="idn-${src}" value="${esc(r.id)}" onchange="idnChanged()"></td>
+        <td>${esc(r.name || "")}</td><td>${esc(r.year || "")}</td><td class="val">${esc(r.id)}</td>
+        <td class="gate">${esc(r.origin || "")}${r.imdb ? " · links " + esc(r.imdb) : ""}${r.tmdb ? " · links tmdb " + esc(r.tmdb) : ""}</td>
+        <td class="gate">${esc(r.note || "")}</td></tr>`).join("") + `</table>`
+      : `<div class="empty">No ${SOURCE_NAMES[src]} candidate reachable from the entities;  type the id below.</div>`;
+    h += `<div class="free"><span>or a ${src} id found by hand</span>
+      <input type="text" id="idn-free-${src}" placeholder="${src} id" oninput="idnChanged()"></div>`;
+  }
+  const n = sameSearch(t).length;
+  h += `<div class="go">
+    <span>year override</span><input type="text" id="idn-year" placeholder="YYYY" style="width:70px" oninput="idnChanged()">
+    <label><input type="checkbox" id="idn-all" ${n > 1 ? "checked" : ""}> apply to the ${n} held title${n === 1 ? "" : "s"} that searched the same name</label>
+    <button id="idn-go" onclick="identify()" disabled>Identify</button>
+    ${c.error ? `<span class="tag ungated">lists incomplete: ${esc(c.error)}</span>` : ""}
+  </div></div>`;
+  return h;
+}
+
+function idnValue(src) {
+  const typed = ($(`idn-free-${src}`) || {}).value || "";
+  if (typed.trim()) return typed.trim();
+  const picked = document.querySelector(`input[name="idn-${src}"]:checked`);
+  return picked ? picked.value : "";
+}
+
+function idnEntity() {
+  const picked = document.querySelector('input[name="idn-qid"]:checked');
+  if (!picked || !IDN) return null;
+  return (IDN.candidates.wikidata || []).find(e => e.qid === picked.value) || null;
+}
+
+function idnEntityChanged() {
+  if (!IDN) return;
+  const e = idnEntity();
+  for (const src of SOURCES[IDN.kind]) {
+    const rows = IDN.candidates[src] || [];
+    let want = null;
+    if (e) {
+      want = rows.find(r => e[src] && String(r.id) === String(e[src])) || null;
+      if (!want && src === "tvdb" && e.imdb) want = rows.find(r => (r.origin || "").indexOf(e.imdb) >= 0) || null;
+    }
+    document.querySelectorAll(`input[name="idn-${src}"]`).forEach(inp => {
+      inp.checked = !!want && inp.value === String(want.id);
+    });
+  }
+  idnChanged();
+}
+
+function idnChanged() {
+  if (!IDN) return;
+  const ok = !!idnEntity() && SOURCES[IDN.kind].every(src => idnValue(src));
+  const go = $("idn-go");
+  if (go) go.disabled = !ok;
+}
+
+async function identify() {
+  if (!IDN) return;
+  const e = idnEntity();
+  const body = {qid: e ? e.qid : "", apply_to: ($("idn-all") && $("idn-all").checked) ? "same-search" : "title"};
+  for (const src of SOURCES[IDN.kind]) body[src] = idnValue(src);
+  const year = (($("idn-year") || {}).value || "").trim();
+  if (year) body.year = year;
+  await decide(IDN.id, "identify", body);
+  $("det").close();
   refresh();
 }
 
@@ -680,12 +796,17 @@ async function rescanAll() {
 }
 
 //----- Operator actions
-async function decide(id, action) {
-  await fetch(`/api/held/${id}/decision`, {
+async function decide(id, action, extra) {
+  const res = await fetch(`/api/held/${id}/decision`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({action}),
+    body: JSON.stringify(Object.assign({action}, extra || {})),
   });
+  if (!res.ok) {
+    let text = "";
+    try { text = (await res.json()).error || ""; } catch (e) {}
+    alert(text || `decision failed (${res.status})`);
+  }
 }
 
 async function act(id, action) {
