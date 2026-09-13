@@ -409,7 +409,7 @@ class Orchestrator:
             self.pools.queues[pool].put(title_id)
         except HoldError as exc:
             log.warning("held: %s: %s", source, exc)
-            self.store.hold(title_id, exc.reasons)
+            self._hold(title_id, source, exc.reasons)
         except RetryLater as exc:
             self._retry_later(title_id, source, exc)
         except QuarantineError as exc:
@@ -443,7 +443,7 @@ class Orchestrator:
                 self.store.record(title_id, state.PUBLISHED, "cleanup failed: %s" % exc)
         except HoldError as exc:
             log.warning("held: %s: %s", source, exc)
-            self.store.hold(title_id, exc.reasons)
+            self._hold(title_id, source, exc.reasons)
         except RetryLater as exc:
             self._retry_later(title_id, source, exc)
         except QuarantineError as exc:
@@ -455,12 +455,33 @@ class Orchestrator:
         attempts = row.get("attempts") or 0
         if attempts + 1 >= RETRY_MAX_ATTEMPTS:
             log.warning("giving up after %d attempts: %s: %s", attempts + 1, source, exc)
-            self.store.hold(title_id, "%s (gave up after %d attempts)" % (exc, attempts + 1))
+            self._hold(title_id, source, "%s (gave up after %d attempts)" % (exc, attempts + 1))
         else:
             delay = RETRY_BASE_DELAY * (2 ** attempts)
             log.warning("transient failure on %s, retrying in %ds: %s", source, delay, exc)
-            self.store.hold_for_retry(title_id, str(exc), delay)
+            self._hold(title_id, source, str(exc), retry_delay=delay)
 
+    #----- Holding
+    def _hold(self, title_id, source, reasons, retry_delay=None):
+        self._move_to_hold(title_id, source)
+        if retry_delay is None:
+            self.store.hold(title_id, reasons)
+        else:
+            self.store.hold_for_retry(title_id, reasons, retry_delay)
+
+    def _move_to_hold(self, title_id, source):
+        if self.cfg.dry_run or not os.path.exists(source):
+            return None
+        destination = self.layout.hold_path(source)
+        if destination is None:
+            return None
+        #----- the path relative to import/ is kept, so a retry reads the same folders.
+        self.layout.move_file(source, destination)
+        self.layout.prune_empty_folders(source, self.layout.imports)
+        self.store.update(title_id, source_path=destination)
+        self.store.record(title_id, state.HELD, "moved to %s" % destination)
+        log.info("title %s moved %s to hold", title_id, os.path.basename(source))
+        return destination
 
     #----- Stages, in chain order
     def _probe(self, title_id, source):

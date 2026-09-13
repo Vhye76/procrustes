@@ -254,6 +254,16 @@ class Layout:
             os.close(fd)
             return candidate
 
+    def hold_path(self, source):
+        source = _norm(source)
+        #----- a file already under hold/, or anywhere outside import/, stays where it is.
+        if source == self.imports or not _under(source, self.imports):
+            return None
+        relative = os.path.relpath(source, self.imports)
+        return self.unique_path(
+            os.path.join(self.held, os.path.dirname(relative)), os.path.basename(relative)
+        )
+
     def quarantine_path(self, src):
         base = os.path.basename(os.path.normpath(src))
         return self.unique_path(self.quarantine, base)

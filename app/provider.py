@@ -977,14 +977,25 @@ class Provider:
             parsed = episodemod.parse_filename(os.path.basename(source))
             if parsed is None:
                 return None
-            log.warning(
-                "no title match for %s, falling back to source numbering", os.path.basename(source)
-            )
-            entry = {
-                "season": parsed["season"],
-                "episode": parsed["first"],
-                "title": episodemod.title_from_filename(source),
-            }
+            listed = _catalogue_entry(catalogue, parsed["season"], parsed["first"])
+            if listed is not None:
+                log.warning(
+                    "no title match for %s, falling back to source numbering S%02dE%02d,"
+                    " title '%s' from the catalogue",
+                    os.path.basename(source), parsed["season"], parsed["first"], listed["title"],
+                )
+                entry = listed
+            else:
+                log.warning(
+                    "no title match for %s, falling back to source numbering S%02dE%02d,"
+                    " which the catalogue does not list; title kept from the file name",
+                    os.path.basename(source), parsed["season"], parsed["first"],
+                )
+                entry = {
+                    "season": parsed["season"],
+                    "episode": parsed["first"],
+                    "title": episodemod.title_from_filename(source),
+                }
             how = "fallback-numbering"
 
         warnings = self._order_warning(slug, catalogue)
@@ -1047,6 +1058,13 @@ def _catalogue_entries(rows):
         }
         for season, episode, href, title in rows
     ]
+
+
+def _catalogue_entry(catalogue, season, episode):
+    for entry in catalogue:
+        if entry["season"] == season and entry["episode"] == episode:
+            return entry
+    return None
 
 
 #----- Title matching under the section 9 rules

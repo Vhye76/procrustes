@@ -43,7 +43,7 @@ Three further values sit outside the pipeline.
 
 | Stage | Shown as | Meaning |
 | --- | --- | --- |
-| HELD | needs a decision | A gate failed and the title is waiting for you.  Every reason is listed, not only the first:  the standards, identification and comparison checks all run before a title holds, so one Force through is an informed decision rather than a guess repeated until the title moves.  The decision queue offers Retry, Force through and Discard. |
+| HELD | needs a decision | A gate failed and the title is waiting for you;  its file has moved to 'hold/', at the same path it had under 'import/'.  Every reason is listed, not only the first:  the standards, identification and comparison checks all run before a title holds, so one Force through is an informed decision rather than a guess repeated until the title moves.  The decision queue offers Retry, Force through and Discard. |
 | QUARANTINED | rejected | Refused, or beaten by the library incumbent.  The file is in 'complete/.quarantine'.  Remove it from there and the record closes on the next poll. |
 | FAILED | failed | A mechanical failure:  an unreadable probe, a remux or encoder that exited non-zero, or a publish that could not write.  Nothing was moved or deleted, and no output exists, so Force through cannot apply and is not offered;  Retry and Discard are. |
 
@@ -254,7 +254,7 @@ An id found on any of those rungs is a pointer, not an identity.  It is looked u
 
 A filename has already lost the provider's punctuation, and Wikidata's prefix search stops at a colon, so a search is matched under the naming rules rather than by string:  every candidate's label is put through the same transform the filename went through, a full-text search covers the entities the prefix search cannot reach, and a candidate whose release year is more than a year from the name's is skipped.  'Star Wars Episode IV A New Hope' and 'Futurama Bender's Game' both resolve from their filename form.
 
-Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  A fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, and a title that cannot be identified at all holds.
+Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  A fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, taking the episode title from the provider's entry for that number rather than from the file name, and a title that cannot be identified at all holds.
 
 Every answer is cached without expiry, an empty search result included, so a title held for an unresolvable name would hold again identically on any requeue.  Retry on a held title therefore asks the providers again, bypassing the cache for that one identification;  Force through does not, and carries the title on without an ID.
 
@@ -358,7 +358,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.8.1, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.8.2, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 
