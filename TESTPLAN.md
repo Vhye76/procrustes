@@ -1,6 +1,6 @@
 # TESTPLAN
 
-Execution plan for validating mediaImport against a built container.  Run by hand.
+Execution plan for validating procrustes against a built container.  Run by hand.
 
 ## What this is
 
@@ -15,7 +15,7 @@ Nothing here runs on a workstation.  The workstation and the container are diffe
 Before any case runs:
 
 ```
-image built                 docker build -t mediaimport:local .
+image built                 docker build -t procrustes:local .
 root mounted                MEDIA_ROOT, the one required writable mount
 certificate mounted         /certs holds the certificate and key
 RENDER_GID set              stat -c %g /dev/dri/renderD128 on the host
@@ -42,7 +42,7 @@ Unless a case says otherwise, reset by stopping the container, emptying import, 
 **T-01  The banner lists every setting.**
 
 - **Start:**  container stopped.
-- **Do:**  'docker compose up -d', then 'docker logs mediaimport'.
+- **Do:**  'docker compose up -d', then 'docker logs procrustes'.
 - **Expect:**  the config banner lists every name in section 5 of CLAUDE.md.  Record any name present in one and absent from the other.
 
 **T-02  Mounts resolve to the paths given.**
@@ -90,13 +90,13 @@ Unless a case says otherwise, reset by stopping the container, emptying import, 
 **T-06  The instance lock is taken.**
 
 - **Start:**  container running.
-- **Do:**  'ls -l <config mount>/mediaimport.lock'.
+- **Do:**  'ls -l <config mount>/procrustes.lock'.
 - **Expect:**  the file exists and contains a JSON object with the running container's pid.
 
 **T-07  The healthcheck reaches healthy.**
 
 - **Start:**  container started within the last two minutes.
-- **Do:**  'docker inspect --format "{{.State.Health.Status}}" mediaimport'.
+- **Do:**  'docker inspect --format "{{.State.Health.Status}}" procrustes'.
 - **Expect:**  'healthy'.  Not 'starting', not 'unhealthy'.
 
 ## 2.  Detection
@@ -380,7 +380,7 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 **T-67  SIGTERM terminates encodes.**
 
 - **Start:**  a container with an encode in flight.
-- **Do:**  'docker stop mediaimport'.
+- **Do:**  'docker stop procrustes'.
 - **Expect:**  no ffmpeg process survives.  Confirm on the host.
 
 **T-68  An orphaned job directory is swept.**

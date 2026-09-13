@@ -1,7 +1,7 @@
 services:
-  mediaimport:
-    container_name: mediaimport
-    image: ghcr.io/vhye76/mediaimport:latest
+  procrustes:
+    container_name: procrustes
+    image: ghcr.io/vhye76/procrustes:latest
     build: .
     restart: unless-stopped
 
@@ -12,10 +12,10 @@ services:
       RENDER_GID: ${RENDER_GID:?run "stat -c %g /dev/dri/renderD128" on the host and set this in .env}
 
       MEDIA_ROOT: /media
-      MEDIA_ENCODE: /media/encode
-      MEDIA_CONFIG: /media/config
-      LIBRARY_MOVIES: /media/library/movies
-      LIBRARY_TV: /media/library/tv
+      MEDIA_ENCODE: /encode
+      MEDIA_CONFIG: /config
+      LIBRARY_MOVIES: /library/movies
+      LIBRARY_TV: /library/tv
 
       CERT_DIR: /certs
       TLS_CERT_FILE: fullchain.pem
@@ -40,11 +40,11 @@ services:
     #----- Host paths come from .env
     volumes:
       - ${MEDIA_ROOT:?set MEDIA_ROOT in .env}:/media
-      - ${MEDIA_ENCODE:?set MEDIA_ENCODE in .env}:/media/encode
-      - ${MEDIA_CONFIG:?set MEDIA_CONFIG in .env}:/media/config
+      - ${MEDIA_ENCODE:?set MEDIA_ENCODE in .env}:/encode
+      - ${MEDIA_CONFIG:?set MEDIA_CONFIG in .env}:/config
       - ${CERT_PATH:?set CERT_PATH in .env}:/certs:ro
-      - ${MOVIES_PATH:?set MOVIES_PATH in .env}:/media/library/movies:ro
-      - ${TV_PATH:?set TV_PATH in .env}:/media/library/tv:ro
+      - ${MOVIES_PATH:?set MOVIES_PATH in .env}:/library/movies:ro
+      - ${TV_PATH:?set TV_PATH in .env}:/library/tv:ro
 
     #----- GPU passthrough
     devices:

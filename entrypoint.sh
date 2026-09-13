@@ -4,8 +4,8 @@ set -euo pipefail
 #----- Identity to drop to
 PUID="${PUID:?PUID must be set}"
 PGID="${PGID:?PGID must be set}"
-APP_USER=mediaimport
-APP_GROUP=mediaimport
+APP_USER=procrustes
+APP_GROUP=procrustes
 
 if ! getent group "${PGID}" >/dev/null 2>&1; then
     groupadd -g "${PGID}" "${APP_GROUP}"

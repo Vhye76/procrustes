@@ -64,7 +64,7 @@ def build_ssl_context(cfg):
 
 #----- Request handling
 class Handler(BaseHTTPRequestHandler):
-    server_version = "mediaimport"
+    server_version = "procrustes"
 
     @property
     def app(self):

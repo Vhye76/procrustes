@@ -51,14 +51,14 @@ RUN set -eux; \
     fi
 
 #----- Image metadata
-LABEL org.opencontainers.image.title="mediaimport" \
+LABEL org.opencontainers.image.title="procrustes" \
       org.opencontainers.image.description="Automatic media import, tag and encode pipeline" \
-      org.opencontainers.image.source="https://github.com/Vhye76/mediaImport" \
-      net.unraid.docker.icon="https://raw.githubusercontent.com/Vhye76/mediaImport/main/media/mediaImport.png" \
-      mediaimport.ffmpeg="alpine"
+      org.opencontainers.image.source="https://github.com/Vhye76/procrustes" \
+      net.unraid.docker.icon="https://raw.githubusercontent.com/Vhye76/procrustes/main/media/procrustes.png" \
+      procrustes.ffmpeg="alpine"
 
 #----- Application
-WORKDIR /opt/mediaimport
+WORKDIR /opt/procrustes
 COPY app/ ./app/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

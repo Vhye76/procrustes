@@ -40,7 +40,7 @@ class InstanceLock:
             os.close(fd)
             if exc.errno in (errno.EACCES, errno.EAGAIN):
                 raise AlreadyRunning(
-                    "another mediaimport instance already holds %s%s"
+                    "another procrustes instance already holds %s%s"
                     % (self.path, holder)
                 )
             raise

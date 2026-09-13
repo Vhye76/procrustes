@@ -19,7 +19,7 @@ from . import titles
 
 log = logging.getLogger("provider")
 
-USER_AGENT = "mediaimport/%s (+https://github.com/Vhye76/mediaImport)" % VERSION
+USER_AGENT = "procrustes/%s (+https://github.com/Vhye76/procrustes)" % VERSION
 THROTTLE_SECONDS = 3.0
 TIMEOUT = 30
 TITLE_CUTOFF = episodemod.FUZZY_CUTOFF

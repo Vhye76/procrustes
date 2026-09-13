@@ -64,7 +64,7 @@ class Layout:
 
     @property
     def instance_lock(self):
-        return os.path.join(self.config, "mediaimport.lock")
+        return os.path.join(self.config, "procrustes.lock")
 
     @property
     def state_db(self):

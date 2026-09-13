@@ -1,4 +1,4 @@
-# mediaImport - operating ruleset for this repository
+# procrustes - operating ruleset for this repository
 
 ## 1.  What this file is
 
@@ -58,10 +58,10 @@ ONE REQUIRED MOUNT.  Host paths are a deployment detail and appear only in the r
 ```
 CONTAINER PATH          ENV VAR         MODE  REQUIRED  DEFAULT
 /media                  MEDIA_ROOT      rw    yes       -
-/media/encode           MEDIA_ENCODE    rw    no        <root>/encode
-/media/config           MEDIA_CONFIG    rw    no        <root>/config
-/media/library/movies   LIBRARY_MOVIES  ro    no        unset
-/media/library/tv       LIBRARY_TV      ro    no        unset
+/encode                 MEDIA_ENCODE    rw    no        <root>/encode
+/config                 MEDIA_CONFIG    rw    no        <root>/config
+/library/movies         LIBRARY_MOVIES  ro    no        unset
+/library/tv             LIBRARY_TV      ro    no        unset
 /certs                  CERT_DIR        ro    yes       /certs
 ```
 
@@ -883,7 +883,7 @@ Detection is from the v:0 side data list, reading dv_profile and rpu_present_fla
 
 ## 19.  Single instance, locking and concurrency
 
-ONE INSTANCE AT A TIME, ENFORCED.  The supervisor takes an exclusive 'flock' on 'MEDIA_CONFIG/mediaimport.lock' before doing anything else.  A second instance pointed at the same mounts WAITS for the first to exit rather than running alongside it.
+ONE INSTANCE AT A TIME, ENFORCED.  The supervisor takes an exclusive 'flock' on 'MEDIA_CONFIG/procrustes.lock' before doing anything else.  A second instance pointed at the same mounts WAITS for the first to exit rather than running alongside it.
 
 Why this is not optional:  every other guard in the process is 'threading.Semaphore' or 'threading.RLock', which are process local.  Two supervisors sharing the mounts would sweep each other's encode area and could publish the same title twice.
 
@@ -922,7 +922,7 @@ Two tiers, switched by 'LOG_LEVEL':
 
 'LOG_LEVEL' is a container variable, so raising verbosity is a deployment setting rather than a code change.
 
-Logs go to stdout and to 'config/logs/mediaimport.log', and the tail is served at '/api/logs'.
+Logs go to stdout and to 'config/logs/procrustes.log', and the tail is served at '/api/logs'.
 
 Every log line carries the title id where one exists, so a single title's path can be extracted from a run with several jobs in flight.
 
@@ -1008,7 +1008,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  Until 2026-09-12 the 'validate' job refused a version that was already a git tag, which read a tag as proof of a prior build;  the repository does not use git tags, and the workflow no longer looks at them.
 
-'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'mediaimport/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
+'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  A version duplicated into a format string rots silently and then misreports the software to every provider it contacts, which is exactly the defect that produced the placeholder User-Agent this replaced.  One consumer today:  the provider User-Agent, built as 'procrustes/<VERSION> (+<repo url>)'.  Wikimedia rejects generic and browser-imitating agents with 403, and Wikidata is the first host every identification touches, so an honest three-part string is the reliable choice as well as the truthful one.  A browser User-Agent is not an option here.
 
 THE WORKFLOW IS 'workflow_dispatch' ONLY.  Images are published by a manual run from the Actions tab and by nothing else.
 
@@ -1142,7 +1142,7 @@ Not in this repository, and adding them needs a decision rather than a commit:
 - Host-specific packaging.  No Unraid Community Applications template, no Docker Hub mirror.  The deliverable is the image plus a reference compose file that runs anywhere with Docker and a render node.
 - The workstation scripts.  They live in their own tree and continue to run there unchanged.
 
-ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries 'net.unraid.docker.icon'.  It is Unraid-specific and inert on every other host.  It is there because a container with no icon makes the Unraid Docker page request a placeholder that does not exist on that build, and the page auto-refreshes:  measured 2026-09-08, that filled the 128 MB '/var/log' tmpfs to 100 percent with 66 MB of syslog and 61 MB of nginx errors.  The container wrote none of it.  The icon lives at 'media/mediaImport.png' and is served from the repository, matching what every other container on that host does.  It is a placeholder and is expected to be replaced.
+ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries 'net.unraid.docker.icon'.  It is Unraid-specific and inert on every other host.  It is there because a container with no icon makes the Unraid Docker page request a placeholder that does not exist on that build, and the page auto-refreshes:  measured 2026-09-08, that filled the 128 MB '/var/log' tmpfs to 100 percent with 66 MB of syslog and 61 MB of nginx errors.  The container wrote none of it.  The icon lives at 'media/procrustes.png' and is served from the repository, matching what every other container on that host does.  It is a placeholder and is expected to be replaced.
 
 ## 29.  To do
 

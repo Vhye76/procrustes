@@ -1,4 +1,4 @@
-# mediaImport
+# procrustes
 
 An automatic media import pipeline in a container.  Drop a title into 'import/', collect it from 'complete/'.
 
@@ -85,10 +85,10 @@ The pipeline is import, then encode, then complete.  One mount is required and e
 | Container path | Env var | Mode | Required | Purpose |
 |---|---|---|---|---|
 | /media | MEDIA_ROOT | rw | yes | the one required mount, everything derives from it |
-| /media/encode | MEDIA_ENCODE | rw | no | per-title work area, mount separately for fast storage |
-| /media/config | MEDIA_CONFIG | rw | no | state.db, instance lock, provider cache, logs |
-| /media/library/movies | LIBRARY_MOVIES | ro | no | incumbent comparison |
-| /media/library/tv | LIBRARY_TV | ro | no | incumbent comparison |
+| /encode | MEDIA_ENCODE | rw | no | per-title work area, mount separately for fast storage |
+| /config | MEDIA_CONFIG | rw | no | state.db, instance lock, provider cache, logs |
+| /library/movies | LIBRARY_MOVIES | ro | no | incumbent comparison |
+| /library/tv | LIBRARY_TV | ro | no | incumbent comparison |
 | /certs | CERT_DIR | ro | yes | TLS certificate and key |
 
 Quarantine is not a mount.  Retired sources and rejected files go to '/media/complete/.quarantine'.
@@ -160,7 +160,7 @@ The transform runs one way.  A filename can always be derived from a tag;  a tag
 
 Every one of these is echoed into the log and onto /api/status at startup, so what the container thinks it was configured with is always visible without exec-ing into it.
 
-Every module logs what it does.  At the default 'info' the log records one line per meaningful action, naming the title, the stage and the outcome, and says why when something fails or degrades.  Set 'LOG_LEVEL=debug' to add the detail behind each of those lines:  command lines, per-gate comparisons, measured figures against their thresholds.  Logs go to stdout and to 'config/logs/mediaimport.log', and the tail is served at /api/logs.
+Every module logs what it does.  At the default 'info' the log records one line per meaningful action, naming the title, the stage and the outcome, and says why when something fails or degrades.  Set 'LOG_LEVEL=debug' to add the detail behind each of those lines:  command lines, per-gate comparisons, measured figures against their thresholds.  Logs go to stdout and to 'config/logs/procrustes.log', and the tail is served at /api/logs.
 
 Six more are read directly by the modules that use them and are neither validated nor reported.  They exist to substitute a binary, not to configure the service:  FFPROBE, FFMPEG, MKVMERGE, MKVPROPEDIT, MKVEXTRACT and VAINFO.
 
@@ -274,7 +274,7 @@ Repair is by running the file through the pipeline.  Each finding carries an Imp
 
 ## One instance at a time
 
-The container takes an exclusive 'flock' on MEDIA_CONFIG/mediaimport.lock at startup.  A second instance pointed at the same mounts waits for the first to exit rather than running alongside it, because two instances would sweep each other's encode area and could publish the same title twice.  The kernel releases the lock if the holder is killed, so a hard kill needs no manual cleanup.
+The container takes an exclusive 'flock' on MEDIA_CONFIG/procrustes.lock at startup.  A second instance pointed at the same mounts waits for the first to exit rather than running alongside it, because two instances would sweep each other's encode area and could publish the same title twice.  The kernel releases the lock if the holder is killed, so a hard kill needs no manual cleanup.
 
 Encode job directories record their owning PID.  The startup sweep reclaims only directories whose owner is gone, and leaves a live job alone.
 
@@ -323,7 +323,7 @@ python3 -c "import app.main"
 That is the whole of local validation.  Neither command executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
 
 ```
-docker build -t mediaimport:local .
+docker build -t procrustes:local .
 ```
 
 The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, or if its libx265 wrapper has no '-dolbyvision' option.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
@@ -339,7 +339,7 @@ docker run --rm -e PUID=1000 -e PGID=1000 -e DRY_RUN=1 \
   -e POLL_INTERVAL=15 -e MTIME_QUIET=30 -e LOG_LEVEL=info \
   -v /tmp/testtree:/media \
   -v /srv/certs:/certs:ro \
-  -p 443:443 mediaimport:local
+  -p 443:443 procrustes:local
 ```
 
 ONE ROOT MOUNT, DELIBERATELY.  'import', 'complete', 'complete/.quarantine' and 'hold' are created underneath it at startup, and a move between two of them is then a rename rather than a copy.  Mounting them individually turns every one of those moves into a copy at best;  at worst 'rename' refuses outright with EXDEV, because Linux will not rename across two mount points even when both sides are the same device.

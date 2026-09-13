@@ -45,7 +45,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository_owner }}/mediaimport
+          images: ghcr.io/${{ github.repository_owner }}/procrustes
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=${{ needs.validate.outputs.version }}

@@ -51,10 +51,10 @@ def main():
         return 2
 
     layout = Layout(cfg)
-    log_path = os.path.join(layout.logs, "mediaimport.log")
+    log_path = os.path.join(layout.logs, "procrustes.log")
     setup_logging(cfg.log_level, log_path)
 
-    log.info("mediaimport starting, version %s", VERSION)
+    log.info("procrustes starting, version %s", VERSION)
     for line in cfg.banner().splitlines():
         log.info("config  %s", line)
     for name in sorted(cfg.sources):

@@ -167,7 +167,7 @@ def build_tv_xml(show, tvdb, tmdb, season, episode_title, episode_number, carry=
 
 #----- Writing
 def write_tags(path, xml, segment_title=None, add_stats=True):
-    handle, xml_path = tempfile.mkstemp(suffix=".xml", prefix="mediaimport-tags-")
+    handle, xml_path = tempfile.mkstemp(suffix=".xml", prefix="procrustes-tags-")
     try:
         with os.fdopen(handle, "w") as fh:
             fh.write(xml)
