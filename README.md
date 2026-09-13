@@ -73,7 +73,7 @@ app/            the pipeline: one module per concern
   audit.py        the background library sweep
   static/         the dashboard page
 Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
-entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri
+entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
 TESTPLAN.md     container validation cases, executed by hand
 media/          the container icon, a placeholder
 ```
@@ -358,7 +358,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.7.4, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
+Current version 0.8.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

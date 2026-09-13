@@ -46,6 +46,13 @@ if [ -n "${missing}" ]; then
     exit 2
 fi
 
+for path in "${MEDIA_ROOT:-/media}" "${MEDIA_ENCODE:-}" "${MEDIA_CONFIG:-}"; do
+    if [ -n "${path}" ] && [ "$(stat -c %u:%g "${path}")" != "${PUID}:${PGID}" ]; then
+        chown "${PUID}:${PGID}" "${path}"
+        echo "entrypoint: ${path} owner set to ${PUID}:${PGID}"
+    fi
+done
+
 echo "entrypoint: running as ${RUN_USER}:${PRIMARY_GROUP} (${PUID}:${PGID})"
 #----- Drop privileges and hand over
 exec su-exec "${PUID}:${PGID}" "$@"

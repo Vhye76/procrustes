@@ -43,7 +43,7 @@ app/
   static/           the dashboard page, vanilla JS, no framework
 media/              the container icon, a placeholder, excluded from the image
 Dockerfile          alpine:3.24 plus ffmpeg, mkvtoolnix, Intel media stack
-entrypoint.sh       drops to PUID/PGID, joins RENDER_GID for /dev/dri
+entrypoint.sh       drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
 TESTPLAN.md         container validation cases, executed by hand
 ```
 
@@ -92,6 +92,8 @@ config/       state.db, the instance lock, provider cache, cached posters, logs
 QUARANTINE LIVES UNDER 'complete/', not on its own mount.  It is a dotted directory so it sits beside finished work without being mistaken for it.  Nothing in the container ever scans 'complete/';  the orchestrator only joins paths to write into it, so a dotted sibling costs nothing.
 
 A MISSING ROOT IS A STARTUP ERROR, not a directory quietly created in the wrong place.  'MEDIA_ENCODE' and 'MEDIA_CONFIG' are validated only when they are set explicitly;  unset, 'Layout.ensure' creates them under the root.  'config/' has to be persistent wherever it lands:  it holds the SQLite store, so losing it means re-processing everything, and it holds the flock that section 19's single-instance guarantee depends on, which only works if two containers can see the same file.
+
+THE ENTRYPOINT TAKES OWNERSHIP OF THE WRITABLE MOUNT POINTS BEFORE DROPPING PRIVILEGES.  A '-v' whose host directory does not exist is created by Docker as root:root, and the process running as PUID:PGID then cannot create anything under it.  Measured 2026-09-13 on a from-scratch deployment:  'MEDIA_CONFIG' had been created that way, 'Layout.ensure' failed on 'config/logs' with 'Permission denied', and the restart policy looped the container.  The entrypoint now compares the owner of 'MEDIA_ROOT', 'MEDIA_ENCODE' and 'MEDIA_CONFIG' against PUID:PGID and chowns the mount point itself, never recursively:  everything below is created by the process as that identity, a recursive pass over the root would walk the whole share on every start, and the libraries and '/certs' are read-only mounts on which a chown fails.  The bind mount puts the change on the host directory, so it lands once per fresh directory and is inert afterwards.
 
 DEGRADE, DO NOT FAIL, APPLIES TO THE LIBRARIES ONLY.  Without a library mount the incumbent comparison is skipped and every title is treated as new.  Logged at startup and shown in the UI, because silently skipping a gate is worse than not having one.
 
@@ -1004,7 +1006,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.7.5.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.8.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  Until 2026-09-12 the 'validate' job refused a version that was already a git tag, which read a tag as proof of a prior build;  the repository does not use git tags, and the workflow no longer looks at them.
 
