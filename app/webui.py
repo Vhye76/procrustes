@@ -194,6 +194,13 @@ def _chosen_identity(kind, body):
 
 
 #----- The server
+def _search_key(row):
+    searched = (row.get("candidates") or {}).get("searched") or {}
+    readings = searched.get("readings") or [searched]
+    names = sorted((r.get("name") or "").strip().lower() for r in readings)
+    return tuple(n for n in names if n)
+
+
 class WebUI:
     def __init__(self, cfg, orchestrator, store, log_path=None):
         self.cfg = cfg
@@ -356,16 +363,14 @@ class WebUI:
         raise ValueError("action must be one of keep, retry, override, discard, forget, identify")
 
     def _same_search(self, row):
-        searched = ((row.get("candidates") or {}).get("searched") or {}).get("name")
-        if not searched:
+        wanted = _search_key(row)
+        if not wanted:
             return [row]
-        wanted = searched.strip().lower()
         out = []
         for other in self.store.held():
             if other.get("kind") != row.get("kind"):
                 continue
-            name = ((other.get("candidates") or {}).get("searched") or {}).get("name") or ""
-            if name.strip().lower() == wanted:
+            if _search_key(other) == wanted:
                 out.append(other)
         return out or [row]
 

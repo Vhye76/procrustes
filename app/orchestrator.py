@@ -535,9 +535,13 @@ class Orchestrator:
                 names = ", ".join(
                     "%s (%s)" % (t.get("qid"), t.get("year") or "no date") for t in identity["tied"]
                 )
+                if len({t.get("reading") for t in identity["tied"]}) > 1:
+                    cause = "the year in the name reads as either the release year or a title word"
+                else:
+                    cause = "the file name carries no year to separate them"
                 problem = (
-                    "the name resolves to %d entities with equal score, %s; the file name carries "
-                    "no year to separate them; an ID is never guessed" % (len(identity["tied"]), names)
+                    "the name resolves to %d entities with equal score, %s; %s; an ID is never "
+                    "guessed" % (len(identity["tied"]), names, cause)
                 )
                 identity = None
             elif identity and identity.get("missing"):
@@ -565,6 +569,8 @@ class Orchestrator:
             return None, [_reason(state.IDENTIFIED, problem)]
         detail = "resolved %s from %s" % (
             identity.get("title"), identity.get("identified_from") or "provider search")
+        if identity.get("reading"):
+            detail += " with the year read as the %s" % identity["reading"]
         for note in identity.get("notes") or []:
             detail += "; " + note
         self.store.advance(

@@ -38,7 +38,8 @@ YEAR_IN_PARENS = re.compile(r"\((19\d{2}|20\d{2})\)")
 HAND_TOKENS = (
     r"1080p|720p|2160p|4k|bluray|blu-ray|bdrip|brrip|webrip|web-?dl|hdtv|remux|"
     r"x26[45]|h\.?26[45]|hevc|avc|xvid|divx|aac|ac3|dts(?:-hd)?|truehd|atmos|"
-    r"ma|5\.1|7\.1|2\.0|10bit|8bit|hdr10?|dovi|dv|proper|repack|imax|multi|dual|complete"
+    r"ma|5\.1|7\.1|2\.0|10bit|8bit|hdr10?|dovi|dv|proper|repack|imax|multi|dual|complete|"
+    r"\d{3,4}x\d{3,4}"
 )
 
 #----- FileBot's WEB-DL row uses a variable-width look-behind that re rejects;  this is the fixed-width form.
@@ -132,6 +133,7 @@ _EDITION_PATTERNS = tuple(
 )
 #----- the trailing delimiter is a lookahead so two adjacent years both match.
 _LAST_YEAR = re.compile(r"(?:^|[.\s(\[_-])(?:19|20)\d{2}(?=[)\].\s_-]|$)")
+EPISODE_MARK = re.compile(r"(?:^|[^a-z0-9])s\d{1,2}[\s._-]*e\d{1,3}", re.I)
 
 
 #----- Release names
@@ -148,9 +150,13 @@ def strip_release_group(stem):
     text = str(stem).strip()
     #----- a group name is removed only in group position, after the last hyphen;  'War' mid-title stays.
     m = re.search(r"-([A-Za-z0-9_.]+)$", text)
-    if m and is_release_group(m.group(1)):
+    if m and is_release_group(m.group(1)) and _release_signal(text[: m.start()]):
         text = text[: m.start()].rstrip(" ._-")
     return text
+
+
+def _release_signal(head):
+    return bool(RELEASE_TOKENS.search(head) or _LAST_YEAR.search(head) or EPISODE_MARK.search(head))
 
 
 def strip_release_tag(text):

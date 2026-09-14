@@ -522,11 +522,20 @@ const SOURCES = {tv: ["tvdb", "tmdb"], movie: ["tmdb", "imdb"]};
 const SOURCE_NAMES = {tvdb: "TVDB series", tmdb: "TMDB", imdb: "IMDb"};
 let IDN = null;
 
+function searchReadings(t) {
+  const searched = ((t.candidates || {}).searched) || {};
+  const readings = (searched.readings && searched.readings.length) ? searched.readings : [searched];
+  return readings.filter(r => r.name);
+}
+
+function searchKey(t) {
+  return searchReadings(t).map(r => r.name.toLowerCase()).sort().join("\u0000");
+}
+
 function sameSearch(t) {
-  const name = (((t.candidates || {}).searched || {}).name || "").toLowerCase();
-  if (!name) return [t];
-  return Object.values(TITLES).filter(o => o.stage === "HELD" && o.kind === t.kind &&
-    ((((o.candidates || {}).searched || {}).name) || "").toLowerCase() === name);
+  const key = searchKey(t);
+  if (!key) return [t];
+  return Object.values(TITLES).filter(o => o.stage === "HELD" && o.kind === t.kind && searchKey(o) === key);
 }
 
 function identifyPanel(t) {
@@ -538,8 +547,9 @@ function identifyPanel(t) {
   const searched = c.searched || {};
   const idsOf = e => [e.tvdb ? "tvdb " + e.tvdb : "", e.tmdb ? "tmdb " + e.tmdb : "",
                       e.imdb ? "imdb " + e.imdb : ""].filter(Boolean).join("  ");
-  let h = `<div class="idn"><div class="h">Identify${searched.name
-    ? ` - searched ${esc(searched.name)}${searched.year ? " (" + esc(searched.year) + ")" : ""} from the ${esc(searched.rung || "ladder")}` : ""}</div>`;
+  const readings = searchReadings(t).map(r => `${esc(r.name)}${r.year ? " (" + esc(r.year) + ")" : ""}`);
+  let h = `<div class="idn"><div class="h">Identify${readings.length
+    ? ` - searched ${readings.join(" or ")} from the ${esc(searched.rung || "ladder")}` : ""}</div>`;
   h += `<div class="h src">Wikidata entity - supplies the title and year</div>`;
   h += ent.length ? `<table><tr><th></th><th>Entity</th><th>Year</th><th>Ids</th><th>Score</th><th>Outcome</th></tr>` +
     ent.map(e => `<tr class="${e === pick ? "decided" : ""}">

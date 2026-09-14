@@ -261,9 +261,9 @@ def _year(value):
 
 #----- Resolution
 class Provider:
-    def __init__(self, client, import_root=None):
+    def __init__(self, client, roots=()):
         self.client = client
-        self.import_root = os.path.normpath(str(import_root)) if import_root else None
+        self.roots = {os.path.normpath(str(root)) for root in roots if root}
         self._tvdb_posters = {}
         self._local = threading.local()
 
@@ -458,8 +458,7 @@ class Provider:
             rungs.append((
                 "embedded tag",
                 {"tmdb": embedded.get("tmdb"), "imdb": embedded.get("imdb")},
-                embedded.get("title"),
-                embedded.get("year"),
+                _single(embedded.get("title"), embedded.get("year")),
             ))
 
         for label, name in (("filename ids", stem), ("folder ids", parent),
@@ -468,23 +467,25 @@ class Provider:
                 continue
             ids = titles.ids_from_name(name)
             if ids["tmdb"] or ids["imdb"]:
-                rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
+                rungs.append((label, ids, _single(titles.title_before_ids(name), ids["year"])))
 
         segment = (container or {}).get("segment_title")
         if segment:
-            rungs.append(("segment title", {}, segment, None))
+            rungs.append(("segment title", {}, _single(segment, None)))
 
-        guess, year = _clean_movie_name(stem)
-        if guess:
-            rungs.append(("filename", {}, guess, year))
+        readings = _clean_movie_name(stem)
+        if readings:
+            rungs.append(("filename", {}, readings))
 
-        directory = os.path.normpath(os.path.dirname(source))
-        if self.import_root and directory == self.import_root:
-            log.debug("file sits directly in the watched root, parent folder rung skipped")
+        if self._in_root(source):
+            log.debug("file sits directly in a pipeline root, parent folder rung skipped")
         else:
-            parent_guess, parent_year = _clean_movie_name(parent)
-            if parent_guess and parent_guess.lower() != (guess or "").lower():
-                rungs.append(("parent folder", {}, parent_guess, parent_year))
+            searched = {name.lower() for name, _year, _label in readings}
+            parent_readings = [
+                r for r in _clean_movie_name(parent) if r[0].lower() not in searched
+            ]
+            if parent_readings:
+                rungs.append(("parent folder", {}, parent_readings))
 
         log.debug("identity ladder: %s", [r[0] for r in rungs])
         return rungs
@@ -509,8 +510,7 @@ class Provider:
             rungs.append((
                 "embedded tag",
                 {"tvdb": embedded.get("tvdb"), "tmdb": embedded.get("tmdb")},
-                embedded.get("title"),
-                None,
+                _single(embedded.get("title"), None),
             ))
 
         folders = [("folder ids", parent), ("folder ids", grandparent)]
@@ -523,17 +523,20 @@ class Provider:
                 continue
             ids = titles.ids_from_name(name)
             if ids["tvdb"] or ids["tmdb"]:
-                rungs.append((label, ids, titles.title_before_ids(name), ids["year"]))
+                rungs.append((label, ids, _single(titles.title_before_ids(name), ids["year"])))
 
-        guess = _clean_show_name(stem, parent)
-        if guess:
-            rungs.append(("filename", {}, guess, _show_year(stem, parent)))
+        readings = _clean_show_name(stem, "" if self._in_root(source) else parent)
+        if readings:
+            rungs.append(("filename", {}, readings))
 
         log.debug("show identity ladder: %s", [r[0] for r in rungs])
         return rungs
 
     def identify_show(self, source, origin=None, pinned=None):
         return self._identify_from(self.show_candidates(source, origin), "tv", pinned)
+
+    def _in_root(self, source):
+        return os.path.normpath(os.path.dirname(source)) in self.roots
 
     #----- The walk, shared by both kinds
     def _identify_from(self, rungs, kind, pinned=None):
@@ -551,18 +554,20 @@ class Provider:
                     " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
                 )
                 return resolved
-        for rung, ids, name, year in rungs:
+        for rung, ids, readings in rungs:
             pinned = {
                 field: (ids or {}).get(field)
                 for field, _prop in ID_PROPERTIES[kind]
                 if (ids or {}).get(field)
             }
+            readings = [r for r in readings if r[0]]
             if pinned:
+                name, year = (readings[0][0], readings[0][1]) if readings else ("", None)
                 resolved = self._resolve_by_ids(pinned, name, year, kind)
-            elif name:
+            elif readings:
                 if self._local.searched is None:
-                    self._local.searched = {"rung": rung, "name": name, "year": year}
-                resolved = self._resolve_by_search(name, year, kind)
+                    self._local.searched = _searched_record(rung, readings)
+                resolved = self._search_readings(readings, kind)
             else:
                 resolved = None
             if resolved is None:
@@ -578,6 +583,55 @@ class Provider:
             )
             return resolved
         return None
+
+    def _search_readings(self, readings, kind):
+        results = []
+        for name, year, label in readings:
+            self._local.reading = label
+            try:
+                score, resolved = self._resolve_by_search(name, year, kind)
+            finally:
+                self._local.reading = None
+            if resolved is None:
+                continue
+            resolved["reading"] = label
+            results.append((score, resolved))
+        if not results:
+            return None
+        best = results[0]
+        for other in results[1:]:
+            if _readings_tie(best, other, kind):
+                best = (best[0], self._tie_readings(best, other, kind))
+                continue
+            best = _prefer(best, other, kind)
+        return best[1]
+
+    def _tie_readings(self, best, other, kind):
+        score = best[0]
+        entries = []
+        for _score, resolved in (best, other):
+            entries.append({
+                "qid": resolved.get("qid"),
+                "label": resolved.get("title") or resolved.get("show"),
+                "year": resolved.get("year") or resolved.get("show_year"),
+                "ids": {f: resolved.get(f) for f, _p in ID_PROPERTIES[kind]},
+                "reading": resolved.get("reading"),
+            })
+        for entry in entries:
+            others = ", ".join(
+                "%s (%s)" % (e["qid"], e["reading"]) for e in entries if e is not entry
+            )
+            for candidate in getattr(self._local, "scored", None) or []:
+                if candidate["id"] == entry["qid"] and candidate.get("reading") == entry["reading"]:
+                    candidate["outcome"] = "tied at %.2f with %s" % (score, others)
+        log.info(
+            "the name resolves to %d entities at score %.2f across its readings: %s",
+            len(entries), score,
+            "; ".join("%s (%s, %s)" % (e["qid"], e["year"], e["reading"]) for e in entries),
+        )
+        tied = dict(best[1])
+        tied["tied"] = entries
+        return tied
 
     #----- Wikidata search paths
     def _resolve_by_ids(self, pinned, name, year, kind):
@@ -615,7 +669,7 @@ class Provider:
             )
             best = _prefer(best, (score, resolved), kind)
             if resolved is not None and not _missing(kind, resolved) and not resolved.get("tied"):
-                return resolved
+                return score, resolved
         qids = [q for q in self.search_text(title) if q not in seen]
         if qids:
             score, resolved = self._resolve_from(
@@ -623,7 +677,7 @@ class Provider:
                 cutoff=TITLE_CUTOFF,
             )
             best = _prefer(best, (score, resolved), kind)
-        return best[1]
+        return best
 
     def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None):
         scored = []
@@ -694,6 +748,9 @@ class Provider:
     def _remember(self, candidate):
         scored = getattr(self._local, "scored", None)
         if scored is not None:
+            reading = getattr(self._local, "reading", None)
+            if reading and not candidate.get("reading"):
+                candidate["reading"] = reading
             scored.append(candidate)
 
     def _accept_movie_hit(self, candidate, title, year, pinned=None):
@@ -841,16 +898,21 @@ class Provider:
                 "score": round(c.get("score") or 0.0, 3),
                 "outcome": c.get("outcome") or "not evaluated",
                 "term": c.get("term"),
+                "reading": c.get("reading"),
             })
         entities = entities[:CANDIDATE_LIMIT]
         out = {"searched": searched, "wikidata": entities}
-        name = searched.get("name")
+        names = []
+        for reading in searched.get("readings") or [searched]:
+            name = reading.get("name")
+            if name and name not in names:
+                names.append(name)
         try:
             if kind == "tv":
                 out["tvdb"] = self._tvdb_candidates(entities)
-                out["tmdb"] = self._tmdb_candidates("tv", name, entities, P_TMDB_TV)
+                out["tmdb"] = self._tmdb_candidates("tv", names, entities, P_TMDB_TV)
             else:
-                out["tmdb"] = self._tmdb_candidates("movie", name, entities, P_TMDB)
+                out["tmdb"] = self._tmdb_candidates("movie", names, entities, P_TMDB)
                 out["imdb"] = [
                     {"id": e["imdb"], "name": e["label"], "year": e["year"],
                      "origin": "%s %s" % (e["qid"], P_IMDB), "note": None}
@@ -896,9 +958,9 @@ class Provider:
                     found.get("name") or e.get("label"), found.get("year"))
         return rows
 
-    def _tmdb_candidates(self, kind, name, entities, prop):
+    def _tmdb_candidates(self, kind, names, entities, prop):
         rows = {}
-        if name:
+        for name in names:
             status, body = self.client.fetch(TMDB_SEARCH % (kind, urllib.parse.quote_plus(name)))
             if status == 200:
                 for tmdb, title, date in TMDB_SEARCH_HIT.findall(body):
@@ -1071,8 +1133,10 @@ class Provider:
 
 
 #----- the trailing delimiter is a lookahead so two adjacent years both match.
-YEAR_IN_NAME = re.compile(r"[.\s(\[_-](19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
+YEAR_IN_NAME = re.compile(r"(?:^|[.\s(\[_-])(19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
 JUNK = titles.RELEASE_TOKENS
+RELEASE_YEAR = "release year"
+TITLE_WORD = "title word"
 
 
 #----- Name cleaning
@@ -1151,6 +1215,29 @@ def _page_confirms(body, names, year, what, earlier_ok=False):
 
 def _missing(kind, resolved):
     return [f for f in REQUIRED[kind] if not (resolved or {}).get(f)]
+
+
+def _readings_tie(best, other, kind):
+    if best[1] is None or other[1] is None or best[0] != other[0]:
+        return False
+    if best[1].get("tied") or other[1].get("tied"):
+        return False
+    if _missing(kind, best[1]) or _missing(kind, other[1]):
+        return False
+    return best[1].get("qid") != other[1].get("qid")
+
+
+def _searched_record(rung, readings):
+    return {
+        "rung": rung,
+        "name": readings[0][0],
+        "year": readings[0][1],
+        "readings": [{"name": n, "year": y, "label": l} for n, y, l in readings],
+    }
+
+
+def _single(name, year):
+    return [(name, year, None)]
 
 
 def _prefer(best, other, kind):
@@ -1232,39 +1319,75 @@ def _edition_of(source, origin=None):
     return None
 
 
+def _tidy(text):
+    text = re.sub(r"(?<=\s)-|-(?=\s)|^-|-$", " ", text)
+    text = re.sub(r"[(\[]\s*[)\]]", " ", text)
+    return re.sub(r"\s+", " ", text).strip(" ._-")
+
+
+def _cut_title(text):
+    text = text.replace(".", " ").replace("_", " ")
+    for m in JUNK.finditer(text):
+        head = text[: m.start()].strip(" ._-()[]")
+        if head:
+            text = text[: m.start()]
+            break
+        if re.search(r"\d", m.group(0)):
+            text = ""
+            break
+    return _tidy(text)
+
+
+def _delimited(text, m):
+    return (
+        m.start() < m.start(1)
+        and text[m.start()] in "(["
+        and text[m.end():m.end() + 1] in (")", "]")
+    )
+
+
+def _readings(text):
+    matches = list(YEAR_IN_NAME.finditer(text))
+    if not matches:
+        title = _cut_title(text)
+        return [(title, None, None)] if title else []
+    m = matches[-1]
+    year = int(m.group(1))
+    delimited = _delimited(text, m)
+    before = _cut_title(text[: m.start()])
+    release = before or _cut_title(text[m.end() + (1 if delimited else 0):])
+    if len(matches) > 1 or delimited:
+        return [(release, year, RELEASE_YEAR)] if release else []
+    word = _cut_title(text) if before else ("%s %s" % (m.group(1), release)).strip()
+    readings = []
+    if release:
+        readings.append((release, year, RELEASE_YEAR))
+    if word and word.lower() != release.lower():
+        readings.append((word, None, TITLE_WORD))
+    return readings
+
+
 def _clean_movie_name(name):
-    year = None
-    name = titles.strip_release_group(titles.strip_edition(name))
-    matches = list(YEAR_IN_NAME.finditer(name))
-    if matches:
-        m = matches[-1]
-        year = int(m.group(1))
-        name = name[: m.start()]
-    name = name.replace(".", " ").replace("_", " ")
-    name = JUNK.sub(" ", name)
-    name = re.sub(r"[-\[\(].*$", "", name)
-    return re.sub(r"\s+", " ", name).strip(), year
-
-
-def _show_year(name, parent):
-    for candidate in (name, parent):
-        found = titles.YEAR_IN_PARENS.findall(candidate or "")
-        if found:
-            return int(found[-1])
-    return None
+    text = titles.strip_release_tag(titles.strip_release_group(titles.strip_edition(name)))
+    return _readings(text)
 
 
 def _clean_show_name(name, parent):
+    parens = None
     for candidate in (name, parent):
+        found = titles.YEAR_IN_PARENS.findall(candidate or "")
+        if found:
+            parens = int(found[-1])
+            break
+    for candidate in (name, parent):
+        if not candidate:
+            continue
         cleaned = titles.strip_release_group(candidate)
-        cleaned = re.split(
-            r"(?:^|[^a-z0-9])s\d{1,2}[\s._-]*e\d{1,3}", cleaned, flags=re.I
-        )[0]
+        cleaned = titles.EPISODE_MARK.split(cleaned)[0]
         cleaned = re.split(r"(?:^|[^a-z0-9])\d{1,2}x\d{1,3}", cleaned, flags=re.I)[0]
-        cleaned = cleaned.replace(".", " ").replace("_", " ")
-        cleaned = JUNK.sub(" ", cleaned)
-        cleaned = YEAR_IN_NAME.sub(" ", cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -[](){}")
-        if cleaned:
-            return cleaned
-    return name
+        readings = _readings(cleaned)
+        if readings:
+            if parens:
+                readings = [(n, y or parens, l or RELEASE_YEAR) for n, y, l in readings]
+            return readings
+    return []
