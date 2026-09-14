@@ -13,6 +13,28 @@ TV_MIN_RUNTIME_S = 15 * 60
 
 LETTERBOX_MAX_BARS_PX = 20
 
+KEEP_LANGS = ("eng", "en", "und")
+
+PAL_HEIGHTS = (576, 288)
+PAL_RATE_TOLERANCE = 0.01
+
+LETTERBOX_CANDIDATE_ASPECTS = ((16.0 / 9.0), (4.0 / 3.0))
+ASPECT_TOLERANCE = 0.02
+
+
+class Verdict:
+    def __init__(self, ok, problems=None, warnings=None):
+        self.ok = ok
+        self.problems = list(problems or [])
+        self.warnings = list(warnings or [])
+
+    def as_dict(self):
+        return {"ok": self.ok, "problems": self.problems, "warnings": self.warnings}
+
+    def __repr__(self):
+        return "<Verdict ok=%s problems=%r>" % (self.ok, self.problems)
+
+
 #----- Extras vocabulary:  the first set flags anywhere, the second only in a trailing segment or as the folder.
 EXTRAS_WORDS = (
     "sample", "trailer", "trailers", "featurette", "featurettes", "deleted scene",

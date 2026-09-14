@@ -71,6 +71,7 @@ app/            the pipeline: one module per concern
   state.py        SQLite store, one row per title
   webui.py        JSON API and dashboard
   audit.py        the background library sweep
+  check_names.py  the third source check
   static/         the dashboard page
   data/           FileBot's release-group and media-source lists, CC0, vendored
 Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
@@ -326,9 +327,10 @@ While writing code, validate the code itself:
 ```
 python3 -m compileall -q app
 python3 -c "import app.main"
+python3 -m app.check_names
 ```
 
-That is the whole of local validation.  Neither command executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
+That is the whole of local validation.  The third reports any name a function loads that its module never defines, which the first two cannot see.  None of the commands executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
 
 ```
 docker build -t procrustes:local .
@@ -366,7 +368,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.9.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.9.1, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

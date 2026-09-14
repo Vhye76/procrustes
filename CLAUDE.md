@@ -40,6 +40,7 @@ app/
   state.py          SQLite store, one row per title, plus stage history
   webui.py          JSON API and dashboard
   audit.py          the background library sweep and its findings
+  check_names.py    the third source check, names a function loads that its module never defines
   static/           the dashboard page, vanilla JS, no framework
   data/             FileBot's release-group and media-source lists, CC0, vendored with SOURCES
 media/              the container icon, a placeholder, copied into app/static at build as the favicon
@@ -1086,7 +1087,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.9.0.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.9.1.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  Until 2026-09-12 the 'validate' job refused a version that was already a git tag, which read a tag as proof of a prior build;  the repository does not use git tags, and the workflow no longer looks at them.
 
@@ -1103,9 +1104,12 @@ While code is being written, the only validation performed is validation of the 
 ```
 python3 -m compileall -q app          every module parses
 python3 -c "import app.main"          the package imports, no circular imports
+python3 -m app.check_names            every name a function loads is defined in its module
 ```
 
-Both are properties of the source.  Neither executes a pipeline stage, touches a file or opens a socket.  The CI workflow runs exactly these two as its 'validate' job, and the image job depends on it, so a syntactically broken tree cannot produce an image.
+All three are properties of the source.  None executes a pipeline stage, touches a file or opens a socket.  The CI workflow runs exactly these three as its 'validate' job, and the image job depends on it, so a syntactically broken tree cannot produce an image.
+
+THE THIRD CHECK EXISTS BECAUSE THE FIRST TWO CANNOT SEE A MISSING CONSTANT.  Measured 2026-09-13 on 0.9.0:  an edit to 'standards.py' replaced a block by slicing between two anchors and the slice took six module definitions with it ('KEEP_LANGS', 'PAL_HEIGHTS', 'PAL_RATE_TOLERANCE', 'LETTERBOX_CANDIDATE_ASPECTS', 'ASPECT_TOLERANCE', 'Verdict').  'compileall' and the import both passed, because a name inside a function body is resolved when the function runs, and the first title to reach SCREENED failed with 'NameError'.  'app/check_names.py' is a standard-library AST pass:  for every function it collects the names visible to it, the module's bindings, its own and its enclosing functions' locals, and the builtins, and reports any name loaded that is in none of them.  Run against the broken file it names all six;  against the tree it is silent.  No third-party checker is used, per section 3.
 
 THE TEST INSTANCE IS WIPED FOR EVERY BUILD, RIGHT NOW.  'state.db' and the queues, 'import/', 'encode/', 'complete/' and '.quarantine/', are cleared before each test build is run, so title ids restart from 1, the findings table is rebuilt from empty, and everything in 'complete/' is a test artefact that is never promoted.  Section 11's poster cache incident is what an id reissue looks like to anything that assumed otherwise.  Live state is for diagnosis;  nothing in it is repaired, collected or promoted, and the only edits that persist are the ones made to the library itself on the workstation.
 

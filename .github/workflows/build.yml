@@ -19,6 +19,8 @@ jobs:
         run: python3 -m compileall -q app
       - name: The package imports
         run: python3 -c "import app.main"
+      - name: Every name a function loads is defined
+        run: python3 -m app.check_names
 #----- The version names the image and its label;  nothing checks it
       - name: The version
         id: version
