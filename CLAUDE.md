@@ -599,19 +599,21 @@ THE RELEASE TAG IS STRIPPED BEFORE THE TITLE IS MATCHED, AND THE MATCHER HAS A C
 - A containment rung between the exact rungs and difflib:  a catalogue base title that matches the probe at its start on whole words is a hit, the longest hit wins, method 'contains', score the share of probe words it covers.  Anchoring at the start is what keeps a one-word title ('Home', 'Dawn') from hitting inside a release tag, and longest-wins is what keeps 'Babel One' from a hypothetical 'Babel'.  Before it, an exact rung on the probe with release tokens removed, so 'Show.S03E02.Homefront.1080p.WEB-DL.x264-Joy' is exact rather than contained.
 - The segment title is a second probe:  'match_episode' takes 'extra', 'provider.identify' passes the container's segment title, and it is tried after the file name through the same rungs.
 
-THE RUNGS, IN ORDER, AS 'episodes._match_episode' RUNS THEM.  The probe is the text after the episode marker (or after the second ' - ' in the library form), with the '-GROUP' suffix and any trailing release-tag group removed;  every comparison is on 'titles.normalise_for_match' of both sides.
+THE RUNGS, IN ORDER, AS 'episodes._match_episode' RUNS THEM.  The probe is the text after the episode marker (or after the second ' - ' in the library form), with the '-GROUP' suffix and any trailing release-tag group removed;  every comparison is on 'titles.normalise_for_match' of both sides.  The exact rungs run twice, first on that probe and then on the probe with release tokens removed and its part marker read again, because a dotted release name carries the marker inside the junk:  'Darkness.Rising.Part.3.1080p.BluRay.x264' is part 3 only once '1080p.BluRay.x264' is gone.
 
 ```
 1  exact        the whole probe equals a catalogue title                          method exact, 1.0
 2  own part     the probe's base plus its part number equals a marked entry       method exact, 1.0
-3  base         the probe equals an entry's base, first of a marked pair          method exact, 1.0
-4  stripped     the probe minus its own marker, against 1 and 3                   method exact, 1.0
-5  tokens out   the probe with release tokens removed, against 2 and 3            method exact, 1.0
-6  containment  an entry's base starts the probe on whole words, longest wins     method contains, share of probe words
-7  difflib      closest catalogue title at or above 0.82                          method fuzzy, the ratio
+3  base         the whole probe equals an entry's base, first of a marked pair    method exact, 1.0
+4  stripped     an unmarked probe minus separators equals a title or a base       method exact, 1.0
+   (1 to 4 again on the token-stripped probe)
+5  containment  an entry's base starts the probe on whole words, longest wins     method contains, share of probe words
+6  difflib      closest catalogue title at or above 0.82, unmarked probes only    method fuzzy, the ratio
 ```
 
-The file name is tried first through all seven, then the segment title when the file name found nothing.  A miss on both falls to source numbering with the catalogue title for that number, per the rule above.  Verified 2026-09-13 on the eight Enterprise shapes plus 'Home' against 'Homefront', a dotted release name, a typo, and the numeric title:  every one matched exact, contains or fuzzy as expected, and 'Dawning of Joy' against 'Dawn' did not.
+A PROBE CARRYING A PART NUMBER THE CATALOGUE LACKS NEVER LANDS ON THE FIRST PART.  Measured 2026-09-13 on the first 0.9.1 retry:  'Transformers.Prime.S01E03.Darkness.Rising.Part.3.1080p.BluRay.x264-DEiMOS' identified as 'Darkness Rising, Part 1', S01E01, method 'contains' at 0.29, because the marker was still buried in the tokens when containment ran and the base map resolves an unmarked probe to the first part.  Now a marked probe whose '(base, part)' is absent skips rung 3, skips containment's base fallback and skips difflib, which would otherwise pair 'part 4' with 'part 1' at 0.95, and falls to numbering with the catalogue title for that number.
+
+The file name is tried first through all six, then the segment title when the file name found nothing.  A miss on both falls to source numbering with the catalogue title for that number, per the rule above.  Verified 2026-09-13 on the eight Enterprise shapes plus 'Home' against 'Homefront', a dotted release name, a typo, and the numeric title:  every one matched exact, contains or fuzzy as expected, and 'Dawning of Joy' against 'Dawn' did not.
 
 THE RELEASE VOCABULARY IS FILEBOT'S DATA, VENDORED.  'app/data/release-groups.txt' (5,460 group names plus two regex lines) and 'app/data/media-sources.txt' (seventeen source-type patterns) are byte-for-byte copies from 'github.com/filebot/data', CC0-1.0, commit and date in 'app/data/SOURCES', refreshed by hand and never fetched at runtime.  'titles' loads them once at import:  every line compiles under Python's 're' except the WEB-DL source row, whose variable-width look-behind is replaced by a fixed-width equivalent in code ('titles.WEB_DL_FIXED'), and a row that fails to compile is logged and skipped rather than failing the import.  'RELEASE_TOKENS' is the hand list joined with the source patterns and replaces the old 'provider.JUNK';  'RELEASE_GROUPS' is consulted only by position, a '-GROUP' suffix or a token inside a trailing bracket group, because the corpus holds ordinary words ('JOY', 'WAR', 'LIFE') that must never be removed from the middle of a title.  'extended', 'uncut' and 'remastered' left the token list, since section 10's edition vocabulary claims them.
 
@@ -1087,7 +1089,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.9.1.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.9.2.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  Until 2026-09-12 the 'validate' job refused a version that was already a git tag, which read a tag as proof of a prior build;  the repository does not use git tags, and the workflow no longer looks at them.
 

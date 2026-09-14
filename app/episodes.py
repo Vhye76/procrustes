@@ -207,42 +207,58 @@ def match_episode(name, catalogue, cutoff=FUZZY_CUTOFF, extra=None):
     return entry, method, score
 
 
-#----- rungs in order:  exact, the probe's own part, base, token-stripped exact, containment, then difflib.
+#----- the four exact rungs:  whole title, own part, base as first of a pair, marker-stripped.
+def _exact_rungs(text, exact, base, parts):
+    key = titles.normalise_for_match(text)
+    plain, number = parse_marker(text)
+    stripped = titles.normalise_for_match(plain)
+    if key in exact:
+        return exact[key], key, stripped, number
+    if number is not None and (stripped, number) in parts:
+        return parts[(stripped, number)], key, stripped, number
+    if key in base:
+        return base[key], key, stripped, number
+    if stripped in exact:
+        return exact[stripped], key, stripped, number
+    #----- a probe carrying a part number the catalogue lacks must not land on the first part.
+    if number is None and stripped in base:
+        return base[stripped], key, stripped, number
+    return None, key, stripped, number
+
+
+#----- rungs in order:  exact rungs on the raw probe, the same on the token-stripped probe, containment, then difflib.
 def _match_episode(name, catalogue, cutoff=FUZZY_CUTOFF, probe=None):
     exact, base, parts, keys = _index(catalogue)
     probe_title = title_from_filename(name) if probe is None else titles.strip_release_tag(probe)
-    key = titles.normalise_for_match(probe_title)
-    plain, number = parse_marker(probe_title)
-    stripped = titles.normalise_for_match(plain)
 
-    if key in exact:
-        return exact[key], "exact", 1.0
-    if number is not None and (stripped, number) in parts:
-        return parts[(stripped, number)], "exact", 1.0
-    if key in base:
-        return base[key], "exact", 1.0
-    if stripped in exact:
-        return exact[stripped], "exact", 1.0
-    if stripped in base:
-        return base[stripped], "exact", 1.0
+    entry, key, _stripped, _number = _exact_rungs(probe_title, exact, base, parts)
+    if entry is not None:
+        return entry, "exact", 1.0
 
-    cleaned = titles.normalise_for_match(titles.RELEASE_TOKENS.sub(" ", plain))
-    if cleaned and cleaned != stripped:
-        if number is not None and (cleaned, number) in parts:
-            return parts[(cleaned, number)], "exact", 1.0
-        if cleaned in base:
-            return base[cleaned], "exact", 1.0
+    #----- release tokens out, then the marker is read again:  "Darkness.Rising.Part.3.1080p.BluRay" is part 3.
+    cleaned_text = titles.RELEASE_TOKENS.sub(" ", probe_title).strip(" ._-")
+    entry, cleaned_key, cleaned_base, number = _exact_rungs(cleaned_text, exact, base, parts)
+    if entry is not None:
+        return entry, "exact", 1.0
 
-    hit, share = _contained(stripped if number is not None else key, base)
+    hit, share = _contained(cleaned_base if number is not None else cleaned_key, base)
     if hit:
-        if number is not None and (hit, number) in parts:
-            return parts[(hit, number)], "contains", share
-        return base[hit], "contains", share
+        if number is not None:
+            if (hit, number) in parts:
+                return parts[(hit, number)], "contains", share
+            log.info("contained title %r has no part %d in the catalogue", hit, number)
+        else:
+            return base[hit], "contains", share
 
-    close = difflib.get_close_matches(key, keys, n=3, cutoff=cutoff)
-    log.debug("fuzzy candidates for %r: %s", key, close)
+    #----- difflib would pair "part 4" with "part 1" at 0.95;  a marked probe with no part is numbering's to settle.
+    if number is not None:
+        log.info("no catalogue entry for part %d of %r, leaving it to numbering", number, cleaned_base)
+        return None, "none", 0.0
+
+    close = difflib.get_close_matches(cleaned_key, keys, n=3, cutoff=cutoff)
+    log.debug("fuzzy candidates for %r: %s", cleaned_key, close)
     if close:
-        return exact[close[0]], "fuzzy", difflib.SequenceMatcher(None, key, close[0]).ratio()
+        return exact[close[0]], "fuzzy", difflib.SequenceMatcher(None, cleaned_key, close[0]).ratio()
 
     return None, "none", 0.0
 
