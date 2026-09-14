@@ -40,6 +40,8 @@ def read_sidecar(directory):
             pass
     if "crop" in values:
         out["crop"] = "crop=%s" % values["crop"]
+    if "fields" in values and values["fields"].lower() in media.FIELD_MODES:
+        out["fields"] = values["fields"].lower()
     return out
 
 
@@ -529,7 +531,16 @@ class Orchestrator:
                 raise RetryLater("provider lookup failed: %s" % exc)
             problem = "provider ID could not be resolved and must never be guessed"
             self._fresh_lookups.discard(title_id)
-            if identity and identity.get("missing"):
+            if identity and identity.get("tied"):
+                names = ", ".join(
+                    "%s (%s)" % (t.get("qid"), t.get("year") or "no date") for t in identity["tied"]
+                )
+                problem = (
+                    "the name resolves to %d entities with equal score, %s; the file name carries "
+                    "no year to separate them; an ID is never guessed" % (len(identity["tied"]), names)
+                )
+                identity = None
+            elif identity and identity.get("missing"):
                 anchor = "tmdb %s" % identity.get("tmdb") if kind == "movie" else "tvdb %s" % identity.get("tvdb")
                 problem = (
                     "resolved %s (%s) but %s could not be determined from the Wikidata entity; "
@@ -744,11 +755,33 @@ class Orchestrator:
         return None
 
     @staticmethod
-    def _first_mkv(folder):
-        for entry in sorted(os.listdir(folder)):
-            if entry.lower().endswith(".mkv"):
-                return os.path.join(folder, entry)
-        return None
+    #----- the same cut or nothing:  an edition matches its long-form name, a plain arrival the plain one.
+    def _movie_file(folder, identity):
+        edition = identity.get("edition")
+        wanted = None
+        try:
+            wanted = titles.movie_filename(
+                identity["title"], identity.get("year"), edition=edition,
+                folder=os.path.basename(folder) if edition else None,
+            )
+        except titles.TitleError:
+            wanted = None
+        entries = sorted(e for e in os.listdir(folder) if e.lower().endswith(".mkv"))
+        if wanted and wanted in entries:
+            return os.path.join(folder, wanted), None
+        folder_name = os.path.basename(folder)
+        plain = [e for e in entries if not e.startswith(folder_name + " - ")]
+        editions = [e for e in entries if e.startswith(folder_name + " - ")]
+        if edition:
+            if entries:
+                return None, "holds no '%s' edition, only %s; a different cut is not compared" % (
+                    edition, ", ".join(entries))
+            return None, "holds no mkv"
+        if plain:
+            return os.path.join(folder, plain[0]), None
+        if editions:
+            return None, "holds only editions (%s); a different cut is not compared" % ", ".join(editions)
+        return None, "holds no mkv"
 
     def _find_movie_incumbent(self, root, identity):
         prefix = "%s (%s)" % (titles.to_filename(identity["title"]), identity.get("year"))
@@ -761,16 +794,17 @@ class Orchestrator:
             scanned += 1
             matched = self._id_match(identity, name, ("tmdb", "imdb"))
             if matched:
-                found = self._first_mkv(folder)
+                found, why = self._movie_file(folder, identity)
                 if found:
                     return found, "matched on %s" % matched
-                return None, "folder matched on %s but holds no mkv" % matched
+                return None, "folder matched on %s but %s" % (matched, why)
             if by_name is None and name.startswith(prefix):
                 by_name = folder
         if by_name is not None:
-            found = self._first_mkv(by_name)
+            found, why = self._movie_file(by_name, identity)
             if found:
                 return found, "matched on folder name, no provider id match"
+            return None, "folder matched on name but %s" % why
         return None, "scanned %d library folder(s), none matched" % scanned
 
     def _find_tv_incumbent(self, root, identity):
@@ -827,6 +861,16 @@ class Orchestrator:
                 "title %s grain probe %s: %s",
                 title_id, os.path.basename(source), result["reason"],
             )
+        if not decision.is_passthrough:
+            if "fields" in override:
+                decision.fields = override["fields"]
+                log.info("title %s field structure %s from the sidecar", title_id, decision.fields)
+            else:
+                fields = self._fields(title_id, source, video, container)
+                decision.fields = fields["fields"]
+                log.info(
+                    "title %s field probe %s: %s", title_id, fields["fields"], fields.get("reason"),
+                )
         log.info("title %s router %s", title_id, encode.describe(decision))
         for note in decision.notes:
             log.info("title %s router note: %s", title_id, note)
@@ -850,6 +894,12 @@ class Orchestrator:
                 )
             finally:
                 shutil.rmtree(scratch, ignore_errors=True)
+
+    def _fields(self, title_id, source, video, container):
+        if self.cfg.dry_run:
+            return {"fields": media.FIELDS_PROGRESSIVE, "reason": "dry run"}
+        with self._grain_lock:
+            return media.field_probe(source, video, container=container)
 
     #----- Staging, remux and tagging
     def _stage(self, title_id, source, job_id, container):
@@ -990,6 +1040,7 @@ class Orchestrator:
             encoder=stored.get("encoder"),
             grain=stored.get("grain"),
             notes=stored.get("notes"),
+            fields=stored.get("fields"),
         )
 
         if decision.is_passthrough:
@@ -1003,7 +1054,7 @@ class Orchestrator:
             crop = override["crop"]
         elif not self.cfg.dry_run:
             detected = media.detect_crop(work, video, container=container)
-            if detected:
+            if detected and detected.get("filter"):
                 crop = detected["filter"]
                 log.info(
                     "title %s cropping %s: %d px of bars",
@@ -1025,6 +1076,8 @@ class Orchestrator:
 
         started = time.time()
         total_frames = probemod.total_frames(video, container)
+        if total_frames and decision.fields == media.FIELDS_TELECINE:
+            total_frames = int(total_frames * encode.TELECINE_FRAME_RATIO)
         self.store.advance(
             title_id, state.ENCODING,
             "%s on %s" % (decision.encoder, decision.device),
@@ -1084,12 +1137,24 @@ class Orchestrator:
         notes.append("duration %.1f min" % ((out_duration or 0) / 60))
         packets_in = media.packet_count(source)
         packets_out = media.packet_count(work)
-        if packets_in and packets_out and packets_in != packets_out:
+        decision = (self.store.get(title_id) or {}).get("decision") or {}
+        #----- a telecine encode legitimately drops one frame in five;  the count is checked against that.
+        telecine = decision.get("fields") == media.FIELDS_TELECINE and decision.get("action") != encode.PASSTHROUGH
+        if packets_in and packets_out and telecine:
+            expected = int(packets_in * encode.TELECINE_FRAME_RATIO)
+            if abs(packets_out - expected) > max(1, int(expected * 0.01)):
+                problems.append(
+                    "video packet count %d out against %d expected after telecine removal of %d in"
+                    % (packets_out, expected, packets_in)
+                )
+            else:
+                notes.append("telecine removed %d of %d frames, %d out" % (packets_in - packets_out, packets_in, packets_out))
+        elif packets_in and packets_out and packets_in != packets_out:
             problems.append(
                 "video packet count changed, %d in and %d out, streams may be incomplete"
                 % (packets_in, packets_out)
             )
-        if packets_in and packets_out:
+        elif packets_in and packets_out:
             notes.append("%d video packets preserved" % packets_out)
         else:
             notes.append("packet count unavailable, stream fidelity not checked")
@@ -1124,7 +1189,9 @@ class Orchestrator:
             folder = titles.movie_folder(
                 identity["title"], identity["year"], identity["tmdb"], identity["imdb"]
             )
-            filename = titles.movie_filename(identity["title"], identity["year"])
+            filename = titles.movie_filename(
+                identity["title"], identity["year"], edition=identity.get("edition"), folder=folder
+            )
             outdir = os.path.join(self.layout.completed, folder)
         else:
             folder = titles.show_folder(

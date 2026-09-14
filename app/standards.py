@@ -2,7 +2,7 @@ import logging
 import os
 import re
 
-from . import probe as probemod
+from . import episodes, probe as probemod
 
 log = logging.getLogger("standards")
 
@@ -13,40 +13,50 @@ TV_MIN_RUNTIME_S = 15 * 60
 
 LETTERBOX_MAX_BARS_PX = 20
 
-SAMPLE_PATTERNS = (
-    re.compile(r"(?:^|[^a-z])sample(?:$|[^a-z])", re.I),
-    re.compile(r"\btrailer\b", re.I),
-    re.compile(r"\bfeaturette\b", re.I),
-    re.compile(r"\bbehind[. _-]the[. _-]scenes\b", re.I),
-    re.compile(r"\bdeleted[. _-]scenes?\b", re.I),
+#----- Extras vocabulary:  the first set flags anywhere, the second only in a trailing segment or as the folder.
+EXTRAS_WORDS = (
+    "sample", "trailer", "trailers", "featurette", "featurettes", "deleted scene",
+    "deleted scenes", "behind the scenes", "making of", "gag reel", "bloopers", "outtakes",
+)
+EXTRAS_SEGMENT_WORDS = (
+    "proof", "bonus", "extra", "extras", "interview", "interviews", "short", "shorts",
 )
 
-KEEP_LANGS = ("eng", "en", "und")
 
-PAL_HEIGHTS = (576, 288)
-PAL_RATE_TOLERANCE = 0.01
-
-LETTERBOX_CANDIDATE_ASPECTS = ((16.0 / 9.0), (4.0 / 3.0))
-ASPECT_TOLERANCE = 0.02
+def _phrase(word):
+    return r"[\s._-]+".join(re.escape(w) for w in word.split())
 
 
-class Verdict:
-    def __init__(self, ok, problems=None, warnings=None):
-        self.ok = ok
-        self.problems = list(problems or [])
-        self.warnings = list(warnings or [])
-
-    def as_dict(self):
-        return {"ok": self.ok, "problems": self.problems, "warnings": self.warnings}
-
-    def __repr__(self):
-        return "<Verdict ok=%s problems=%r>" % (self.ok, self.problems)
+EXTRAS_PATTERNS = tuple(
+    (re.compile(r"(?:^|[^a-z0-9])%s(?:$|[^a-z0-9])" % _phrase(word), re.I), word)
+    for word in EXTRAS_WORDS
+)
+EXTRAS_SEGMENT_PATTERNS = tuple(
+    (re.compile(r"(?:^|\)\s*|[\s._]-[\s._]|\s-\s)%s\s*$" % _phrase(word), re.I), word)
+    for word in EXTRAS_SEGMENT_WORDS
+)
+EXTRAS_FOLDERS = tuple(
+    (re.compile(r"^%s$" % _phrase(word), re.I), word)
+    for word in EXTRAS_WORDS + EXTRAS_SEGMENT_WORDS
+)
 
 
 #----- Individual checks
-def looks_like_sample(path):
-    name = os.path.basename(str(path))
-    return any(p.search(name) for p in SAMPLE_PATTERNS)
+def looks_like_extra(path):
+    name = os.path.splitext(os.path.basename(str(path)))[0]
+    for pattern, word in EXTRAS_PATTERNS:
+        if pattern.search(name):
+            return "file name carries '%s'" % word
+    #----- the text after an episode marker is the title, so "S01E02 - Proof" is an episode.
+    if episodes.parse_filename(name) is None:
+        for pattern, word in EXTRAS_SEGMENT_PATTERNS:
+            if pattern.search(name):
+                return "file name ends in the segment '%s'" % word
+    parent = os.path.basename(os.path.dirname(str(path)))
+    for pattern, word in EXTRAS_FOLDERS:
+        if pattern.match(parent.strip()):
+            return "sits in a '%s' folder" % parent.strip()
+    return None
 
 
 def is_pal_speedup_suspect(video):
@@ -83,8 +93,9 @@ def screen(container, kind, path=None, crop=None):
     video = container.get("video") or {}
     audio = container.get("audio") or []
 
-    if path and looks_like_sample(path):
-        problems.append("looks like a sample or extras file: %s" % os.path.basename(str(path)))
+    extra = looks_like_extra(path) if path else None
+    if extra:
+        problems.append("looks like a sample or extras file, %s: %s" % (extra, os.path.basename(str(path))))
 
     if not audio:
         problems.append("no audio streams")

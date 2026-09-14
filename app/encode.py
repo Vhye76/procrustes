@@ -41,14 +41,24 @@ DEVICE_BY_ENCODER = {LIBX265: CPU, LIBSVTAV1: CPU, AV1_QSV: GPU}
 
 
 #----- The routing decision
+#----- Field chains;  telecine removes one frame in five, interlaced keeps the count.
+FIELD_FILTERS = {
+    "telecine": "fieldmatch,yadif=deint=interlaced,decimate",
+    "interlaced": "bwdif=mode=send_frame",
+    "progressive": None,
+}
+TELECINE_FRAME_RATIO = 4.0 / 5.0
+
+
 class Decision:
-    def __init__(self, action, gate, reason, encoder=None, grain=None, notes=None):
+    def __init__(self, action, gate, reason, encoder=None, grain=None, notes=None, fields=None):
         self.action = action
         self.gate = gate
         self.reason = reason
         self.encoder = encoder
         self.device = DEVICE_BY_ENCODER.get(encoder)
         self.grain = grain
+        self.fields = fields
         self.notes = list(notes or [])
 
     @property
@@ -63,6 +73,7 @@ class Decision:
             "encoder": self.encoder,
             "device": self.device,
             "grain": self.grain,
+            "fields": self.fields,
             "notes": self.notes,
         }
 
@@ -292,6 +303,10 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     args += _map_args()
 
     filters = []
+    #----- fields are matched on the full stored frame, so the field chain precedes the crop.
+    field_filter = FIELD_FILTERS.get(decision.fields or "progressive")
+    if field_filter:
+        filters.append(field_filter)
     if crop:
         filters.append(crop)
     if decision.encoder == AV1_QSV:

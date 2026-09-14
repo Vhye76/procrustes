@@ -72,6 +72,7 @@ app/            the pipeline: one module per concern
   webui.py        JSON API and dashboard
   audit.py        the background library sweep
   static/         the dashboard page
+  data/           FileBot's release-group and media-source lists, CC0, vendored
 Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
 TESTPLAN.md     container validation cases, executed by hand
@@ -121,6 +122,8 @@ The longer form that repeats the whole folder name inside the filename is for ed
 ```
 Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644]/Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644] - Assembly Cut.mkv
 ```
+
+The edition is read from the arrival's name (Director's Cut, Extended, Theatrical, Unrated, IMAX, Criterion and the rest), only after the year or at the end of the name, and never inferred from the file.  An edition is compared only against the same edition in the library;  a folder holding a different cut counts as no incumbent.
 
 The transform runs one way.  A filename can always be derived from a tag;  a tag can never be derived from a filename, because the information needed has already been discarded.  Where a tag and a filename differ by unsafe characters alone, that is expected and is not a defect.
 
@@ -210,7 +213,10 @@ film=1                  force the grain path, film=0 forces the clean path
 codec=av1               per-title output codec
 crf=17                  per-title quality target
 crop=1920:804:0:138     skip cropdetect and use this
+fields=telecine         skip the field probe;  progressive, interlaced or telecine
 ```
+
+Every encoder-bound title is also classified as progressive, interlaced or telecined from an 'idet' pass over the same sample, and the command carries 'bwdif' or an inverse-telecine chain ahead of the crop when it needs one.  Cropdetect takes six samples across the file, measures the black level, rejects implausible samples and records a second aspect ratio when a film changes shape.
 
 ## Comparison gates
 
@@ -248,13 +254,15 @@ HDR is compared on presence at gate 1, and on declaration in the table.  A Matro
 
 A provider ID is never guessed.  Resolution goes through Wikidata and then verifies against the TMDB or TVDB page before an ID is written anywhere, because Wikidata's provider IDs can be flat wrong.  Movies use tmdbid and imdbid;  television uses tvdbid and tmdbid, since TVDB governs episode titles and numbering.  Requests are spaced about three seconds apart, and every answer is cached on disk under 'config/cache', which is consulted before any request is made.
 
+A name with no year that resolves to two verified entities at the same score ('Space Battleship Yamato', 1977 and 2010) holds with both listed rather than taking the first;  a year in the name settles it.  Every probed file also records its OpenSubtitles hash, for a lookup by hand;  the pipeline does not query the service.
+
 A file that has already been through this pipeline, or that came back out of a library, states what it is:  embedded tags, then ids in the filename, then ids in the folder, then ids in the library folder a repair copy came from, then the segment title are all tried before the cleaned filename is.  Television runs the same ladder in the same shape, with the COLLECTION block, the show folder and the origin folder ahead of the show name.  A fresh disc rip has none of those, so for that case the filename is all there is.
 
 An id found on any of those rungs is a pointer, not an identity.  It is looked up on Wikidata, and the entity supplies the title, the year and the other id;  the TMDB or TVDB page is then checked by its own title and year against the entity's label and aliases.  Nothing on disk becomes a tag:  a folder written before the naming rules changed, or a tag block written by an earlier tool in filename form, is corrected to the provider's title on the way through.  An identity that is still missing a field holds with the field named rather than publishing a folder with 'None' in it.
 
 A filename has already lost the provider's punctuation, and Wikidata's prefix search stops at a colon, so a search is matched under the naming rules rather than by string:  every candidate's label is put through the same transform the filename went through, a full-text search covers the entities the prefix search cannot reach, and a candidate whose release year is more than a year from the name's is skipped.  'Star Wars Episode IV A New Hope' and 'Futurama Bender's Game' both resolve from their filename form.
 
-Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  A fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, taking the episode title from the provider's entry for that number rather than from the file name, and a title that cannot be identified at all holds.
+Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  The release tag and group suffix are stripped first ('Terra Nova (1080p x265 10bit Joy)' matches 'Terra Nova'), a bare 'Part 2' lands on its own half of a two-parter, a catalogue title that starts the file's title matches by containment, the segment title is tried when the file name fails, and a fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, taking the episode title from the provider's entry for that number rather than from the file name, and a title that cannot be identified at all holds.
 
 Every answer is cached without expiry, an empty search result included, so a title held for an unresolvable name would hold again identically on any requeue.  Retry on a held title therefore asks the providers again, bypassing the cache for that one identification;  Force through does not, and carries the title on without an ID.
 
@@ -358,7 +366,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.8.2, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.9.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

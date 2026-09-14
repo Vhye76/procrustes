@@ -1,0 +1,1 @@
+release-groups.txt and media-sources.txt are copied from https://github.com/filebot/data at commit e2829f8000f686e9e1944ab6d36be832f402f2f0 (2026-09-02), licence CC0-1.0 (LICENSE.filebot-data).  Refreshed by hand.  The files are unedited.  The WEB-DL row of media-sources.txt uses a variable-width look-behind that Python re rejects and is replaced at load time in app/titles.py.

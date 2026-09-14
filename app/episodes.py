@@ -8,12 +8,13 @@ from . import titles
 log = logging.getLogger("episodes")
 
 FUZZY_CUTOFF = 0.82
+MAX_RANGE_SPAN = 3
 
 RANGE_PATTERNS = (
     re.compile(r"(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})[\s._-]*e(\d{1,3})", re.I),
     #----- a bare second number counts only when it sits against the separator;  " - 99" is a title.
-    re.compile(r"(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:\s*[-+&]\s*e|[-+&])(\d{1,3})", re.I),
-    re.compile(r"(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})\s*[-+&]\s*(?:\d{1,2}x)?(\d{1,3})", re.I),
+    re.compile(r"(?:^|[^a-z0-9])s(\d{1,2})[\s._-]*e(\d{1,3})(?:\s*[-~+&]\s*e|[-~+&]|\s*(?:to|and)\s*e?)(\d{1,3})", re.I),
+    re.compile(r"(?:^|[^a-z0-9])(\d{1,2})x(\d{1,3})\s*(?:[-~+&]|to|and)\s*(?:\d{1,2}x)?(\d{1,3})", re.I),
 )
 
 SINGLE_PATTERNS = (
@@ -22,10 +23,17 @@ SINGLE_PATTERNS = (
     re.compile(r"(?:^|[^a-z0-9])season[\s._-]*(\d{1,2})[\s._-]*episode[\s._-]*(\d{1,3})", re.I),
 )
 
+#----- "3 of 6" and "Part 3 of 6" name an episode only under a season folder.
+OF_PATTERN = re.compile(r"(?:^|[^a-z0-9])(?:part[\s._-]*)?(\d{1,3})[\s._-]*of[\s._-]*(\d{1,3})(?:[^0-9]|$)", re.I)
+SEASON_FOLDER = re.compile(r"^(?:season|series|staffel|saison|temporada)[\s._-]*(\d{1,2})$", re.I)
+
 PART_MARKERS = (
     re.compile(r"\s*\(\s*part\s+(one|two|three|four|five|six)\s*\)\s*$", re.I),
     re.compile(r"\s*\(\s*part\s+(\d+)\s*\)\s*$", re.I),
     re.compile(r"\s*\(\s*(\d+)\s*\)\s*$", re.I),
+    #----- the bare forms, "Part 2" and ", Part Two", which release names carry without parentheses.
+    re.compile(r"\s*[-,:]?\s*(?:part|pt)[\s._]+(one|two|three|four|five|six)\s*$", re.I),
+    re.compile(r"\s*[-,:]?\s*(?:part|pt)[\s._]+(\d+)\s*$", re.I),
 )
 
 WORD_NUMBERS = {
@@ -42,6 +50,8 @@ def classify(path):
     for candidate in (name, parent):
         if parse_filename(candidate) is not None:
             return "tv"
+    if parse_path(path) is not None:
+        return "tv"
     return "movie"
 
 
@@ -52,6 +62,13 @@ def parse_filename(name, default_season=None):
         if m:
             season, first, last = (int(g) for g in m.groups())
             if last >= first:
+                #----- a range wider than a two-parter is a mislabel, not a file holding a season.
+                if last - first + 1 > MAX_RANGE_SPAN:
+                    log.warning(
+                        "range E%02d-E%02d in %s spans %d episodes, more than %d, reading it as E%02d alone",
+                        first, last, text, last - first + 1, MAX_RANGE_SPAN, first,
+                    )
+                    return {"season": season, "first": first, "last": first}
                 return {"season": season, "first": first, "last": last}
     for pattern in SINGLE_PATTERNS:
         m = pattern.search(text)
@@ -63,7 +80,26 @@ def parse_filename(name, default_season=None):
         if m:
             episode = int(m.group(1))
             return {"season": default_season, "first": episode, "last": episode}
+        m = OF_PATTERN.search(text)
+        if m:
+            episode = int(m.group(1))
+            return {"season": default_season, "first": episode, "last": episode}
+        m = re.match(r"\s*(\d{1,3})(?=[\s._-]|$)", text)
+        if m:
+            episode = int(m.group(1))
+            return {"season": default_season, "first": episode, "last": episode}
     return None
+
+
+def season_from_folder(path):
+    parent = os.path.basename(os.path.dirname(str(path)))
+    m = SEASON_FOLDER.match(parent.strip())
+    return int(m.group(1)) if m else None
+
+
+def parse_path(path):
+    name = os.path.basename(str(path))
+    return parse_filename(name, default_season=season_from_folder(path))
 
 
 def parse_marker(title):
@@ -91,15 +127,17 @@ def to_part_suffix(title):
 
 def title_from_filename(name):
     stem = os.path.splitext(os.path.basename(str(name)))[0]
+    stem = titles.strip_release_group(stem)
     parts = stem.split(" - ")
     if len(parts) >= 3:
-        return " - ".join(parts[2:]).strip()
+        return titles.strip_release_tag(" - ".join(parts[2:]).strip())
     end = _marker_end(stem)
     if end is not None:
         rest = re.sub(r"^[\s._-]+", "", stem[end:]).strip()
+        rest = titles.strip_release_tag(rest)
         if rest:
             return rest
-    return stem
+    return titles.strip_release_tag(stem)
 
 
 def _marker_end(text):
@@ -114,16 +152,34 @@ def _marker_end(text):
 def _index(catalogue):
     exact = {}
     base = {}
+    parts = {}
     keys = []
     for entry in catalogue:
         key = titles.normalise_for_match(entry["title"])
         exact.setdefault(key, entry)
         keys.append(key)
-        stripped = titles.normalise_for_match(parse_marker(entry["title"])[0])
+        plain, number = parse_marker(entry["title"])
+        stripped = titles.normalise_for_match(plain)
         current = base.get(stripped)
         if current is None or _order(entry) < _order(current):
             base[stripped] = entry
-    return exact, base, keys
+        if number is not None:
+            parts.setdefault((stripped, number), entry)
+    return exact, base, parts, keys
+
+
+#----- anchored at the start on whole words, longest hit wins;  a tag cannot supply a hit and 'Babel' cannot claim 'Babel One'.
+def _contained(key, base):
+    words = key.split()
+    hits = []
+    for candidate in base:
+        cwords = candidate.split()
+        if cwords and words[: len(cwords)] == cwords:
+            hits.append(candidate)
+    if not hits:
+        return None, 0.0
+    best = max(hits, key=len)
+    return best, len(best.split()) / float(len(words))
 
 
 #----- ordering resolves an unmarked title to the first episode of a marked pair.
@@ -131,10 +187,19 @@ def _order(entry):
     return (entry["season"], entry["episode"])
 
 
-def match_episode(name, catalogue, cutoff=FUZZY_CUTOFF):
+def match_episode(name, catalogue, cutoff=FUZZY_CUTOFF, extra=None):
     entry, method, score = _match_episode(name, catalogue, cutoff)
+    if entry is None and extra:
+        entry, method, score = _match_episode(extra, catalogue, cutoff, probe=str(extra))
+        if entry is not None:
+            log.info("episode matched on the segment title %r rather than the file name", extra)
     if method == "fuzzy":
         log.info("episode matched by fuzzy title on %s at %.2f", os.path.basename(str(name)), score)
+    elif method == "contains":
+        log.info(
+            "episode matched by contained title on %s, %r at %.2f",
+            os.path.basename(str(name)), entry["title"], score,
+        )
     elif method == "none":
         log.info("no title match for %s", os.path.basename(str(name)))
     else:
@@ -142,20 +207,37 @@ def match_episode(name, catalogue, cutoff=FUZZY_CUTOFF):
     return entry, method, score
 
 
-def _match_episode(name, catalogue, cutoff=FUZZY_CUTOFF):
-    exact, base, keys = _index(catalogue)
-    probe_title = title_from_filename(name)
+#----- rungs in order:  exact, the probe's own part, base, token-stripped exact, containment, then difflib.
+def _match_episode(name, catalogue, cutoff=FUZZY_CUTOFF, probe=None):
+    exact, base, parts, keys = _index(catalogue)
+    probe_title = title_from_filename(name) if probe is None else titles.strip_release_tag(probe)
     key = titles.normalise_for_match(probe_title)
-    stripped = titles.normalise_for_match(parse_marker(probe_title)[0])
+    plain, number = parse_marker(probe_title)
+    stripped = titles.normalise_for_match(plain)
 
     if key in exact:
         return exact[key], "exact", 1.0
+    if number is not None and (stripped, number) in parts:
+        return parts[(stripped, number)], "exact", 1.0
     if key in base:
         return base[key], "exact", 1.0
     if stripped in exact:
         return exact[stripped], "exact", 1.0
     if stripped in base:
         return base[stripped], "exact", 1.0
+
+    cleaned = titles.normalise_for_match(titles.RELEASE_TOKENS.sub(" ", plain))
+    if cleaned and cleaned != stripped:
+        if number is not None and (cleaned, number) in parts:
+            return parts[(cleaned, number)], "exact", 1.0
+        if cleaned in base:
+            return base[cleaned], "exact", 1.0
+
+    hit, share = _contained(stripped if number is not None else key, base)
+    if hit:
+        if number is not None and (hit, number) in parts:
+            return parts[(hit, number)], "contains", share
+        return base[hit], "contains", share
 
     close = difflib.get_close_matches(key, keys, n=3, cutoff=cutoff)
     log.debug("fuzzy candidates for %r: %s", key, close)

@@ -207,6 +207,7 @@ def probe(path):
         "format_name": fmt.get("format_name"),
         "segment_title": ((fmt.get("tags") or {}).get("title") or "").strip() or None,
         "size_bytes": int(fmt.get("size") or 0) or _size_on_disk(path),
+        "oshash": opensubtitles_hash(path),
         "audio_channels_max": max([a["channels"] for a in audio], default=0),
         "audio_default_count": sum(1 for a in audio if a["default"]),
         "subtitle_default_count": sum(
@@ -256,6 +257,30 @@ def _matroska_content_light(path):
     return None
 
 
+#----- OpenSubtitles hash:  size plus the first and last 64 KiB as little-endian words, modulo 2^64.
+OSHASH_CHUNK = 65536
+
+
+def opensubtitles_hash(path):
+    try:
+        size = os.path.getsize(path)
+        total = size
+        with open(path, "rb") as fh:
+            head = fh.read(OSHASH_CHUNK)
+            if size > OSHASH_CHUNK:
+                fh.seek(max(0, size - OSHASH_CHUNK))
+            else:
+                fh.seek(0)
+            tail = fh.read(OSHASH_CHUNK)
+    except OSError as exc:
+        log.debug("opensubtitles hash unavailable for %s: %s", path, exc)
+        return None
+    for chunk in (head, tail):
+        for offset in range(0, len(chunk) - len(chunk) % 8, 8):
+            total = (total + int.from_bytes(chunk[offset:offset + 8], "little")) & 0xFFFFFFFFFFFFFFFF
+    return "%016x" % total
+
+
 def _size_on_disk(path):
     try:
         return os.path.getsize(path)
@@ -285,6 +310,7 @@ def _video_summary(s):
         "pix_fmt": pix_fmt,
         "bit_depth": depth,
         "cropdetect_limit": cropdetect_limit(depth),
+        "field_order": s.get("field_order"),
         "frame_rate": _ratio(s.get("r_frame_rate"), 0.0),
         "avg_frame_rate": _ratio(s.get("avg_frame_rate"), 0.0),
         "frame_count": _frame_count(s),

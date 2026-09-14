@@ -423,6 +423,7 @@ async function showDetail(id) {
       ${t.stage === "FAILED" ? `<div class="row">Force cannot apply: no output was produced, so there is nothing to carry forward.  Retry runs it again.</div>` : ""}
       <div class="row">${esc(t.source_path)}</div>
       ${t.output_path ? `<div class="row">${esc(t.output_path)}</div>` : ""}
+      ${(t.probe && t.probe.oshash) ? `<div class="row">oshash ${esc(t.probe.oshash)}</div>` : ""}
     </div>`;
 
   const hist = (t.history || []).map(e =>

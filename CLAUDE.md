@@ -41,6 +41,7 @@ app/
   webui.py          JSON API and dashboard
   audit.py          the background library sweep and its findings
   static/           the dashboard page, vanilla JS, no framework
+  data/             FileBot's release-group and media-source lists, CC0, vendored with SOURCES
 media/              the container icon, a placeholder, copied into app/static at build as the favicon
 Dockerfile          alpine:3.24 plus ffmpeg, mkvtoolnix, Intel media stack
 entrypoint.sh       drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
@@ -241,6 +242,8 @@ THE HEIGHT FLOOR IS 800, NOT 1080, AND THE WIDTH FLOOR IS WHAT REJECTS SD.  A 2.
 
 The 40 minute movie floor exists because a 10 minute bonus featurette once qualified as a disc's main feature and produced two wrong rips.  The floor is the guard, and section 26 records the ARM setting that was the actual cause.
 
+THE EXTRAS CHECK IS A VOCABULARY IN TWO STRENGTHS, KEYED ON POSITION.  'standards.EXTRAS_WORDS' (sample, trailer, featurette, deleted scenes, behind the scenes, making of, gag reel, bloopers, outtakes) flag anywhere in the file name as whole tokens, because none of them is a plausible title.  'EXTRAS_SEGMENT_WORDS' (proof, bonus, extra, extras, interview, short) are ordinary words, so they flag only as a trailing segment after the year or a hyphen ('Movie (2001) - Extras'), as the whole stem, or as the parent folder's name ('Extras/', 'Featurettes/');  an episode's title portion after the marker is exempt, so 'S01E02 - Proof' is an episode.  Re-implemented 2026-09-13 from the 'other' vocabulary in guessit's release grammar;  the reason names the token or folder that fired.
+
 Failures go to 'hold/' with a written reason, never silently to quarantine.  The UI carries a per-title override that forces a title through anyway.
 
 UNTIL 2026-09-13 A HOLD WAS A ROW STATE ONLY.  97 titles sat at HELD with 'hold/' empty and every file still in 'import/';  'layout.held' had no reader.  'orchestrator._hold' is now the one route into HELD, for gate failures and transient retries alike, and it moves the source under 'hold/' at its path relative to 'import/', so the folders the identity ladder reads travel with it, reserves the name through the same exclusive-create loop as quarantine, prunes the vacated 'import/' folders, and rewrites 'source_path' so every later decision follows the file.  A Retry or Force re-runs the title from 'hold/';  the watcher never scans it, and a title that publishes is retired from there to quarantine.  Under DRY_RUN nothing moves.
@@ -400,6 +403,8 @@ Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644]/Alien 3 (1992) [tmdbid-8077] [im
 
 Jellyfin does not support Plex's {edition-Name} syntax.  The filename must begin with the exact folder name, then ' - Label'.  Applying the long form to ordinary single-version films once produced 21 wrong filenames.  Do not generalise it.
 
+AN EDITION IS READ FROM THE ARRIVAL NAME, NEVER INFERRED FROM THE FILE.  Until 2026-09-13 nothing read one:  '_publish' always built the plain name, so an arriving 'Extended' cut would have landed beside the theatrical file under a collision suffix and been compared against the wrong cut.  'titles.EDITIONS' is the vocabulary, re-implemented from guessit's edition list plus the library's own 'Assembly Cut' and 'Final Cut':  Director's Cut, Director's Definitive Cut, Extended, Theatrical, Unrated, Uncut, Uncensored, Remastered, Restored, Criterion, IMAX, Collector, Limited, Deluxe, Ultimate, Special Edition, Alternative Cut, Fan Edit, Festival.  'titles.edition_from_name' looks only after the last year in the name, or at the end of the stem when the name carries no year, so 'The Extended Family (2010)' is a title and 'Alien 3 (1992) Assembly Cut' is an edition.  'provider.identify_movie' reads it from the file name, the parent folder and a repair copy's origin name, the cleaners drop the matched text before the search, and the identity carries 'edition'.  '_publish' then builds the long form;  the MOVIE tag block is unchanged, since the edition is a filename convention.  Runtime is never consulted:  a cut is what its name says, and a wrong name is a wrong file, not a wrong inference.
+
 ### Television
 
 ```
@@ -437,6 +442,8 @@ Searching a bare franchise name returns the franchise entity rather than the fil
 - A CANDIDATE WHOSE RELEASE YEAR IS MORE THAN A YEAR FROM THE NAME'S IS SKIPPED with a log line.  'RoboCop' returns six entities labelled 'RoboCop';  the 1987 film sat ahead of the 2014 one and the old first-verified-wins would have taken it.
 
 The TMDB page verification is unchanged and still gates every acceptance.  The scoring makes the search stricter, not looser;  section 2's prohibition on guessing is untouched.
+
+A TIE AT THE TOP SCORE IS A HOLD, NOT A PICK.  Measured 2026-09-13:  'Space Battleship Yamato.mp4', no year, no tags, no folder, resolved to the 1977 anime film because Q3693349 preceded Q1191847, the 2010 live-action film, in the Wikidata response;  both carry the exact label, both scored 1.0, both verified on their TMDB pages, and 'first that verifies' took the first.  RoboCop had the same shape and escaped only because its name carried a year.  '_resolve_from' on a name search now walks every candidate at the top score and collects each one that verifies complete;  two or more come back as an identity carrying 'tied', each candidate's outcome reads 'tied at 1.00 with Q…', and the orchestrator holds with both named ('the name resolves to 2 entities with equal score, Q3693349 (1977), Q1191847 (2010); the file name carries no year to separate them; an ID is never guessed').  The candidate lists and the operator selector then apply as for any identification hold.  A year in the name still settles it before the tie is measured, so '(2010)' resolves without a hold.  The id rungs keep first-that-verifies, since every candidate there carries the same id.  Cost:  one extra page fetch per tied candidate.
 
 A YEAR INSIDE A TITLE IS NOT THE RELEASE YEAR.  'Blade Runner 2049 (2017)' carries two year-shaped numbers and the first one is part of the name.  Take the LAST match, not the first, and do not let the pattern consume its trailing delimiter:  in 'Blade.Runner.2049.2017.1080p' the dot after 2049 is also the dot before 2017, so a consuming pattern finds only one match and last equals first.  Both forms resolve correctly with a lookahead.  Titles that are only a year, 1917 and 2012, are unaffected, because the pattern needs a leading delimiter and there is none at position zero.
 
@@ -514,6 +521,8 @@ TVDB'S 'allseasons' PAGE OMITS SEASON 0.  Measured 2026-09-11 on Murder, She Wro
 
 ### Finding the incumbent in the library
 
+A MOVIE INCUMBENT IS THE SAME CUT, OR THERE IS NONE.  'orchestrator._movie_file' picks the file inside a matched folder by the identity's edition:  the long-form name for an edition, the plain name for a plain arrival.  A folder holding only the other kind returns no incumbent with the reason written into the COMPARED detail ('holds no 'Extended' edition, only …; a different cut is not compared'), and the title is treated as new.  Two cuts differ in runtime and bitrate for reasons no gate models, so they are never compared.
+
 THE LOOKUP KEYS ON THE PROVIDER ID, NOT ON THE TITLE.  Section 10 puts '[tmdbid-N]', '[imdbid-ttN]' and '[tvdbid-N]' into every library folder name, so an ID match is exact and survives any drift between a stored folder name and what the current transform emits.  The transformed-name prefix match stays as a fallback, and the route that matched is recorded in the stage detail so a name-only match is visible rather than assumed.
 
 Measured 2026-09-08:  Return of the Jedi resolved to 'Star Wars: Episode VI – Return of the Jedi', which the section 9 transform renders as 'Star Wars Episode VI - Return of the Jedi' because an en dash becomes ' - '.  The library folder is 'Star Wars Episode VI Return of the Jedi (1983) [tmdbid-1892] [imdbid-tt0086190]', with no dash at all, so the prefix match failed and the title was compared against nothing before taking a full encode slot.  The transform was correct and the library entry predates it.  Both sides carried tmdbid 1892 and it was never consulted.
@@ -581,6 +590,33 @@ THE TITLE IS WHATEVER FOLLOWS THE EPISODE MARKER.  'episodes.title_from_filename
 Fuzzy fallback at a difflib cutoff of 0.82.  Release filenames carry typos:  one show alone had six ('No Sequitur', 'Persisitence of Vision', 'Dreadnaught', 'Darklin', 'Worse Case Scenario', 'Vis a Vis').  Fall back to source numbering only when exact and fuzzy both fail, and log every fallback.
 
 WHEN NUMBERING DECIDES, THE TITLE IS STILL THE CATALOGUE'S.  Measured 2026-09-13 on twelve Star Trek: Enterprise episodes:  the release tag in the filename defeated the title match, numbering supplied the episode, and the identity title was the filename text, 'Terra Nova (1080p x265 10bit Joy)', which a forced publish would have written into the filename, the EPISODE tag and the segment title.  'provider.identify' now reads the catalogue entry for the parsed season and episode and takes its title;  the filename text is used only when the catalogue has no entry for that number, and the warning line says which.  'match_method' stays 'fallback-numbering' and the score 0.0, so the record still shows that the number came from the file.
+
+THE RELEASE TAG IS STRIPPED BEFORE THE TITLE IS MATCHED, AND THE MATCHER HAS A CONTAINMENT RUNG.  The same Enterprise batch:  'title_from_filename' returned 'Terra Nova (1080p x265 10bit Joy)', difflib scored it 0.49 against 'Terra Nova', and 'Shockwave Part 2' carried its part marker without the parentheses 'PART_MARKERS' knew.  Four changes, all in 'episodes':
+
+- 'titles.strip_release_tag' removes a trailing '(…)' or '[…]' group whose contents carry a release token or a release group name, repeatedly;  'Storm Front (2)' is untouched because '2' is neither.  'titles.strip_release_group' removes a '-GROUP' suffix at the end of a stem.  Both run inside 'title_from_filename'.
+- 'PART_MARKERS' recognise the bare forms 'Part 2', 'Part Two', ', Part 2' and '- Part 2' at the end, and '_index' maps '(base, part)' so a marked probe lands on its own part rather than the first of the pair.  The unmarked-probe rule is unchanged.
+- A containment rung between the exact rungs and difflib:  a catalogue base title that matches the probe at its start on whole words is a hit, the longest hit wins, method 'contains', score the share of probe words it covers.  Anchoring at the start is what keeps a one-word title ('Home', 'Dawn') from hitting inside a release tag, and longest-wins is what keeps 'Babel One' from a hypothetical 'Babel'.  Before it, an exact rung on the probe with release tokens removed, so 'Show.S03E02.Homefront.1080p.WEB-DL.x264-Joy' is exact rather than contained.
+- The segment title is a second probe:  'match_episode' takes 'extra', 'provider.identify' passes the container's segment title, and it is tried after the file name through the same rungs.
+
+THE RUNGS, IN ORDER, AS 'episodes._match_episode' RUNS THEM.  The probe is the text after the episode marker (or after the second ' - ' in the library form), with the '-GROUP' suffix and any trailing release-tag group removed;  every comparison is on 'titles.normalise_for_match' of both sides.
+
+```
+1  exact        the whole probe equals a catalogue title                          method exact, 1.0
+2  own part     the probe's base plus its part number equals a marked entry       method exact, 1.0
+3  base         the probe equals an entry's base, first of a marked pair          method exact, 1.0
+4  stripped     the probe minus its own marker, against 1 and 3                   method exact, 1.0
+5  tokens out   the probe with release tokens removed, against 2 and 3            method exact, 1.0
+6  containment  an entry's base starts the probe on whole words, longest wins     method contains, share of probe words
+7  difflib      closest catalogue title at or above 0.82                          method fuzzy, the ratio
+```
+
+The file name is tried first through all seven, then the segment title when the file name found nothing.  A miss on both falls to source numbering with the catalogue title for that number, per the rule above.  Verified 2026-09-13 on the eight Enterprise shapes plus 'Home' against 'Homefront', a dotted release name, a typo, and the numeric title:  every one matched exact, contains or fuzzy as expected, and 'Dawning of Joy' against 'Dawn' did not.
+
+THE RELEASE VOCABULARY IS FILEBOT'S DATA, VENDORED.  'app/data/release-groups.txt' (5,460 group names plus two regex lines) and 'app/data/media-sources.txt' (seventeen source-type patterns) are byte-for-byte copies from 'github.com/filebot/data', CC0-1.0, commit and date in 'app/data/SOURCES', refreshed by hand and never fetched at runtime.  'titles' loads them once at import:  every line compiles under Python's 're' except the WEB-DL source row, whose variable-width look-behind is replaced by a fixed-width equivalent in code ('titles.WEB_DL_FIXED'), and a row that fails to compile is logged and skipped rather than failing the import.  'RELEASE_TOKENS' is the hand list joined with the source patterns and replaces the old 'provider.JUNK';  'RELEASE_GROUPS' is consulted only by position, a '-GROUP' suffix or a token inside a trailing bracket group, because the corpus holds ordinary words ('JOY', 'WAR', 'LIFE') that must never be removed from the middle of a title.  'extended', 'uncut' and 'remastered' left the token list, since section 10's edition vocabulary claims them.
+
+EPISODE FORMS, FROM GUESSIT'S GRAMMAR.  Range separators '~', 'to' and 'and' join '-', '+' and '&', still tight against the separator for a symbol and unambiguous as a word.  'MAX_RANGE_SPAN' is 3:  a range wider than that is read as its first episode with a warning, so 'E01-E99' cannot claim a season.  'Part 3 of 6' and '3 of 6' parse as episode 3 when the parent folder is 'Season NN' ('episodes.season_from_folder', 'parse_path'), as does a leading bare number ('Season 02/07 - Title.mkv').  Air-date names are not read:  the catalogue carries no air dates to match them against.
+
+THE OPENSUBTITLES HASH IS RECORDED, NOT LOOKED UP.  'probe.opensubtitles_hash' is the 64-bit sum of the first and last 64 KiB plus the size, standard library only, verified against an independent implementation on a large, a small and an empty file;  it lands on the container summary as 'oshash' and in the detail dialog.  The lookup that would identify a file by it needs an OpenSubtitles API key and a registered user agent, the same shape section 11 declined for posters, and is a separate decision.  The hash costs one 128 KiB read per probe and leaves every row ready for that rung.
 
 A title carrying no part marker that matches a marked pair resolves to the FIRST episode of the pair, not an arbitrary one.  Measured 2026-09-07:  'Caretaker' tied against 'Caretaker (1)' and 'Caretaker (2)' and fuzzy matching picked part 2.  Range extension then relies on this.
 
@@ -709,7 +745,7 @@ GATE ORDER IS LOAD BEARING AND BREAKS SILENTLY IF DISTURBED.  A misrouted title 
 
 Gate 1:  an already-AV1 file is never transcoded back to HEVC.
 
-Gate 2:  SD television is never re-encoded.  An SD source has little to gain and a generation of quality to lose.  SD means display height below 720, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays.  TV_ENCODE_SD re-enables it.
+Gate 2:  SD television is never re-encoded by default.  An SD source has little to gain and a generation of quality to lose;  the field handling below removes the interlace half of that loss, and the default is unchanged.  SD means display height below 720, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays.  TV_ENCODE_SD re-enables it.
 
 Gate 3:  an AV1 re-encode discards the Dolby Vision RPU, because AV1 Dolby Vision is profile 10 and effectively nothing plays it.  DV titles always take the x265 path, on every setting.  This is why the x265 path can never be retired.  GATE 3 IS UNREACHABLE FOR REAL MATERIAL, AND THAT IS FINE.  Every Dolby Vision profile is HEVC or AV1, so gate 1 returns passthrough first and no DV title reaches an encoder today.  Gate 1 is what protects the RPU;  gate 3 is the backstop for a DV source in some third codec, which does not exist.  'build_command' refuses any encoder but libx265 for a DV title regardless, so a change to gate 1 cannot silently drop an RPU.
 
@@ -776,7 +812,38 @@ film=1                  force the grain path, film=0 forces the clean path
 codec=av1               per-title output codec
 crf=17                  per-title quality target
 crop=1920:804:0:138     skip cropdetect and use this
+fields=telecine         skip the field probe;  progressive, interlaced or telecine
 ```
+
+### Field handling
+
+THE ENCODER IS NEVER HANDED FIELDS AS FRAMES.  Until 2026-09-13 the command mapped the video straight into the encoder, so a 480i source or a telecined DVD would have been encoded as progressive frames with the combing and the repeated fields baked in;  it was reachable only under 'TV_ENCODE_SD=1' or from an interlaced HD source, and there was nothing in front of the encoder for either.  Now every encoder-bound title is classified at routing and the command carries a filter when it needs one.
+
+THE PROBE IS 'idet' OVER THE GRAIN SAMPLE.  'media.field_probe' decodes the same 20 s at 45 percent the grain probe uses, video only, through 'idet', and reads the multi-frame counts and the repeated-field counts from the summary:
+
+```
+telecine     repeated fields (top + bottom) at 10 percent or more of frames
+interlaced   otherwise, TFF + BFF greater than progressive
+progressive  otherwise
+```
+
+It runs in '_route' under the grain probe's semaphore, for non-passthrough decisions only, so a passthrough title pays nothing.  'ffprobe' 'field_order' is recorded on the video summary for the record and not consulted, because DVD headers routinely say 'progressive' over telecined content.  The decision carries 'fields', stored with it and rebuilt at ENCODING.  A sidecar 'fields=' wins over the probe.
+
+Measured 2026-09-13:  Airplane! (1080p film), a Barney Miller DVD episode at 29.97 and Babylon 5 at 23.976 all classify progressive with zero interlaced frames;  a synthetic 3:2 pulldown classifies telecine at 240 repeated fields in 600;  a synthetic 60i classifies interlaced at 600 of 600.  ffmpeg's 'testsrc2' pattern misclassifies as interlaced on its moving edges and is not a valid fixture for the progressive case.
+
+THE THREE CHAINS, AHEAD OF THE CROP AND AHEAD OF THE QSV UPLOAD:
+
+```
+telecine     fieldmatch,yadif=deint=interlaced,decimate    23.976 out of 29.97, one frame in five removed
+interlaced   bwdif=mode=send_frame                         frame count kept
+progressive  nothing
+```
+
+Fields are matched on the full stored frame, so the field filter precedes any crop;  on the QSV path the software filters run before 'format=p010le,hwupload'.
+
+VERIFICATION KNOWS ABOUT THE FIFTH FRAME.  '_verify' compares video packet counts as an equality;  for a 'telecine' decision the expected count is four fifths of the source within one percent and the note reads 'telecine removed n of m frames'.  The duration check is unchanged, the running time is preserved.  'total_frames' for the progress bar is scaled the same way.
+
+ACCEPTED LIMITATION:  a mixed episode classifies on one 20 s sample.  'fieldmatch' with 'yadif=deint=interlaced' behind it handles interlaced stretches inside a telecined episode;  a sample that lands on a video-only stretch of a film-and-video show classifies it interlaced and encodes every frame deinterlaced at 29.97.  DS9 is the reference case, shot on film and finished on video with effects composited at 480i.  The x265 parameters remain unmeasured at SD.  'TV_ENCODE_SD' stays 0.
 
 ### Two traps in the command shapes
 
@@ -840,6 +907,15 @@ limit = 24 * 2^(depth - 8)      so 96 for 10-bit, 384 for 12-bit
 Read pix_fmt per file and set the limit from it.  This defect had already corrupted a full 2456 file audit, silently passing 596 high-bit-depth files as clean.  'probe.cropdetect_limit' implements the scaling; use it rather than a constant.
 
 WHEN A DETECTOR AND A DECODED FRAME DISAGREE, BELIEVE THE FRAME.
+
+SAMPLING, BLACK LEVEL AND PLAUSIBILITY, RE-IMPLEMENTED 2026-09-13 FROM TINYMEDIAMANAGER'S DETECTOR.  Three 40-frame samples with the tallest picture winning could not see an asymmetric misdetection, a dark sample that reported nothing, or a variable-aspect film.  'media.detect_crop' now:
+
+- takes six 2-second samples evenly spaced between 2 and 92 percent of the usable duration, the spacing capped at 900 s, and advances 1.4 spacings past a rejected sample so a dark scene is not re-sampled, stopping after twelve attempts;
+- measures the black level first, 'signalstats' YMIN over the first sample, and sets 'limit' to 1.5 times it, never below the depth-scaled floor above and never above 13 percent of the bit-depth range, logging all three;
+- rejects a sample whose bars differ left against right by more than 1.5 percent of the width or top against bottom by more than 2 percent of the height, or whose crop keeps less than half the width or 60 percent of the height;
+- takes the crop geometry seen in the most plausible samples as primary, and records a second geometry seen in at least 6 percent of samples whose display aspect differs by 0.15 or more as 'secondary' with its share.  The filter uses the primary;  'compare.MEASURED' carries the secondary as a 'variable aspect' row that no gate votes on.
+
+Verified on a synthetic file:  a 1920x800 letterboxed section, a 1440x1080 pillarboxed section and an asymmetric section gave the primary 1920x800 in four of five plausible samples, the secondary 1440x1080 at 20 percent, and both asymmetric samples rejected as 'bars uneven top 60 bottom 220'.  The result is returned with no filter when the bars are under 20 px, and still carries 'secondary' when there is one.
 
 Anamorphic storage defeats a pure geometry check.  A scope film can be stored 1920x1080 with a non-square sample aspect, giving full 1080 rows of picture and no bars.  Compute display aspect from width times SAR over height; never infer it from stored dimensions alone.
 
@@ -1010,7 +1086,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.8.2.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.9.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  Until 2026-09-12 the 'validate' job refused a version that was already a git tag, which read a tag as proof of a prior build;  the repository does not use git tags, and the workflow no longer looks at them.
 
@@ -1156,7 +1232,7 @@ Open items, all deferred by the developer.  Remove an entry when it is done or d
 
 - **AV1 calibration.**  Section 14 records 'av1_qsv' at 'global_quality 26' and 'libsvtav1' at 'crf 24' as starting points with no calibration behind them.  The first AV1 batch ran 2026-09-10.  Score the outputs against their sources with the 'ssim' filter, per section 14;  bitrate alone settles nothing.
 - **'X265_DV_VBV_KBPS'.**  The known issue in section 14.  Settle it with one full-length 1080p DV encode and one UHD, reading the x265 log for VBV adjustments and comparing the bitrate curve against an uncapped CRF 18 encode.  Inert under gate 1 until then.
-- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), T-133 to T-135 (the full rescan), T-136 to T-142 (the ladder, page confirmation, the None guard, the zero content light pair), T-143 to T-150 (in the pipeline until promoted, the numeric title, the inconclusive reason, the emptied import folder, rows closing with their files, frame-counted progress), T-151 to T-157 (the incomplete-identity rule on both kinds, the IMDb route to TVDB, the English catalogue, the TMDB adaptation date, candidates per source, the operator selection, the title after the marker), T-158 and T-159 (the catalogue title under numbering, the held file under 'hold/'), the last seven groups written 2026-09-11, 2026-09-12 and 2026-09-13.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
+- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), T-133 to T-135 (the full rescan), T-136 to T-142 (the ladder, page confirmation, the None guard, the zero content light pair), T-143 to T-150 (in the pipeline until promoted, the numeric title, the inconclusive reason, the emptied import folder, rows closing with their files, frame-counted progress), T-151 to T-157 (the incomplete-identity rule on both kinds, the IMDb route to TVDB, the English catalogue, the TMDB adaptation date, candidates per source, the operator selection, the title after the marker), T-158 and T-159 (the catalogue title under numbering, the held file under 'hold/'), T-160 to T-169 (the matcher's tag strip, part index and containment rung, the tie hold, the field probe and its three chains, the release corpus, the file hash, cropdetect sampling, editions, episode forms, extras words), the last eight groups written 2026-09-11, 2026-09-12 and 2026-09-13.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
 - **Review the library audit's first pass.**  Expected findings on the current library:  the three titles under-declaring ST 2086 and Forrest Gump's missing CLL, per section 12;  the last is a zero pair the container genuinely lacks, and its repair copy passes now that the probe reads the element through mkvmerge.  Anything else it reports is either a real defect or a check that needs correcting, and the edition false positive fixed on 2026-09-10 is the reference for the second kind.
 - **The grain probe against the 9,697k reference.**  Section 14's grain-heavy 35mm title encoded at 'aq-mode=3' before automatic detection existed.  Run the probe on that source and confirm the ratio clears 'GRAIN_THRESHOLD', so the tune that separated the nine-film batch is what an automatic run would choose.
 - **Hardware decode on the QSV path.**  'build_command' decodes in software and uploads with 'hwupload';  on the A310 the media engine sat at 47 percent with the decode block near idle.  '-hwaccel qsv -hwaccel_output_format qsv' ahead of '-i' keeps frames on the device.  Needs a measurement and a software fallback for sources the hardware decoder does not accept.  Not planned;  noted as the next lever on the GPU path.

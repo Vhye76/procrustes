@@ -490,7 +490,12 @@ class Provider:
         return rungs
 
     def identify_movie(self, source, container, origin=None, pinned=None):
-        return self._identify_from(self.movie_candidates(source, container, origin), "movie", pinned)
+        resolved = self._identify_from(self.movie_candidates(source, container, origin), "movie", pinned)
+        if resolved is not None:
+            resolved["edition"] = _edition_of(source, origin)
+            if resolved["edition"]:
+                log.info("edition %r read from the arrival name", resolved["edition"])
+        return resolved
 
     #----- The show identity ladder
     def show_candidates(self, source, origin=None):
@@ -609,7 +614,7 @@ class Provider:
                 term, self.search_entities(term), title, wanted, year, seen, kind, cutoff=0.0,
             )
             best = _prefer(best, (score, resolved), kind)
-            if resolved is not None and not _missing(kind, resolved):
+            if resolved is not None and not _missing(kind, resolved) and not resolved.get("tied"):
                 return resolved
         qids = [q for q in self.search_text(title) if q not in seen]
         if qids:
@@ -640,7 +645,10 @@ class Provider:
             scored.append((score, candidate))
         accept = self._accept_movie_hit if kind == "movie" else self._accept_show_hit
         best = (None, None)
+        complete = []
         for score, candidate in sorted(scored, key=lambda pair: -pair[0]):
+            if complete and score < complete[0][0]:
+                break
             resolved = accept(candidate, title, year, pinned)
             self._remember(candidate)
             if resolved is None:
@@ -650,13 +658,38 @@ class Provider:
                 continue
             if best[1] is not None and score < best[0]:
                 break
-            if score < 1.0 and not pinned:
-                log.info(
-                    "title %r matched %r by similarity %.3f on search %r",
-                    title, resolved.get("title") or resolved.get("show"), score, term,
-                )
+            complete.append((score, resolved, candidate))
+            if pinned:
+                break
+        if not complete:
+            return best
+        score, resolved, _candidate = complete[0]
+        #----- two complete hits at one score on a name search is a tie, and a tie holds.
+        if len(complete) > 1:
+            tied = []
+            for tie_score, tie_resolved, tie_candidate in complete:
+                tie_candidate["outcome"] = "tied at %.2f with %s" % (
+                    tie_score, ", ".join(c["id"] for _s, _r, c in complete if c is not tie_candidate))
+                tied.append({
+                    "qid": tie_resolved.get("qid"),
+                    "label": tie_resolved.get("title") or tie_resolved.get("show"),
+                    "year": tie_resolved.get("year") or tie_resolved.get("show_year"),
+                    "ids": {f: tie_resolved.get(f) for f, _p in ID_PROPERTIES[kind]},
+                })
+            log.info(
+                "title %r resolves to %d entities at score %.2f on search %r: %s",
+                title, len(complete), score, term,
+                "; ".join("%s (%s)" % (t["qid"], t["year"]) for t in tied),
+            )
+            resolved = dict(resolved)
+            resolved["tied"] = tied
             return score, resolved
-        return best
+        if score < 1.0 and not pinned:
+            log.info(
+                "title %r matched %r by similarity %.3f on search %r",
+                title, resolved.get("title") or resolved.get("show"), score, term,
+            )
+        return score, resolved
 
     def _remember(self, candidate):
         scored = getattr(self._local, "scored", None)
@@ -972,9 +1005,10 @@ class Provider:
         if not catalogue:
             return None
 
-        entry, how, score = episodemod.match_episode(source, catalogue)
+        segment = (container or {}).get("segment_title") if isinstance(container, dict) else None
+        entry, how, score = episodemod.match_episode(source, catalogue, extra=segment)
         if entry is None:
-            parsed = episodemod.parse_filename(os.path.basename(source))
+            parsed = episodemod.parse_path(source)
             if parsed is None:
                 return None
             listed = _catalogue_entry(catalogue, parsed["season"], parsed["first"])
@@ -1038,13 +1072,7 @@ class Provider:
 
 #----- the trailing delimiter is a lookahead so two adjacent years both match.
 YEAR_IN_NAME = re.compile(r"[.\s(\[_-](19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
-JUNK = re.compile(
-    r"\b(1080p|720p|2160p|4k|bluray|blu-ray|bdrip|brrip|webrip|web-?dl|hdtv|remux|"
-    r"x26[45]|h\.?26[45]|hevc|avc|xvid|divx|aac|ac3|dts(?:-hd)?|truehd|atmos|"
-    r"ma|5\.1|7\.1|2\.0|10bit|8bit|hdr10?|dovi|dv|proper|repack|extended|"
-    r"uncut|remastered|imax|multi|dual|complete)\b",
-    re.I,
-)
+JUNK = titles.RELEASE_TOKENS
 
 
 #----- Name cleaning
@@ -1134,6 +1162,8 @@ def _prefer(best, other, kind):
         return other if other[0] > best[0] else best
     if _missing(kind, best[1]) and not _missing(kind, other[1]):
         return other
+    if best[1].get("tied") and not other[1].get("tied") and not _missing(kind, other[1]):
+        return other
     return best
 
 
@@ -1188,8 +1218,23 @@ def _candidate_score(title, wanted, candidate):
     return max((_name_score(title, wanted, n) for n in names if n), default=0.0)
 
 
+#----- the edition comes from the arrival name, the parent folder, or a repair copy's origin name.
+def _edition_of(source, origin=None):
+    stem = os.path.splitext(os.path.basename(source))[0]
+    parent = os.path.basename(os.path.dirname(source))
+    candidates = [stem, parent]
+    if origin:
+        candidates.append(os.path.splitext(os.path.basename(origin))[0])
+    for candidate in candidates:
+        label, _matched = titles.edition_from_name(candidate)
+        if label:
+            return label
+    return None
+
+
 def _clean_movie_name(name):
     year = None
+    name = titles.strip_release_group(titles.strip_edition(name))
     matches = list(YEAR_IN_NAME.finditer(name))
     if matches:
         m = matches[-1]
@@ -1211,8 +1256,9 @@ def _show_year(name, parent):
 
 def _clean_show_name(name, parent):
     for candidate in (name, parent):
+        cleaned = titles.strip_release_group(candidate)
         cleaned = re.split(
-            r"(?:^|[^a-z0-9])s\d{1,2}[\s._-]*e\d{1,3}", candidate, flags=re.I
+            r"(?:^|[^a-z0-9])s\d{1,2}[\s._-]*e\d{1,3}", cleaned, flags=re.I
         )[0]
         cleaned = re.split(r"(?:^|[^a-z0-9])\d{1,2}x\d{1,3}", cleaned, flags=re.I)[0]
         cleaned = cleaned.replace(".", " ").replace("_", " ")

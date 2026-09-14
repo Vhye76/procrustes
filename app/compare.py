@@ -73,6 +73,7 @@ MEASURED = (
     ("sar", "sample aspect", None),
     ("picture_pixels", "picture pixels after bars", 3),
     ("letterbox_px", "baked-in letterbox px", 3),
+    ("variable_aspect", "variable aspect", None),
     ("audio_channels_max", "audio channels", 4),
     ("audio_codecs", "audio codecs", None),
     ("audio_tracks", "audio tracks", None),
@@ -169,11 +170,18 @@ def attributes(container, path=None, crop=None, tag_structure=None, statistics_r
         "segment_title": container.get("segment_title"),
         "picture_pixels": (crop or {}).get("picture_pixels"),
         "letterbox_px": (crop or {}).get("bars_px"),
+        "variable_aspect": _variable_aspect((crop or {}).get("secondary")),
         "tag_structure": tag_structure,
         "statistics_ratio": statistics_ratio,
         "pedigree": pedigree(path) if path else None,
         "size_bytes": int(container.get("size_bytes") or 0),
     }
+
+
+def _variable_aspect(secondary):
+    if not secondary:
+        return None
+    return "%dx%d in %.0f%% of samples" % (secondary["width"], secondary["height"], secondary["share"] * 100)
 
 
 def measure(path, crop=None):

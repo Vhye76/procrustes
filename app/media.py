@@ -23,9 +23,22 @@ GRAIN_THRESHOLD = float(os.environ.get("GRAIN_THRESHOLD", "0.18"))
 GRAIN_PROBE_CRF = "20"
 GRAIN_PROBE_PRESET = "ultrafast"
 
-CROP_SAMPLE_POSITIONS = (0.25, 0.45, 0.65)
-CROP_SAMPLE_FRAMES = 40
+CROP_SAMPLE_COUNT = 6
+CROP_SAMPLE_SECONDS = 2
+CROP_SAMPLE_START = 0.02
+CROP_SAMPLE_END = 0.92
+CROP_SAMPLE_MAX_GAP = 900
+CROP_SAMPLE_SKIP = 1.4
+CROP_SAMPLE_ATTEMPTS = 12
 CROP_MIN_BARS_PX = 20
+CROP_BLACK_LEVEL_FACTOR = 1.5
+CROP_BLACK_LEVEL_CAP = 0.13
+CROP_PLAUSIBLE_WIDTH_DELTA = 0.015
+CROP_PLAUSIBLE_HEIGHT_DELTA = 0.02
+CROP_PLAUSIBLE_MIN_WIDTH = 0.5
+CROP_PLAUSIBLE_MIN_HEIGHT = 0.6
+CROP_SECONDARY_SHARE = 0.06
+CROP_SECONDARY_ASPECT_DELTA = 0.15
 
 MASTERING_PROPERTIES = (
     ("red_x", "chromaticity-coordinates-red-x"),
@@ -45,6 +58,7 @@ CONTENT_LIGHT_PROPERTIES = (
 )
 
 _CROP_RE = re.compile(r"crop=(\d+):(\d+):(\d+):(\d+)")
+_YMIN_RE = re.compile(r"lavfi\.signalstats\.YMIN=(\d+)")
 
 
 class MediaError(RuntimeError):
@@ -354,55 +368,205 @@ def repair_hdr_declaration(path, video):
 
 
 #----- Crop detection
+def _black_level(path, offset, depth):
+    proc = run(
+        [
+            FFMPEG, "-hide_banner", "-nostdin", "-ss", str(offset), "-t", str(CROP_SAMPLE_SECONDS),
+            "-i", str(path), "-map", "0:v:0", "-vf", "signalstats,metadata=print:file=-",
+            "-f", "null", "-",
+        ]
+    )
+    values = [int(v) for v in _YMIN_RE.findall((proc.stdout or "") + (proc.stderr or ""))]
+    if not values:
+        return None
+    return min(values)
+
+
+def _crop_positions(duration):
+    start = duration * CROP_SAMPLE_START
+    end = duration * CROP_SAMPLE_END
+    step = (end - start) / (CROP_SAMPLE_COUNT + 1)
+    if step > CROP_SAMPLE_MAX_GAP:
+        step = CROP_SAMPLE_MAX_GAP
+    return start, end, step
+
+
+def _plausible(cw, ch, cx, cy, width, height):
+    left, right = cx, width - cw - cx
+    top, bottom = cy, height - ch - cy
+    if abs(left - right) > width * CROP_PLAUSIBLE_WIDTH_DELTA:
+        return "bars uneven left %d right %d" % (left, right)
+    if abs(top - bottom) > height * CROP_PLAUSIBLE_HEIGHT_DELTA:
+        return "bars uneven top %d bottom %d" % (top, bottom)
+    if cw < width * CROP_PLAUSIBLE_MIN_WIDTH:
+        return "keeps only %d of %d px width" % (cw, width)
+    if ch < height * CROP_PLAUSIBLE_MIN_HEIGHT:
+        return "keeps only %d of %d px height" % (ch, height)
+    return None
+
+
 def detect_crop(path, video, container=None):
     depth = int(video.get("bit_depth") or 8)
-    limit = probemod.cropdetect_limit(depth)
+    floor = probemod.cropdetect_limit(depth)
+    width = int(video.get("width") or 0)
     height = int(video.get("height") or 0)
     duration = probemod.usable_duration(video, container)
-    if not duration or not height:
+    if not duration or not height or not width:
         log.warning(
-            "cropdetect could not run on %s, no usable duration (%s) or height (%s)",
-            os.path.basename(str(path)), duration, height,
+            "cropdetect could not run on %s, no usable duration (%s) or geometry (%sx%s)",
+            os.path.basename(str(path)), duration, width, height,
         )
         return None
 
-    best = None
-    for fraction in CROP_SAMPLE_POSITIONS:
-        offset = int(duration * fraction)
+    start, end, step = _crop_positions(duration)
+    #----- the limit follows the source's own black, never below the depth-scaled floor.
+    black = _black_level(path, int(start), depth)
+    cap = int((2 ** depth) * CROP_BLACK_LEVEL_CAP)
+    limit = floor
+    if black is not None:
+        limit = max(floor, min(int(black * CROP_BLACK_LEVEL_FACTOR), cap))
+    log.debug(
+        "cropdetect black level %s at %d-bit, limit %d (floor %d, cap %d)",
+        black, depth, limit, floor, cap,
+    )
+
+    samples = []
+    rejected = []
+    position = start
+    attempts = 0
+    while attempts < CROP_SAMPLE_ATTEMPTS and position <= end - CROP_SAMPLE_SECONDS and len(samples) < CROP_SAMPLE_COUNT:
+        attempts += 1
+        offset = int(position)
         proc = run(
             [
-                FFMPEG, "-hide_banner", "-nostdin", "-ss", str(offset), "-i", str(path),
+                FFMPEG, "-hide_banner", "-nostdin", "-ss", str(offset), "-t", str(CROP_SAMPLE_SECONDS),
+                "-i", str(path), "-map", "0:v:0",
                 "-vf", "cropdetect=limit=%d:round=2:reset=0" % limit,
-                "-frames:v", str(CROP_SAMPLE_FRAMES), "-f", "null", "-",
+                "-f", "null", "-",
             ]
         )
         found = _CROP_RE.findall(proc.stderr or "")
         if not found:
+            rejected.append((offset, "no crop reported"))
+            position += step * CROP_SAMPLE_SKIP
             continue
         cw, ch, cx, cy = (int(v) for v in found[-1])
-        if best is None or ch > best[1]:
-            best = (cw, ch, cx, cy)
+        why = _plausible(cw, ch, cx, cy, width, height)
+        if why:
+            log.debug("cropdetect sample at %ds rejected: %s", offset, why)
+            rejected.append((offset, why))
+            #----- a rejected sample moves the next one off the dark scene rather than re-sampling it.
+            position += step * CROP_SAMPLE_SKIP
+            continue
+        samples.append((offset, cw, ch, cx, cy))
+        position += step
 
-    if best is None:
+    if not samples:
+        log.info("cropdetect found no plausible sample on %s (%d rejected)",
+                 os.path.basename(str(path)), len(rejected))
         return None
 
-    cw, ch, cx, cy = best
+    sar = float(video.get("sar") or 1.0)
+    counts = {}
+    for _offset, cw, ch, cx, cy in samples:
+        counts.setdefault((cw, ch), []).append((cx, cy))
+    #----- most frequent geometry first, taller on a tie;  a second shape in enough samples is a variable-aspect film.
+    ranked = sorted(counts.items(), key=lambda item: (-len(item[1]), -item[0][1]))
+    (cw, ch), offsets = ranked[0]
+    cx, cy = offsets[0]
+    primary_aspect = (cw * sar) / ch if ch else 0.0
+
+    secondary = None
+    for (ow, oh), others in ranked[1:]:
+        share = len(others) / float(len(samples))
+        aspect = (ow * sar) / oh if oh else 0.0
+        if share >= CROP_SECONDARY_SHARE and abs(aspect - primary_aspect) >= CROP_SECONDARY_ASPECT_DELTA:
+            secondary = {"width": ow, "height": oh, "share": round(share, 3), "aspect": round(aspect, 3)}
+            break
+
     bars = height - ch
-    if bars < CROP_MIN_BARS_PX:
-        log.info("cropdetect found %d px of bars, below the %d px floor, no crop applied",
-                 bars, CROP_MIN_BARS_PX)
-        return None
-    log.info("cropdetect: %d px of bars, cropping to %dx%d", bars, cw, ch)
-    log.debug("crop offsets x=%d y=%d, limit %d at %d-bit", cx, cy, limit, depth)
-    return {
+    result = {
         "filter": "crop=%d:%d:%d:%d" % (cw, ch, cx, cy),
         "width": cw,
         "height": ch,
         "bars_px": bars,
         "limit": limit,
+        "black_level": black,
         "bit_depth": depth,
-        "picture_pixels": int(round(cw * float(video.get("sar") or 1.0))) * ch,
+        "samples": len(samples) + len(rejected),
+        "plausible": len(samples),
+        "secondary": secondary,
+        "picture_pixels": int(round(cw * sar)) * ch,
     }
+    if secondary:
+        log.info(
+            "cropdetect: variable aspect, %dx%d in %d of %d samples and %dx%d in %.0f%%",
+            cw, ch, len(offsets), len(samples), secondary["width"], secondary["height"],
+            secondary["share"] * 100,
+        )
+    if bars < CROP_MIN_BARS_PX:
+        log.info("cropdetect found %d px of bars, below the %d px floor, no crop applied",
+                 bars, CROP_MIN_BARS_PX)
+        result["filter"] = None
+        result["bars_px"] = 0
+        result["picture_pixels"] = int(round(width * sar)) * height
+        return result if secondary else None
+    log.info("cropdetect: %d px of bars, cropping to %dx%d (%d of %d samples agree)",
+             bars, cw, ch, len(offsets), len(samples))
+    log.debug("crop offsets x=%d y=%d, limit %d at %d-bit", cx, cy, limit, depth)
+    return result
+
+
+#----- Field structure
+FIELD_TELECINE_SHARE = 0.10
+_IDET_MULTI = re.compile(r"Multi frame detection: TFF:\s*(\d+) BFF:\s*(\d+) Progressive:\s*(\d+) Undetermined:\s*(\d+)")
+_IDET_REPEAT = re.compile(r"Repeated Fields: Neither:\s*(\d+) Top:\s*(\d+) Bottom:\s*(\d+)")
+
+FIELDS_PROGRESSIVE = "progressive"
+FIELDS_INTERLACED = "interlaced"
+FIELDS_TELECINE = "telecine"
+FIELD_MODES = (FIELDS_PROGRESSIVE, FIELDS_INTERLACED, FIELDS_TELECINE)
+
+
+def field_probe(path, video, container=None):
+    duration = probemod.usable_duration(video, container)
+    if not duration:
+        return {"fields": FIELDS_PROGRESSIVE, "reason": "no usable duration, assumed progressive"}
+    offset = int(duration * GRAIN_SAMPLE_POSITION) if duration >= GRAIN_SAMPLE_SECONDS * 2 else 0
+    proc = run(
+        [
+            FFMPEG, "-nostdin", "-hide_banner", "-ss", str(offset), "-t", str(GRAIN_SAMPLE_SECONDS),
+            "-i", str(path), "-map", "0:v:0", "-an", "-sn", "-vf", "idet", "-f", "null", "-",
+        ]
+    )
+    text = proc.stderr or ""
+    multi = _IDET_MULTI.findall(text)
+    repeat = _IDET_REPEAT.findall(text)
+    if not multi:
+        return {"fields": FIELDS_PROGRESSIVE, "reason": "idet reported nothing, assumed progressive"}
+    tff, bff, progressive, undetermined = (int(v) for v in multi[-1])
+    neither, top, bottom = (int(v) for v in repeat[-1]) if repeat else (0, 0, 0)
+    frames = tff + bff + progressive + undetermined
+    repeated = top + bottom
+    result = {
+        "tff": tff, "bff": bff, "progressive": progressive, "undetermined": undetermined,
+        "repeated": repeated, "frames": frames,
+    }
+    #----- 3:2 pulldown repeats one field in five;  interlace without repeats is true 60i.
+    if frames and repeated / float(frames) >= FIELD_TELECINE_SHARE:
+        result["fields"] = FIELDS_TELECINE
+        result["reason"] = "%d of %d frames carry a repeated field, 3:2 pulldown" % (repeated, frames)
+    elif tff + bff > progressive:
+        result["fields"] = FIELDS_INTERLACED
+        result["reason"] = "%d interlaced frames against %d progressive" % (tff + bff, progressive)
+    else:
+        result["fields"] = FIELDS_PROGRESSIVE
+        result["reason"] = "%d progressive frames against %d interlaced, %d repeated fields" % (
+            progressive, tff + bff, repeated)
+    log.info("field probe %s: %s", result["fields"], result["reason"])
+    log.debug("idet: tff %d bff %d progressive %d undetermined %d repeated %d of %d",
+              tff, bff, progressive, undetermined, repeated, frames)
+    return result
 
 
 #----- Grain measurement
