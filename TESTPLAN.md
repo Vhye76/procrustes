@@ -39,11 +39,11 @@ Unless a case says otherwise, reset by stopping the container, emptying import, 
 
 ## 1.  Startup
 
-**T-01  The banner lists every setting.**
+**T-01  The banners list every variable and every setting.**
 
 - **Start:**  container stopped.
-- **Do:**  'docker compose up -d', then 'docker logs procrustes'.
-- **Expect:**  the config banner lists every name in section 5 of CLAUDE.md.  Record any name present in one and absent from the other.
+- **Do:**  'docker compose up -d', then 'docker logs procrustes', then 'curl -sk https://localhost/api/settings'.
+- **Expect:**  the config banner lists every environment name in section 5 of CLAUDE.md and none of the eleven in 'config.REMOVED';  the 'setting' banner lists every key '/api/settings' returns, per-kind keys as 'key.movie' and 'key.tv', with a '*' on each stored value and none on a fresh 'state.db'.  Record any name present in one and absent from the other.
 
 **T-02  Mounts resolve to the paths given.**
 
@@ -302,8 +302,8 @@ T-31  gate 1   an hevc source           expect passthrough, output still hevc, n
 T-32  gate 1   an av1 source            expect passthrough, output still av1
 T-33  gate 2   an SD episode            expect passthrough, output codec unchanged
 T-34  gate 1   a Dolby Vision title     expect passthrough at gate 1, not gate 3, output carries the DOVI record
-T-35  gate 4   OUTPUT_CODEC=av1, grainy expect libsvtav1, output av1
-T-36  gate 5   OUTPUT_CODEC=av1, clean  expect av1_qsv, output av1
+T-35  gate 4   output_codec av1, grainy expect libsvtav1, output av1
+T-36  gate 5   output_codec av1, clean  expect av1_qsv, output av1
 T-37  gate 6   a grainy source          expect libx265, output hevc
 T-38  gate 7   a clean source           expect libx265, output hevc
 ```
@@ -314,9 +314,9 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **Do:**  wait for PUBLISHED.
 - **Expect:**  the file in 'complete/' is '.mkv', not '.avi'.  It carries tags and track statistics.
 
-**T-40  TV_ENCODE_SD re-enables SD encoding.**
+**T-40  encode_sd re-enables SD encoding.**
 
-- **Start:**  'TV_ENCODE_SD=1', an SD episode.
+- **Start:**  'encode_sd' on for TV on the settings page, an SD episode.
 - **Expect:**  gate 2 does not fire;  the title routes to an encoder.
 
 ## 7.  Remuxing
@@ -411,12 +411,12 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 
 - **T-108  A batch is assessed before its first encode finishes.**  Drop a dozen mixed titles at once, several failing screening.  Expect every screening failure in HELD within the first minute, each with its full reason list, while the first encode is still running.
 - **T-109  Passthrough does not wait behind an encode.**  With a CPU encode running, drop an hevc source.  Expect it ROUTED, staged, verified and PUBLISHED on the passthrough pool while the encode continues.
-- **T-110  Staged copies are bounded by the pools.**  During T-108, count job directories in the encode area.  Expect at most 'CPU_SLOTS + GPU_SLOTS + 1' at any moment, never one per assessment worker.
+- **T-110  Staged copies are bounded by the pools.**  During T-108, count job directories in the encode area.  Expect at most 'cpu_slots + gpu_slots + 1' at any moment, never one per assessment worker.
 - **T-111  Status reports the queues.**  'GET /api/status' carries 'queues' with 'assess', 'cpu', 'gpu' and 'passthrough' depths and 'slots' with the active count per pool.
 - **T-112  Resume lands on the right queue.**  Restart mid-encode.  Expect the encoding title to resume on the CPU pool, a ROUTED passthrough on the passthrough pool, and a title interrupted before ROUTED to be re-assessed;  a title past ROUTED with no stored decision returns to DETECTED with a history entry saying so.
-- **T-113  A degraded GPU routes to the CPU at assessment.**  'RENDER_GID' unset, 'OUTPUT_CODEC=av1', a clean source.  Expect ROUTED to name libsvtav1 on the CPU with the "GPU unavailable" note, and nothing left waiting on the GPU queue.
+- **T-113  A degraded GPU routes to the CPU at assessment.**  'RENDER_GID' unset, 'output_codec' av1 for the kind, a clean source.  Expect ROUTED to name libsvtav1 on the CPU with the "GPU unavailable" note, and nothing left waiting on the GPU queue.
 - **T-114  Grain probes are serialised.**  Drop three grain-heavy sources together with an encode running.  Expect the three probes to run one after another in the log, not overlapping.
-- **T-115  'CPU_SLOTS=2' runs two CPU encodes.**  Expect two titles ENCODING at once, each with 'pools=4' in the debug argv, three staged copies at most, and the queue draining at the same rate as with one.
+- **T-115  'cpu_slots' at 2 runs two CPU encodes.**  Expect two titles ENCODING at once, each with 'pools=4' in the debug argv, three staged copies at most, and the queue draining at the same rate as with one.
 
 ## 12b.  Reasons and force
 
@@ -483,7 +483,7 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-89  Scraped titles carry no HTML entities.**  Import an episode whose provider title contains an apostrophe or an accent.  Expect the stored title decoded, for example "Let's Give the Boy a Hand" and not 'Let&#039;s Give the Boy a Hand', and the same on the published filename and the Matroska EPISODE tag.
 - **T-90  An entity title matches exactly, not fuzzily.**  For that same episode, expect the match method to be exact.  A fuzzy match means the decode did not happen:  one entity still scores about 0.86 and passes silently, which is the failure this case exists to catch.
 - **T-91  Detection lands inside the new window.**  Time a copy into 'import/' from completion to the 'detected' line.  Expect 30 to 45 seconds.  Repeat with a large file, where a slow write would show as a premature detection.
-- **T-92  A partial copy is still refused.**  Interrupt a copy mid-transfer and leave it untouched past MTIME_QUIET.  Expect it detected and then held by ffprobe or the minimum standards gate, never encoded.
+- **T-92  A partial copy is still refused.**  Interrupt a copy mid-transfer and leave it untouched past 'mtime_quiet'.  Expect it detected and then held by ffprobe or the minimum standards gate, never encoded.
 - **T-93  The queue holds three tiles per row.**  At 1920x1080 with the queue populated, expect three tiles across in Queue and two in every other box, with no page scrollbar.
 - **T-83  The layout fits 1920x1080.**  Load the dashboard at that size with every box populated.  Expect no page scrollbar, and each box to scroll internally instead.
 - **T-148  A promoted title leaves Ready to promote.**  Take two titles to CLEANUP.  Move the first's output out of 'complete/' with its retired source still in '.quarantine';  within one poll expect its tile gone, the row QUARANTINED with a reason naming the promotion, and Quarantined Files up by one.  Move the second's output out and remove its retired source;  within one poll expect the row absent from '/api/titles' and one 'title closed' log line.  Copy a third's output into the library instead of moving it and expect its tile unchanged.
@@ -499,7 +499,7 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-159  A held title's file is under 'hold/'.**  Drop a below-standard episode as 'import/Show (2001) [tvdbid-N]/Season 01/x.mkv'.  Once HELD, expect the file at 'hold/Show (2001) [tvdbid-N]/Season 01/x.mkv', 'import/Show (2001) [tvdbid-N]' gone, 'source_path' on '/api/titles/<id>' pointing under 'hold/', and a 'moved to hold/...' entry in the history ahead of the reasons.  Drop a second copy under the same name and expect it held beside the first as 'x.1.mkv'.  Force the first;  expect it to publish and its source to arrive in '.quarantine', with 'hold/' left without it.  With DRY_RUN=1 expect the file to stay in 'import/'.
 - **T-160  The matcher sees through a release tag and a bare part marker.**  Drop 'Star Trek Enterprise S01E06 Terra Nova (1080p x265 10bit Joy).mkv', 'Star Trek Enterprise S02E01 Shockwave Part 2 (1080p x265 10bit Joy).mkv', "Star Trek Enterprise S04E09 Kir'shara (1080p x265 Joy).mkv" and 'Star.Trek.Enterprise.S03E02.Homefront.1080p.WEB-DL.x264-Joy.mkv'.  Expect 'match_method' exact on all four, never 'fallback-numbering', S02E01 to carry the title 'Shockwave, Part 2', and the published names 'Star Trek Enterprise - S01E06 - Terra Nova.mkv' and 'Star Trek Enterprise - S02E01 - Shockwave, Part 2.mkv'.  Drop a file whose segment title is the episode title and whose file name is random;  expect the log line 'episode matched on the segment title'.
 - **T-161  A tie at the top score holds with both candidates.**  Drop 'Space Battleship Yamato.mp4' flat in 'import/'.  Expect HELD at IDENTIFIED with the reason naming Q3693349 (1977) and Q1191847 (2010), 'candidates.wikidata' carrying both with outcome 'tied at 1.00 with …', and the detail dialog offering both.  Rename the file 'Space Battleship Yamato (2010).mp4';  expect it to resolve to Q1191847 with no hold.  Drop 'Battlestar Galactica S01E01 33.mkv' with no year anywhere;  expect a hold between the 1978 and 2004 series.
-- **T-162  The field probe classifies and the command carries the chain.**  With 'TV_ENCODE_SD=1', drop one progressive SD episode, one 480i episode and one 3:2 telecined DVD episode.  Expect the ROUTED detail and 'decision.fields' on '/api/titles/<id>' to read progressive, interlaced and telecine respectively, the debug argv to carry no field filter, 'bwdif=mode=send_frame' and 'fieldmatch,yadif=deint=interlaced,decimate' ahead of any crop, the telecine output at 23.976 fps with four fifths of the source's frames and a VERIFIED note 'telecine removed n of m frames', and the interlaced output at the source frame count with no combing on a frame grab.  A sidecar 'fields=progressive' beside the telecined episode must suppress the chain and the ROUTED line must say 'from the sidecar'.
+- **T-162  The field probe classifies and the command carries the chain.**  With 'encode_sd' on for TV, drop one progressive SD episode, one 480i episode and one 3:2 telecined DVD episode.  Expect the ROUTED detail and 'decision.fields' on '/api/titles/<id>' to read progressive, interlaced and telecine respectively, the debug argv to carry no field filter, 'bwdif=mode=send_frame' and 'fieldmatch,yadif=deint=interlaced,decimate' ahead of any crop, the telecine output at 23.976 fps with four fifths of the source's frames and a VERIFIED note 'telecine removed n of m frames', and the interlaced output at the source frame count with no combing on a frame grab.  A sidecar 'fields=progressive' beside the telecined episode must suppress the chain and the ROUTED line must say 'from the sidecar'.
 - **T-163  A passthrough title pays no field probe.**  Drop an HEVC episode.  Expect no 'field probe' line for it and 'decision.fields' null.
 - **T-164  The release corpus loads and strips by position only.**  At startup expect no 'skipped, pattern does not compile' line.  Drop 'Show.S01E01.Title.1080p.x265-Joy.mkv' and 'Show S01E02 - War of the Worlds.mkv' for a resolvable show whose S01E02 is 'War of the Worlds';  expect the first matched on 'Title' and the second matched exact with 'War' intact.
 - **T-165  The OpenSubtitles hash is recorded.**  For any probed title expect 'probe.oshash' on '/api/titles/<id>' to equal the value of the reference algorithm run by hand on the same file (sum of the first and last 64 KiB as little-endian 64-bit words plus the size, modulo 2^64, sixteen hex digits), and the detail dialog to show it.
@@ -516,10 +516,21 @@ T-38  gate 7   a clean source           expect libx265, output hevc
 - **T-74  An unknown action is refused.**  POST 'nonsense'.  Expect a 4xx and no state change.
 - **T-75  An unknown title is 404.**  GET '/api/titles/999999'.  Expect 404.
 
+## 14.  Application settings
+
+- **T-174  The settings page is served under the menu.**  Open the dashboard.  Expect no status pills in the header, a hamburger button at the top right whose icon is a drawn hamburger, and on a click a drop-down carrying the output codec, GPU, encode space and library rows, a rule, then 'Application Settings'.  Expect the link to open '/settings' with every group and every key from '/api/settings', per-kind rows under Movies and TV columns, and the same menu ending in 'Dashboard'.
+- **T-175  A per-kind CRF reaches the encoder for that kind only.**  Set 'x265_crf' to 17 for movies and leave TV at 18.  Drop one HD movie and one HD episode.  Expect the movie's ROUTED detail to read 'crf 17', its 'decision.params.x265_crf' 17 on '/api/titles/<id>', and '-crf 17' in its debug argv;  the episode 18 on all three.  Expect the movie row shaded as stored on the page and the banner line 'x265_crf.movie * 17' after a restart.
+- **T-176  A routed title keeps its parameters.**  With one encode running and a second title at ROUTED on the same pool, change 'x265_crf' for that kind.  Expect the waiting title to encode with the CRF stored in its decision, not the new one, and a title dropped after the change to carry the new one.  POST 'retry' on a held title and expect its new decision to carry the current settings.
+- **T-177  A pool shrink finishes its title first.**  With 'cpu_slots' at 2 and two encodes running, set it to 1.  Expect both encodes to finish, '/api/settings' 'pools' to read 'cpu_threads' 2 against 'cpu_target' 1 until one does, then 1, and the next queued title to wait for the single slot.  Raise it to 2 again and expect a second thread to take the next title within a poll.
+- **T-178  A rejected batch writes nothing.**  POST '{"set": {"x265_crf": {"movie": 99}, "poll_interval": 40}}'.  Expect 400 with 'errors' naming 'x265_crf.movie' and, on a second POST with the CRF valid, 'poll_interval' against the quiet window;  expect '/api/settings' unchanged after both, and the page to show each message beside its field.
+- **T-179  An ignored environment variable is logged.**  Start with 'CRF=18' and 'OUTPUT_CODEC=av1' still in the environment.  Expect one warning per name reading 'is no longer read from the environment and is ignored', 'output_codec' hevc on '/api/settings', and every title routed to libx265.
+- **T-180  Reset returns a setting to its default.**  With a stored value, press its reset and save.  Expect the row unshaded, 'source' 'default' on '/api/settings', and the banner line without its '*' after a restart.
+- **T-181  The kept languages reach every reader.**  Add 'jpn' to 'keep_langs'.  Drop a source carrying a jpn audio track.  Expect the track kept through the strip, no readiness objection to it, and the library audit to report no foreign track on a library file carrying jpn.
+
 ---
 
 ## Coverage note
 
 Router cases T-31 to T-38 are the highest risk in this plan.  A misrouted title produces a valid file with the wrong tradeoff and nothing fails, so confirming an output file exists proves nothing.  Each router case states the expected gate and encoder and reads both back from '/api/titles/<id>', then corroborates against the output file's codec.
 
-Four of the seven router paths are dormant at the HEVC default.  T-35 and T-36 require 'OUTPUT_CODEC=av1' and exist so those paths are exercised before that switch is ever flipped in anger.
+Four of the seven router paths are dormant at the HEVC default.  T-35 and T-36 require 'output_codec' av1 on the settings page and exist so those paths are exercised before that switch is ever flipped in anger.

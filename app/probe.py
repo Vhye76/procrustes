@@ -156,7 +156,8 @@ class Probe:
         return d
 
 
-def probe(path):
+def probe(path, keep_langs=None):
+    keep_langs = tuple(keep_langs or KEEP_LANGS)
     log.debug("probing %s", path)
     data = ffprobe_json(
         path, ["-show_streams", "-show_format", "-show_chapters"]
@@ -216,7 +217,7 @@ def probe(path):
         "foreign_tracks": [
             t["language"]
             for t in audio + subtitles
-            if (t["language"] or "und").lower() not in KEEP_LANGS
+            if (t["language"] or "und").lower() not in keep_langs
         ],
     }
     log.info(

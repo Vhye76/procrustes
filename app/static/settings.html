@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Application Settings</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
+<style>
+  /*----- Palette, the dashboard's */
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e7eaf0; --dim: #98a2b3; --accent: #6ea8fe;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+         display: flex; flex-direction: column; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; flex: 0 0 auto; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  h1 a { color: inherit; text-decoration: none; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.warn { color: var(--warn); border-color: #5b4a23; }
+
+  /*----- The menu */
+  #menu { margin-left: auto; position: relative; align-self: center; }
+  #menu-btn { background: none; border: 1px solid transparent; border-radius: 6px;
+              padding: 3px 5px; color: var(--ink); cursor: pointer; display: flex; }
+  #menu-btn:hover, #menu-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--line); }
+  #menu-btn svg { width: 26px; height: 26px; display: block; }
+  #menu-list { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+               min-width: 240px; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 6px 0; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #menu-list.open { display: block; }
+  #menu-list .st { padding: 6px 14px; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #menu-list .st.ok { color: var(--ok); }
+  #menu-list .st.warn { color: var(--warn); }
+  #menu-list hr { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
+  #menu-list a { display: block; padding: 7px 14px; font-size: 13px; color: var(--ink);
+                 text-decoration: none; }
+  #menu-list a:hover { background: #232833; color: var(--accent); }
+
+  /*----- The page */
+  main { flex: 1 1 auto; overflow-y: auto; padding: 20px 24px 120px; max-width: 1240px;
+         width: 100%; margin: 0 auto; }
+  .grp { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+         margin-bottom: 16px; }
+  .grp h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+            color: var(--dim); margin: 0; padding: 11px 14px; font-weight: 600;
+            border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 12px; }
+  .grp h2 button { margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line);
+           vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase;
+       letter-spacing: .06em; }
+  tr:last-child td { border-bottom: none; }
+  td.lbl { width: 34%; }
+  td.lbl .n { font-weight: 600; font-size: 13px; }
+  td.lbl .h { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  td.lbl .k { font-size: 11px; color: var(--dim); font-family: ui-monospace, Menlo, monospace; }
+  td.val { width: 24%; }
+  td.val.global { width: 48%; }
+  td.act { width: 14%; white-space: nowrap; text-align: right; }
+  input[type=text], input[type=number], select {
+    background: #14161a; color: var(--ink); border: 1px solid var(--line); border-radius: 5px;
+    padding: 5px 8px; font-size: 13px; width: 100%; font-family: inherit; }
+  input[type=text].mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input.changed, select.changed, .cell.changed input { border-color: var(--accent); }
+  input.stored, select.stored { background: #171d2a; }
+  input.error, select.error { border-color: var(--bad); }
+  .cell { position: relative; }
+  .cell .d { font-size: 11px; color: var(--dim); margin-top: 3px; }
+  .cell .d.on { color: var(--warn); }
+  .cell .e { font-size: 11px; color: var(--bad); margin-top: 3px; }
+  .cell label.chk { display: flex; align-items: center; gap: 8px; font-size: 13px;
+                    padding: 5px 0; cursor: pointer; }
+  .cell input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  .tbl { width: 100%; }
+  .tbl .r { display: flex; gap: 6px; margin-bottom: 4px; align-items: center; }
+  .tbl .r input:first-child { flex: 2 1 0; }
+  .tbl .r input:nth-child(2) { flex: 1 1 0; }
+  .tbl .r button { padding: 3px 8px; }
+  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 5px; padding: 5px 11px; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.bad:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:disabled:hover { border-color: var(--line); color: var(--ink); }
+  button.link { background: none; border-color: transparent; color: var(--dim); font-size: 11px;
+                padding: 2px 6px; }
+  button.link:hover { color: var(--accent); }
+
+  /*----- The save bar */
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px 24px;
+         background: var(--panel); border-top: 1px solid var(--line);
+         display: flex; gap: 12px; align-items: center; z-index: 10; }
+  #bar .msg { font-size: 12px; color: var(--dim); flex: 1 1 auto; }
+  #bar .msg.ok { color: var(--ok); }
+  #bar .msg.bad { color: var(--bad); }
+  #bar button.primary { border-color: var(--accent); color: var(--accent); }
+  #pools { font-size: 12px; color: var(--dim); padding: 0 24px 8px; max-width: 1240px;
+           margin: 0 auto; width: 100%; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">procrustes</a> <span>Application Settings</span></h1>
+  <span class="pill" id="dry" style="display:none"></span>
+  <div id="menu">
+    <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 10.5c0-3.6 3.6-6 8-6s8 2.4 8 6H4z"/>
+        <path d="M8.5 7.5h.01M12 6.5h.01M15.5 7.5h.01"/>
+        <path d="M3.5 13c1 .8 2 .8 3 0s2-.8 3 0 2 .8 3 0 2-.8 3 0 2 .8 3 0 2-.8 2.5 0"/>
+        <rect x="4" y="14.5" width="16" height="2.5" rx="1.25"/>
+        <path d="M4.5 18.5h15a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5z"/>
+      </svg>
+    </button>
+    <div id="menu-list" role="menu">
+      <div class="st" id="codec">output</div>
+      <div class="st" id="gpu">gpu</div>
+      <div class="st" id="encode">encode</div>
+      <div class="st" id="libs">libraries</div>
+      <hr>
+      <a href="/" role="menuitem">Dashboard</a>
+    </div>
+  </div>
+</header>
+
+<main id="main"><div id="loading">Loading settings...</div></main>
+
+<div id="bar">
+  <span class="msg" id="msg">Values in a shaded field are stored;  the rest are defaults.</span>
+  <button id="discard" onclick="load()">Discard changes</button>
+  <button id="save" class="primary" onclick="save()" disabled>Save</button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const KINDS = ["movie", "tv"];
+const KIND_LABEL = { movie: "Movies", tv: "TV" };
+
+//----- SCHEMA is the registry as served, ORIGINAL the values at load, RESETS the storage keys marked for reset
+let SCHEMA = {};
+let ORIGINAL = {};
+let RESETS = new Set();
+
+function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+function fmt(v) {
+  if (Array.isArray(v)) return v.join(", ");
+  if (v && typeof v === "object") return Object.entries(v).map(([k, f]) => `${k} ${f}`).join(", ");
+  if (v === "") return "(empty)";
+  if (typeof v === "boolean") return v ? "on" : "off";
+  return String(v);
+}
+
+//----- The menu opens on its button and closes on a click elsewhere or Escape
+$("menu-btn").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const open = !$("menu-list").classList.contains("open");
+  $("menu-list").classList.toggle("open", open);
+  $("menu-btn").setAttribute("aria-expanded", open ? "true" : "false");
+});
+function closeMenu() {
+  $("menu-list").classList.remove("open");
+  $("menu-btn").setAttribute("aria-expanded", "false");
+}
+document.addEventListener("click", (ev) => { if (!ev.target.closest("#menu")) closeMenu(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeMenu(); });
+
+function menuRow(el, text, cls) {
+  el.textContent = text;
+  el.className = "st" + (cls ? " " + cls : "");
+}
+function codecText(settings) {
+  const oc = (settings && settings.output_codec) || {};
+  if (!oc.movie && !oc.tv) return "output unknown";
+  return oc.movie === oc.tv ? "output " + oc.movie : `output movies ${oc.movie}, tv ${oc.tv}`;
+}
+//----- The status rows in the menu, polled like the dashboard
+async function status() {
+  let s;
+  try { s = await (await fetch("/api/status")).json(); } catch (e) { return; }
+  menuRow($("codec"), codecText(s.settings));
+  menuRow($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded", s.gpu.available ? "ok" : "warn");
+  menuRow($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
+          + (s.encode.separate_filesystem ? "" : " (same fs)"),
+          s.encode.separate_filesystem ? "" : "warn");
+  menuRow($("libs"), s.libraries_mounted ? "libraries mounted" : "no libraries, comparison off",
+          s.libraries_mounted ? "" : "warn");
+  $("dry").textContent = s.config.DRY_RUN ? "DRY RUN" : "";
+  $("dry").className = "pill warn";
+  $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+}
+
+//----- Rendering:  one control per storage key, a per-kind row under the two columns, a global one spanning them
+function fieldId(key, kind) { return "f-" + key + (kind ? "-" + kind : ""); }
+
+function control(st, key, kind, value, stored) {
+  const id = fieldId(key, kind);
+  const cls = stored ? " stored" : "";
+  if (st.type === "bool") {
+    return `<label class="chk"><input type="checkbox" id="${id}" data-key="${esc(key)}"
+      data-kind="${esc(kind || "")}" ${value ? "checked" : ""}> ${value ? "on" : "off"}</label>`;
+  }
+  if (st.type === "choice") {
+    const opts = st.choices.map(c => `<option value="${esc(c)}" ${c === value ? "selected" : ""}>${esc(c)}</option>`).join("");
+    return `<select id="${id}" class="${cls}" data-key="${esc(key)}" data-kind="${esc(kind || "")}">${opts}</select>`;
+  }
+  if (st.type === "int" || st.type === "float") {
+    const step = st.type === "int" ? 1 : (st.step || 0.01);
+    return `<input type="number" id="${id}" class="${cls}" data-key="${esc(key)}" data-kind="${esc(kind || "")}"
+      value="${esc(value)}" step="${step}" ${st.minimum != null ? `min="${st.minimum}"` : ""}
+      ${st.maximum != null ? `max="${st.maximum}"` : ""}>`;
+  }
+  if (st.type === "list") {
+    return `<input type="text" id="${id}" class="mono${cls}" data-key="${esc(key)}" data-kind=""
+      value="${esc(value.join(", "))}" placeholder="comma separated">`;
+  }
+  if (st.type === "table") {
+    const rows = Object.entries(value).map(([k, f]) => tableRow(k, f)).join("");
+    return `<div class="tbl" id="${id}" data-key="${esc(key)}" data-kind="">${rows}
+      <button class="link" onclick="addRow('${esc(id)}')">+ add codec</button></div>`;
+  }
+  return `<input type="text" id="${id}" class="mono${cls}" data-key="${esc(key)}" data-kind="${esc(kind || "")}"
+    value="${esc(value)}" ${st.pattern ? `pattern="${esc(st.pattern)}"` : ""}>`;
+}
+
+function tableRow(k, f) {
+  return `<div class="r"><input type="text" class="mono" value="${esc(k)}" placeholder="codec">
+    <input type="number" step="0.01" min="0.01" value="${esc(f)}">
+    <button class="link bad" onclick="this.parentNode.remove(); changed()">remove</button></div>`;
+}
+function addRow(id) {
+  const box = $(id);
+  box.insertBefore(Object.assign(document.createElement("div"), { innerHTML: tableRow("", "1.0") }).firstChild,
+                   box.lastElementChild);
+  changed();
+}
+
+function cell(st, kind) {
+  const key = st.key;
+  const value = st.per_kind ? st.value[kind] : st.value;
+  const stored = st.per_kind ? st.source[kind] === "stored" : st.source === "stored";
+  const dflt = st.per_kind ? st.default[kind] : st.default;
+  const differs = JSON.stringify(value) !== JSON.stringify(dflt);
+  const rk = kind ? key + "." + kind : key;
+  return `<div class="cell" id="c-${esc(rk)}">${control(st, key, kind, value, stored)}
+    <div class="d ${differs ? "on" : ""}">default ${esc(fmt(dflt))}${
+      stored ? ` <button class="link" onclick="resetOne('${esc(rk)}')">reset</button>` : ""}</div>
+    <div class="e" id="e-${esc(rk)}"></div></div>`;
+}
+
+function render(view) {
+  SCHEMA = {};
+  ORIGINAL = {};
+  RESETS = new Set();
+  const parts = [];
+  for (const g of view.groups) {
+    const rows = g.settings.map(st => {
+      SCHEMA[st.key] = st;
+      ORIGINAL[st.key] = JSON.parse(JSON.stringify(st.value));
+      const label = `<td class="lbl"><div class="n">${esc(st.label)}</div>
+        <div class="h">${esc(st.help)}</div><div class="k">${esc(st.key)}</div></td>`;
+      const vals = st.per_kind
+        ? KINDS.map(k => `<td class="val">${cell(st, k)}</td>`).join("")
+        : `<td class="val global" colspan="2">${cell(st, null)}</td>`;
+      return `<tr>${label}${vals}</tr>`;
+    }).join("");
+    parts.push(`<section class="grp"><h2>${esc(g.label)}
+        <button class="link" onclick="resetGroup('${esc(g.name)}')">reset group to defaults</button></h2>
+      <table><thead><tr><th>Setting</th><th>${KIND_LABEL.movie}</th><th>${KIND_LABEL.tv}</th></tr></thead>
+      <tbody>${rows}</tbody></table></section>`);
+  }
+  const p = view.pools || {};
+  const t = view.threads || {};
+  $("main").innerHTML = `<div id="pools">Pools now:  ${p.assess_threads ?? "?"} of ${p.assess_target ?? "?"} assessment workers,
+    ${p.cpu_threads ?? "?"} of ${p.cpu_target ?? "?"} CPU slots, ${p.gpu_threads ?? "?"} of ${p.gpu_target ?? "?"} GPU slots;
+    ${t.total ?? "?"} encoder threads from ${esc(t.source || "?")}.  A slot that shrinks finishes its title first.</div>` + parts.join("");
+  $("main").querySelectorAll("input, select").forEach(el => {
+    el.addEventListener("input", changed);
+    el.addEventListener("change", changed);
+  });
+  $("main").querySelectorAll("input[type=checkbox]").forEach(el => {
+    el.addEventListener("change", () => { el.parentNode.lastChild.textContent = " " + (el.checked ? "on" : "off"); });
+  });
+  changed();
+}
+
+//----- Reading the form back into the shapes the API takes
+function readValue(st, kind) {
+  const el = $(fieldId(st.key, kind));
+  if (!el) return undefined;
+  if (st.type === "bool") return el.checked;
+  if (st.type === "int") return el.value === "" ? "" : Number(el.value);
+  if (st.type === "float") return el.value === "" ? "" : Number(el.value);
+  if (st.type === "list") return el.value.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (st.type === "table") {
+    const out = {};
+    el.querySelectorAll(".r").forEach(r => {
+      const [k, f] = r.querySelectorAll("input");
+      if (k.value.trim()) out[k.value.trim().toLowerCase()] = Number(f.value);
+    });
+    return out;
+  }
+  return el.value;
+}
+
+function diff() {
+  const set = {};
+  for (const key in SCHEMA) {
+    const st = SCHEMA[key];
+    if (st.per_kind) {
+      for (const k of KINDS) {
+        const v = readValue(st, k);
+        //----- a reset field edited afterwards is a set again, not a reset.
+        if (RESETS.has(key + "." + k)) {
+          if (JSON.stringify(v) === JSON.stringify(st.default[k])) continue;
+          RESETS.delete(key + "." + k);
+        }
+        if (JSON.stringify(v) !== JSON.stringify(ORIGINAL[key][k])) (set[key] = set[key] || {})[k] = v;
+      }
+    } else {
+      const v = readValue(st, null);
+      if (RESETS.has(key)) {
+        if (JSON.stringify(v) === JSON.stringify(st.default)) continue;
+        RESETS.delete(key);
+      }
+      if (JSON.stringify(v) !== JSON.stringify(ORIGINAL[key])) set[key] = v;
+    }
+  }
+  return set;
+}
+
+function changed() {
+  const set = diff();
+  const n = Object.keys(set).length + RESETS.size;
+  $("main").querySelectorAll("input, select").forEach(el => {
+    if (!el.dataset.key) return;
+    const key = el.dataset.key, kind = el.dataset.kind;
+    const pending = kind ? (set[key] && kind in set[key]) : key in set;
+    el.classList.toggle("changed", !!pending);
+  });
+  $("main").querySelectorAll(".tbl").forEach(el => el.classList.toggle("changed", el.dataset.key in set));
+  $("save").disabled = n === 0;
+  $("save").textContent = n ? `Save ${n} change${n === 1 ? "" : "s"}` : "Save";
+}
+
+function resetOne(rk) {
+  RESETS.add(rk);
+  const [key, kind] = rk.split(".");
+  const st = SCHEMA[key];
+  const dflt = kind ? st.default[kind] : st.default;
+  const el = $(fieldId(key, kind || null));
+  if (st.type === "bool") { el.checked = !!dflt; el.parentNode.lastChild.textContent = " " + (dflt ? "on" : "off"); }
+  else if (st.type === "list") el.value = dflt.join(", ");
+  else if (st.type === "table") {
+    el.innerHTML = Object.entries(dflt).map(([k, f]) => tableRow(k, f)).join("")
+      + `<button class="link" onclick="addRow('${esc(el.id)}')">+ add codec</button>`;
+  }
+  else el.value = dflt;
+  $("c-" + rk).querySelector(".d").classList.remove("on");
+  changed();
+}
+
+function resetGroup(name) {
+  for (const key in SCHEMA) {
+    const st = SCHEMA[key];
+    if (st.group !== name) continue;
+    if (st.per_kind) KINDS.forEach(k => { if (st.source[k] === "stored") resetOne(key + "." + k); });
+    else if (st.source === "stored") resetOne(key);
+  }
+}
+
+//----- Loading and saving;  one request carries every change, and a 400 marks its fields and writes nothing
+async function load() {
+  let view;
+  try { view = await (await fetch("/api/settings")).json(); }
+  catch (e) { $("main").innerHTML = `<div id="loading">Could not load settings.</div>`; return; }
+  render(view);
+  $("msg").className = "msg";
+  $("msg").textContent = "Values in a shaded field are stored;  the rest are defaults.";
+}
+
+async function save() {
+  const body = { set: diff() };
+  if (RESETS.size) body.reset = Array.from(RESETS);
+  $("save").disabled = true;
+  let res, data;
+  try {
+    res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify(body) });
+    data = await res.json();
+  } catch (e) {
+    $("msg").className = "msg bad"; $("msg").textContent = "Save failed: " + e;
+    $("save").disabled = false;
+    return;
+  }
+  document.querySelectorAll(".e").forEach(e => e.textContent = "");
+  document.querySelectorAll(".error").forEach(e => e.classList.remove("error"));
+  if (res.status === 400 && data.errors) {
+    for (const rk in data.errors) {
+      const e = $("e-" + rk);
+      if (e) { e.textContent = data.errors[rk]; }
+      const [key, kind] = rk.split(".");
+      const el = $(fieldId(key, kind || null));
+      if (el) el.classList.add("error");
+    }
+    $("msg").className = "msg bad";
+    $("msg").textContent = "Nothing was saved:  " + Object.keys(data.errors).length + " value(s) rejected.";
+    $("save").disabled = false;
+    return;
+  }
+  if (!res.ok) {
+    $("msg").className = "msg bad"; $("msg").textContent = data.error || `Save failed (${res.status})`;
+    $("save").disabled = false;
+    return;
+  }
+  render(data);
+  const n = (data.changed || []).length;
+  $("msg").className = "msg ok";
+  $("msg").textContent = n ? `Saved:  ${data.changed.join(", ")}.` : "Saved, nothing changed.";
+}
+
+load();
+status();
+setInterval(status, 5000);
+</script>
+</body>
+</html>

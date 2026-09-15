@@ -131,12 +131,12 @@ class Layout:
     def root_free_bytes(self):
         return shutil.disk_usage(self.media_root).free
 
-    def has_headroom(self, source_bytes):
-        need = int(source_bytes * self.cfg.encode_headroom)
+    def has_headroom(self, source_bytes, headroom):
+        need = int(source_bytes * float(headroom))
         free = self.encode_free_bytes()
         log.debug(
             "admission check: need %d bytes at headroom %s, %d free on %s",
-            need, self.cfg.encode_headroom, free, self.encode,
+            need, headroom, free, self.encode,
         )
         if free < need:
             log.info("admission deferred, encode area has %d bytes free, needs %d", free, need)

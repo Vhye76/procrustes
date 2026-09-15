@@ -35,17 +35,6 @@ def _int(name, default):
         raise ConfigError("%s must be an integer, got %r" % (name, v))
 
 
-def _float(name, default):
-    v = os.environ.get(name)
-    _source(name, bool(v))
-    if v is None or v == "":
-        return default
-    try:
-        return float(v)
-    except ValueError:
-        raise ConfigError("%s must be a number, got %r" % (name, v))
-
-
 def _bool(name, default=False):
     v = os.environ.get(name)
     _source(name, bool(v))
@@ -57,6 +46,12 @@ def _bool(name, default=False):
 VALID_CODECS = ("hevc", "av1")
 
 CPU_MAX_PATH = "/sys/fs/cgroup/cpu.max"
+
+#----- Settings that left the environment;  present in the env they are listed as ignored, never read.
+REMOVED = (
+    "OUTPUT_CODEC", "CRF", "TV_ENCODE_SD", "MAX_JOBS", "GPU_SLOTS", "CPU_SLOTS",
+    "ENCODE_HEADROOM", "ENCODE_THREADS", "POLL_INTERVAL", "MTIME_QUIET", "GRAIN_THRESHOLD",
+)
 
 
 #----- cgroup CPU quota
@@ -118,64 +113,26 @@ class Config:
         self.pgid = _int("PGID", -1)
         self.render_gid = _int("RENDER_GID", -1)
 
-        self.output_codec = _str("OUTPUT_CODEC", "hevc").lower()
-        if self.output_codec not in VALID_CODECS:
-            raise ConfigError(
-                "OUTPUT_CODEC must be one of %s, got %r"
-                % (", ".join(VALID_CODECS), self.output_codec)
-            )
-
-        self.max_jobs = _int("MAX_JOBS", 3)
-        self.gpu_slots = _int("GPU_SLOTS", 1)
-        self.cpu_slots = _int("CPU_SLOTS", 1)
-        self.encode_headroom = _float("ENCODE_HEADROOM", 3.0)
-        self.crf = _int("CRF", 18)
-        self.tv_encode_sd = _bool("TV_ENCODE_SD", False)
-        self.encode_threads = _int("ENCODE_THREADS", 0)
-
         self.web_port = _int("WEB_PORT", 443)
         self.dry_run = _bool("DRY_RUN", False)
-        self.poll_interval = _int("POLL_INTERVAL", 15)
-        self.mtime_quiet = _int("MTIME_QUIET", 30)
         self.log_level = _str("LOG_LEVEL", "info").lower()
         self.render_node = _str("RENDER_NODE", "/dev/dri/renderD128")
-        self.grain_threshold = _float("GRAIN_THRESHOLD", 0.18)
         self.lock_wait_timeout = _int("LOCK_WAIT_TIMEOUT", 0)
         self.lock_wait_interval = _int("LOCK_WAIT_INTERVAL", 15)
         self.audit_interval = _int("AUDIT_INTERVAL", 2)
         self.audit_sweep_interval = _int("AUDIT_SWEEP_INTERVAL", 3600)
+        self.ignored = [name for name in REMOVED if os.environ.get(name)]
 
         for name, value in (
-            ("MAX_JOBS", self.max_jobs),
-            ("GPU_SLOTS", self.gpu_slots),
-            ("CPU_SLOTS", self.cpu_slots),
-            ("POLL_INTERVAL", self.poll_interval),
-            ("MTIME_QUIET", self.mtime_quiet),
             ("AUDIT_INTERVAL", self.audit_interval),
             ("AUDIT_SWEEP_INTERVAL", self.audit_sweep_interval),
         ):
             if value < 0:
                 raise ConfigError("%s must not be negative, got %d" % (name, value))
-        if self.max_jobs < 1:
-            raise ConfigError("MAX_JOBS must be at least 1")
-        if self.gpu_slots + self.cpu_slots < 1:
-            raise ConfigError("GPU_SLOTS and CPU_SLOTS must not both be zero")
-        if not 0.0 < self.grain_threshold < 1.0:
-            raise ConfigError(
-                "GRAIN_THRESHOLD must be between 0 and 1, got %s" % self.grain_threshold
-            )
         if self.lock_wait_interval < 1:
             raise ConfigError("LOCK_WAIT_INTERVAL must be at least 1 second")
         if self.lock_wait_timeout < 0:
             raise ConfigError("LOCK_WAIT_TIMEOUT must not be negative")
-        if self.encode_headroom < 1.0:
-            raise ConfigError(
-                "ENCODE_HEADROOM must be at least 1.0, got %s" % self.encode_headroom
-            )
-        if self.encode_threads < 0:
-            raise ConfigError(
-                "ENCODE_THREADS must not be negative, got %d" % self.encode_threads
-            )
         required = [("MEDIA_ROOT", self.media_root)]
         if self.encode_mounted:
             required.append(("MEDIA_ENCODE", self.media_encode))
@@ -185,21 +142,10 @@ class Config:
             if not os.path.isdir(path):
                 raise ConfigError("%s points at %s which is not a mounted directory" % (name, path))
 
-        autodetected = self.encode_threads == 0
-        detected_from_cgroup = False
-        if autodetected:
-            detected = detect_cpus()
-            detected_from_cgroup = detected is not None
-            self.encode_threads = detected or os.cpu_count() or 1
-        if not 0 <= self.crf <= 51:
-            raise ConfigError("CRF must be between 0 and 51, got %d" % self.crf)
         if not 1 <= self.web_port <= 65535:
             raise ConfigError("WEB_PORT must be a valid port, got %d" % self.web_port)
 
         self.sources = dict(_SOURCES)
-        self.thread_source = (
-            "cgroup cpu.max" if detected_from_cgroup else "os.cpu_count"
-        ) if autodetected else "environment"
 
     #----- Derived values
     @property
@@ -209,10 +155,6 @@ class Config:
     @property
     def tls_key(self):
         return os.path.join(self.cert_dir, self.tls_key_file)
-
-    @property
-    def encode_threads_per_job(self):
-        return max(1, self.encode_threads // max(1, self.cpu_slots))
 
     @property
     def gpu_enabled(self):
@@ -240,21 +182,10 @@ class Config:
             "PUID": self.puid,
             "PGID": self.pgid,
             "RENDER_GID": self.render_gid,
-            "OUTPUT_CODEC": self.output_codec,
-            "MAX_JOBS": self.max_jobs,
-            "GPU_SLOTS": self.gpu_slots,
-            "CPU_SLOTS": self.cpu_slots,
-            "ENCODE_HEADROOM": self.encode_headroom,
-            "CRF": self.crf,
-            "TV_ENCODE_SD": self.tv_encode_sd,
-            "ENCODE_THREADS": self.encode_threads,
+            "RENDER_NODE": self.render_node,
             "WEB_PORT": self.web_port,
             "DRY_RUN": self.dry_run,
-            "POLL_INTERVAL": self.poll_interval,
-            "MTIME_QUIET": self.mtime_quiet,
             "LOG_LEVEL": self.log_level,
-            "RENDER_NODE": self.render_node,
-            "GRAIN_THRESHOLD": self.grain_threshold,
             "LOCK_WAIT_TIMEOUT": self.lock_wait_timeout,
             "LOCK_WAIT_INTERVAL": self.lock_wait_interval,
             "AUDIT_INTERVAL": self.audit_interval,

@@ -74,13 +74,13 @@ Three or four complete passes per title, so copy in once, do everything on the e
 
 Startup compares 'os.stat().st_dev' of the encode mount against the complete mount and warns when they match, so a fast disk that silently landed on the same filesystem is visible rather than mysterious.
 
-STAGING HAPPENS BEHIND THE ENCODER SLOT, SO COPIES IN THE ENCODE AREA ARE BOUNDED BY THE SLOT COUNTS.  A title is staged by the pool thread that will encode it, after it has been dequeued, so at most 'CPU_SLOTS + GPU_SLOTS + 1' job directories exist at once whatever 'MAX_JOBS' says;  section 6 records the measurement behind the split.
+STAGING HAPPENS BEHIND THE ENCODER SLOT, SO COPIES IN THE ENCODE AREA ARE BOUNDED BY THE SLOT COUNTS.  A title is staged by the pool thread that will encode it, after it has been dequeued, so at most 'cpu_slots + gpu_slots + 1' job directories exist at once whatever 'max_jobs' says;  section 6 records the measurement behind the split.
 
-Admission control requires roughly ENCODE_HEADROOM times the source size free before a job starts, read at admission time so it self-adjusts as the pool changes.  A job that runs out of space mid encode wastes the whole encode, so if the pool is small, lower MAX_JOBS rather than the multiplier.  There is no equivalent guard for memory, considered and declined:  the prediction needs a constant nobody has measured and frame area dominates it, so sizing CONTAINER_MEM is the operator's call and an OOM kill mid encode is an accepted failure mode.
+Admission control requires roughly 'encode_headroom' times the source size free before a job starts, read at admission time so it self-adjusts as the pool changes.  A job that runs out of space mid encode wastes the whole encode, so if the pool is small, lower the slot counts rather than the multiplier.  There is no equivalent guard for memory, considered and declined:  the prediction needs a constant nobody has measured and frame area dominates it, so sizing CONTAINER_MEM is the operator's call and an OOM kill mid encode is an accepted failure mode.
 
 ## 5.  Configuration
 
-The environment is the entire configuration surface.  No config file, no host assumptions.  Every variable below is read once at startup, validated, and echoed into the log and onto '/api/status', so what the container thinks it was configured with is always visible without exec-ing into it.
+TWO SURFACES, BY WHAT THEY DESCRIBE.  The environment is the deployment surface:  mounts, libraries, the certificate, the identity, the render node, the port, the lock timings, DRY_RUN, LOG_LEVEL and the audit intervals.  Every variable below is read once at startup, validated, and echoed into the log and onto '/api/status'.  No config file, no host assumptions.  Everything else, which is everything the pipeline decides with, is a setting:  stored in the 'settings' table in 'state.db', edited on the Application Settings page, read at the point of use, and echoed into the log at startup with a mark on every stored value.
 
 ```
 MEDIA_ROOT           /media            required rw, the one mount everything derives from
@@ -94,27 +94,30 @@ TLS_KEY_FILE         privkey.pem       private key name within CERT_DIR
 PUID / PGID          required          identity the supervisor drops to
 RENDER_GID           unset             supplementary group for /dev/dri, GPU off if unset
 RENDER_NODE          /dev/dri/renderD128  render node the GPU probe and QSV encoder use
-OUTPUT_CODEC         hevc              hevc or av1
-MAX_JOBS             3                 assessment workers:  probe, screen, identify, compare, route
-GPU_SLOTS            1                 GPU encode threads, and the bound on GPU-side staged copies
-CPU_SLOTS            1                 CPU encode threads, each at ENCODE_THREADS / CPU_SLOTS
-ENCODE_HEADROOM      3.0               multiple of source size required to admit a job
-ENCODE_THREADS       0                 0 autodetects from the cgroup CPU quota
-CRF                  18                default quality target
-TV_ENCODE_SD         0                 1 re-enables SD television encoding
 WEB_PORT             443               HTTPS only, there is no HTTP listener
 DRY_RUN              0                 1 logs every intended action and performs none
-POLL_INTERVAL        15                import watch interval, seconds
-MTIME_QUIET          30                seconds untouched before a file counts as stable
 LOCK_WAIT_TIMEOUT    0                 seconds to wait for the instance lock, 0 waits forever
 LOCK_WAIT_INTERVAL   15
-GRAIN_THRESHOLD      0.18              denoise delta above which a source counts as grainy
 LOG_LEVEL            info              info or debug, see section 20
 AUDIT_INTERVAL       2                 seconds between library files audited, 0 disables the sweep
 AUDIT_SWEEP_INTERVAL 3600              seconds between passes over the libraries
 ```
 
-Adding a setting means adding it to 'Config.as_dict()' as well, or it silently vanishes from the startup banner and the status endpoint, which is where anyone debugging looks first.  NOTHING ENFORCES THAT TABLE.  It was machine-checked once and is not any more, so a setting added to the code and not to this table drifts silently until someone reads both.  TESTPLAN.md case T-01 compares the two by hand at startup.
+Adding a variable means adding it to 'Config.as_dict()' as well, or it silently vanishes from the startup banner and the status endpoint, which is where anyone debugging looks first.  NOTHING ENFORCES THAT TABLE.  A variable added to the code and not to this table drifts silently until someone reads both.  TESTPLAN.md case T-01 compares the two by hand at startup.
+
+ELEVEN VARIABLES ARE NOT READ FROM THE ENVIRONMENT AT ALL.  'config.REMOVED' names them:  OUTPUT_CODEC, CRF, TV_ENCODE_SD, MAX_JOBS, GPU_SLOTS, CPU_SLOTS, ENCODE_HEADROOM, ENCODE_THREADS, POLL_INTERVAL, MTIME_QUIET, GRAIN_THRESHOLD.  One present in the environment is listed in 'Config.ignored' and 'main' logs a warning naming it and the settings page;  its value is never consulted.  Nothing seeds a setting from the environment, so a docker run that still carries the line and a settings page that says otherwise cannot disagree about which one is in force.
+
+### Settings
+
+'app/settings.py' IS THE ONE REGISTRY.  'SETTINGS' declares every setting once:  key, group, label, one sentence of help, type (int, float, bool, str, choice, list, table), default, whether it is per kind, and its bounds, choices or pattern.  The default of a setting that replaced a module constant is that constant, so the module keeps its value for a direct call and the registry cannot drift from it.  README.md carries the table of settings with their defaults.
+
+A PER-KIND SETTING HAS ONE VALUE FOR MOVIES AND ONE FOR TELEVISION, stored as 'key.movie' and 'key.tv'.  Everything under Encoding is per kind except 'sd_display_height', 'passthrough_codecs' and 'x265_dv_vbv_kbps', and so are the grain threshold and the standards floors.  'Settings.profile(kind)' resolves every setting for one kind into a flat dict, adds the derived 'threads_per_job', and is the object the orchestrator hands to 'encode', 'standards', 'compare', 'media', 'probe' and 'tags'.  Those functions take the figures as parameters and stay pure in their inputs;  none of them reads the settings object, so each remains testable on a dict.  'provider.Provider' and 'provider.Client' hold the settings object and read their figures per call, because their call chains are deep and the values are global.
+
+A CHANGE APPLIES AT THE NEXT READ, AND A ROUTED TITLE KEEPS ITS PARAMETERS.  'Settings.update' validates every value in the batch, runs the cross-key rules ('poll_interval' below 'mtime_quiet', the two slot counts not both zero) against the merged result, and writes the whole batch in one transaction or nothing.  The watcher reads its intervals per poll, admission reads the headroom per job, every gate reads its figures when it runs.  '_route' snapshots 'encode.encoder_params(profile)' into the decision as 'params', stored in 'decision_json', and '_encode' builds the command from that snapshot;  so a title waiting on a pool encodes under the configuration it was routed with, whatever changed since, and Retry is what re-assesses it.  A decision without 'params' goes back to assessment through the same branch as a decision that is missing.  The sidecar 'encode.job' still wins per title.
+
+THE POOLS RESIZE LIVE.  'orchestrator.Pools' carries a target per pool and a thread registry;  a worker runs while its index is below its pool's target and checks that between titles, so a shrink never interrupts a running encode and the surplus thread exits after its current title.  '_ensure_workers' starts a thread for every index below the target with no live thread;  'apply_settings' calls it when 'max_jobs', 'gpu_slots' or 'cpu_slots' changed.  'Pools.snapshot' carries the targets beside the live counts, so a shrink in progress is visible on the settings page.
+
+THE ENDPOINTS.  'GET /api/settings' returns 'Settings.describe()' with the pool snapshot;  'POST /api/settings' takes '{"set": {key: value}}' and '{"reset": [keys]}', returns the same body with 'changed' on success, and 400 with '{"errors": {key: why}}' having written nothing.  Every change is logged with its old and new value.  The page is 'app/static/settings.html', served at '/settings', vanilla JS like the dashboard.
 
 ### Read outside Config
 
@@ -129,7 +132,7 @@ MKVEXTRACT   mkvextract    tags.py
 VAINFO       vainfo        gpu.py
 ```
 
-TWO SETTINGS EXIST IN BOTH PLACES.  'RENDER_NODE' has a module-level fallback at 'gpu.py' and 'encode.py', and 'GRAIN_THRESHOLD' has one at 'media.py'.  In both cases the Config value wins whenever a cfg is passed, and the module constant only serves a direct call that passes none.  This is deliberate and it is not drift, but a change to either has to be made in both places.
+ONE VARIABLE EXISTS IN BOTH PLACES.  'RENDER_NODE' has a module-level fallback at 'gpu.py' and 'encode.py';  the Config value wins whenever a cfg is passed, and the module constant only serves a direct call that passes none.  This is deliberate and it is not drift, but a change has to be made in both places.
 
 ## 6.  The chain
 
@@ -151,7 +154,7 @@ PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
 CLEANUP      source to quarantine, encode job directory wiped
 ```
 
-ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'MAX_JOBS' assessment workers take a title from DETECTED through ROUTED:  probe, screen, identify, compare and route, which chooses the encoder and stores the decision.  The title is then queued for one of three pools by that decision, 'cpu' with 'CPU_SLOTS' threads, 'gpu' with 'GPU_SLOTS', or 'passthrough' with one, and the pool thread does everything from staging to cleanup.  Measured 2026-09-10 before the split:  81 titles at DETECTED, one encoding, two staged and blocked on the single CPU slot, held queue empty, because a title was assessed only when an encode completed;  after it the same batch is assessed within minutes, every gate failure is held before the first encode finishes, and a passthrough title publishes while an encode runs.  Resume places a title by its stage:  anything up to COMPARED goes back to assessment, ROUTED and later go to the pool its stored decision names, and a later stage with no stored decision is re-assessed.
+ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'max_jobs' assessment workers take a title from DETECTED through ROUTED:  probe, screen, identify, compare and route, which chooses the encoder and stores the decision with the encoder parameters it was routed under.  The title is then queued for one of three pools by that decision, 'cpu' with 'cpu_slots' threads, 'gpu' with 'gpu_slots', or 'passthrough' with one, and the pool thread does everything from staging to cleanup.  Measured 2026-09-10 before the split:  81 titles at DETECTED, one encoding, two staged and blocked on the single CPU slot, held queue empty, because a title was assessed only when an encode completed;  after it the same batch is assessed within minutes, every gate failure is held before the first encode finishes, and a passthrough title publishes while an encode runs.  Resume places a title by its stage:  anything up to COMPARED goes back to assessment, ROUTED and later go to the pool its stored decision names, and a later stage with no stored decision is re-assessed.
 
 THE THREE ASSESSMENT STAGES RUN THROUGH BEFORE ANYTHING HOLDS.  SCREENED, IDENTIFIED and COMPARED are read-only assessments over the probed container, so a failure in one records its reasons and the next still runs, and the title holds once with everything the three of them found.  A clear comparison loss is the exception and quarantines immediately, because that verdict is definitive.  The working stages are not run speculatively:  STAGED, REMUXED and ENCODING transform the file and cost hours and disk, so a title can still hold a second time at READY or VERIFIED with whatever those find after the work is done.
 
@@ -173,11 +176,11 @@ THE LANGUAGE STRIP RUNS BEFORE THE ENCODE.  The encoder maps every audio track a
 
 '/media/import' is the only watched entry point.  Nothing else is mounted, so nothing enters the chain that was not deliberately placed there.
 
-A file must be size-stable across two polls AND untouched for MTIME_QUIET seconds before it is detected.  Files ending in '.part' and files beginning with a dot are ignored outright.
+A file must be size-stable across two polls AND untouched for 'mtime_quiet' seconds before it is detected.  Files ending in '.part' and files beginning with a dot are ignored outright.
 
-THOSE TWO CONDITIONS SET THE DETECTION WINDOW AND THEIR VALUES INTERACT.  MTIME_QUIET is the floor and the poll adds up to one interval on top of it, so 120 and 60 meant a finished copy stayed invisible for 120 to 180 seconds.  At 30 and 15 the window is 30 to 45.  Lowered 2026-09-09 because the original figures were sized for a stall that does not happen on a LAN copy;  the residual risk, a transfer paused longer than MTIME_QUIET, is bounded because a truncated file fails ffprobe or the minimum standards gate and holds.
+THOSE TWO CONDITIONS SET THE DETECTION WINDOW AND THEIR VALUES INTERACT.  'mtime_quiet' is the floor and the poll adds up to one interval on top of it, so 120 and 60 meant a finished copy stayed invisible for 120 to 180 seconds.  At 30 and 15 the window is 30 to 45.  Lowered 2026-09-09 because the original figures were sized for a stall that does not happen on a LAN copy;  the residual risk, a transfer paused longer than 'mtime_quiet', is bounded because a truncated file fails ffprobe or the minimum standards gate and holds.
 
-KEEP POLL_INTERVAL BELOW MTIME_QUIET.  The size condition compares against a size recorded by a PREVIOUS poll, so the quiet window has to contain at least one poll for the pair to fire together.  Invert them and the first qualifying poll finds no previous size, returns false, and detection costs an extra interval.  Nothing in the code enforces the ordering.
+'poll_interval' IS BELOW 'mtime_quiet', ENFORCED.  The size condition compares against a size recorded by a PREVIOUS poll, so the quiet window has to contain at least one poll for the pair to fire together.  Invert them and the first qualifying poll finds no previous size, returns false, and detection costs an extra interval.  'Settings.update' refuses a batch that would put the poll at or above the quiet window.
 
 ## 7.  Minimum standards
 
@@ -199,6 +202,8 @@ TELEVISION
   SD accepted, since no HD master exists for much of the library
   runtime at least 15 min
 ```
+
+THE FLOORS ARE PER-KIND SETTINGS, AND THE FIGURES ABOVE ARE THEIR DEFAULTS.  'min_display_width', 'min_display_height' and 'min_runtime_min' on the Standards group, 0 meaning no floor, which is how television carries no resolution floor;  'letterbox_bars_px', 'pal_speedup_check' and 'keep_langs' are the global ones.  'standards.screen' takes them on a profile and its module constants are the defaults.
 
 THE HEIGHT FLOOR IS 800, NOT 1080, AND THE WIDTH FLOOR IS WHAT REJECTS SD.  A 2.40:1 scope master is 1920x800 and a 2.35:1 is 1920x818;  neither has bars and neither is 1080 tall.  Measured 2026-09-08:  a correctly cropped Blade Runner 2049 and a Return of the Jedi at 1920x816 were both held as "below the 1920x1080 floor", so the floor as written rewarded the file that wasted a quarter of every frame on black.  The width floor of 1920 is what continues to reject 720p, NTSC and PAL DVD, all of which display far narrower.
 
@@ -266,7 +271,7 @@ AN INCONCLUSIVE HOLD NAMES THE INCUMBENT, AND SAYS WHEN ITS TITLE DIFFERS.  Meas
 
 GATE 2 DEFERS TO GATE 3 WHENEVER EITHER SIDE CARRIES BAKED-IN BARS.  Display pixel count counts black bars as picture and gate 3 exists to discount them.  Measured 2026-09-08:  an incoming Blade Runner 2049 at a correctly cropped 1920x800 was quarantined against an incumbent stored 1920x1080 carrying 280 px of bars, an identical 1,536,000 px of real picture on both sides, with cropdetect's 280 px measured at COMPARED and discarded.  Gate 2 now records a defer note and gate 3 decides.  On that title the verdict stays a loss and moves to gate 5, bit depth 8 against 10, which is the true disqualifier.
 
-THE DEFER CONDITION HAS NO AMBIGUOUS MIDDLE, BY CONSTRUCTION.  'media.CROP_MIN_BARS_PX' and 'standards.LETTERBOX_MAX_BARS_PX' are both 20, so 'letterbox_px' is only ever 0 or 20 and above.
+THE DEFER CONDITION HAS NO AMBIGUOUS MIDDLE, BY CONSTRUCTION.  One setting, 'letterbox_bars_px', is the floor cropdetect reports a crop at and the limit the standards gate fails above, so 'letterbox_px' is only ever 0 or that figure and above;  'media.CROP_MIN_BARS_PX' and 'standards.LETTERBOX_MAX_BARS_PX' are its default on each side.
 
 A 24-file cropdetect sample of the movie library, taken with the bit-depth-scaled limit from section 16, found the 10 to 19 px band empty and three titles at or above 20 px, two of them the same shape as the Blade Runner incumbent:  Suicide Squad at 1920x1080 with 280 px, and Guardians of the Galaxy Vol. 3 at 1920x1016 with 212 px.
 
@@ -281,7 +286,7 @@ Track against track, each over its own duration, keeps section 17's whole-file b
 RAW BITRATE ACROSS CODECS IS NOT A QUALITY COMPARISON, so the figures are weighted first:
 
 ```
-CODEC_EFFICIENCY, relative to h264 = 1.0
+codec_efficiency, relative to h264 = 1.0
   h264, avc      1.0
   hevc, h265     1.7
   av1            2.2
@@ -290,11 +295,11 @@ CODEC_EFFICIENCY, relative to h264 = 1.0
   mpeg2video     0.45
 ```
 
-STARTING POINTS, NOT SETTLED VALUES, in the sense section 14 uses for the AV1 parameters.  No calibration batch has been run against this library.  The av1 figure derives from section 25's 25 to 30 percent applied to the hevc figure.  Anything unlisted is treated as 1.0.
+STARTING POINTS, NOT SETTLED VALUES, in the sense section 14 uses for the AV1 parameters, and a setting on the Comparison group of the settings page.  No calibration batch has been run against this library.  The av1 figure derives from section 25's 25 to 30 percent applied to the hevc figure.  Anything unlisted is treated as 1.0.
 
 Without the weighting the gate favours less efficient codecs, self-defeatingly:  re-importing a title whose h264 source still exists would rate that source above the HEVC this pipeline produced from it, and quarantine its own output.
 
-'BITRATE_TOLERANCE' is 0.25 against 'PIXEL_TOLERANCE' at 0.05, and it is also unmeasured.  Legitimate encodes of one title vary far more in bitrate than in pixel count, so the 5 percent figure would make almost every pair cast a vote.
+'bitrate_tolerance' is 0.25 against 'pixel_tolerance' at 0.05, both settings, and it is also unmeasured.  Legitimate encodes of one title vary far more in bitrate than in pixel count, so the 5 percent figure would make almost every pair cast a vote.
 
 NO BITS-PER-PIXEL NORMALISATION.  A differing resolution is gates 2 and 3's business, and a resolution vote that contradicts a bitrate vote lands in review under the tally.
 
@@ -383,7 +388,7 @@ Resolution goes through Wikidata, then verification:  'wbsearchentities', then '
 
 Cross-check before writing an ID.  Fetch the TMDB page and confirm it describes the entity.  Wikidata provider IDs can be flat wrong:  P4983 for one show held the TMDB movie id of an unrelated 1984 Italian comedy.
 
-THE PAGE IS CONFIRMED BY ITS OWN TITLE AND YEAR, AGAINST THE ENTITY'S LABEL AND ALIASES.  Until 2026-09-11 the check was whether the rung's string appeared anywhere in the page body.  Star Wars VII held on every rung:  its tag TITLE was the filename form 'Star Wars Episode VII The Force Awakens', TMDB titles the film 'Star Wars: The Force Awakens', and the Wikidata label 'Star Wars: Episode VII – The Force Awakens' is not on the page either.  TMDB spells titles its own way;  id 11 is plain 'Star Wars' there.  '_page_confirms' now reads the page's '<title>', 'Name (YYYY)' on TMDB, 'Name (TV Series YYYY)' for a show, 'Name (YYYY)' or bare on TVDB, and scores that name against the entity's label and every alias under the section 9 scoring, accepting at 'TITLE_CUTOFF';  the label-in-body test remains as the fallback.  A page year more than one off the entity's rejects regardless, which is what catches a wrong id pointing at a sibling:  an Episode V entity against page 11 scores 0.9 on containment and is rejected on 1977 against 1980.  The TMDB HTML carries no IMDb or TVDB cross-links, checked, so the title and year are all there is.
+THE PAGE IS CONFIRMED BY ITS OWN TITLE AND YEAR, AGAINST THE ENTITY'S LABEL AND ALIASES.  Until 2026-09-11 the check was whether the rung's string appeared anywhere in the page body.  Star Wars VII held on every rung:  its tag TITLE was the filename form 'Star Wars Episode VII The Force Awakens', TMDB titles the film 'Star Wars: The Force Awakens', and the Wikidata label 'Star Wars: Episode VII – The Force Awakens' is not on the page either.  TMDB spells titles its own way;  id 11 is plain 'Star Wars' there.  '_page_confirms' now reads the page's '<title>', 'Name (YYYY)' on TMDB, 'Name (TV Series YYYY)' for a show, 'Name (YYYY)' or bare on TVDB, and scores that name against the entity's label and every alias under the section 9 scoring, accepting at 'title_cutoff';  the label-in-body test remains as the fallback.  A page year more than one off the entity's rejects regardless, which is what catches a wrong id pointing at a sibling:  an Episode V entity against page 11 scores 0.9 on containment and is rejected on 1977 against 1980.  The TMDB HTML carries no IMDb or TVDB cross-links, checked, so the title and year are all there is.
 
 Searching a bare franchise name returns the franchise entity rather than the film.  Search 'Title (YYYY film)'.
 
@@ -394,7 +399,7 @@ Searching a bare franchise name returns the franchise entity rather than the fil
 'provider._resolve_by_search', the name path for both kinds, does three things, in order:
 
 - The two prefix searches as before, then a FULL-TEXT FALLBACK:  'action=query&list=search' is CirrusSearch, tolerant of punctuation, and it ranks the film first for both colon titles measured.  The hits' labels and aliases come back in one 'wbgetentities' call, so the fallback costs two requests rather than one per hit.
-- EVERY CANDIDATE IS SCORED AGAINST THE TITLE THE WAY SECTION 9 SAYS TO COMPARE:  apply 'titles.to_filename' to the label and compare with the name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Full-text hits must clear 'TITLE_CUTOFF', which is the 0.82 the episode matcher uses;  prefix hits are ordered by score but not cut, because Wikidata already matched the whole string.  Verified 2026-09-11 on A New Hope, Bender's Game, Return of the Jedi and Blade Runner 2049;  'Return of the Jedi' scores 1.0 on the Episode VI label through the containment rule.
+- EVERY CANDIDATE IS SCORED AGAINST THE TITLE THE WAY SECTION 9 SAYS TO COMPARE:  apply 'titles.to_filename' to the label and compare with the name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Full-text hits must clear 'title_cutoff', the one setting the episode matcher and the search share, 0.82 by default;  prefix hits are ordered by score but not cut, because Wikidata already matched the whole string.  Verified 2026-09-11 on A New Hope, Bender's Game, Return of the Jedi and Blade Runner 2049;  'Return of the Jedi' scores 1.0 on the Episode VI label through the containment rule.
 - A CANDIDATE WHOSE RELEASE YEAR IS MORE THAN A YEAR FROM THE NAME'S IS SKIPPED with a log line.  'RoboCop' returns six entities labelled 'RoboCop';  the 1987 film sat ahead of the 2014 one and the old first-verified-wins would have taken it.
 
 The TMDB page verification still gates every acceptance;  the scoring makes the search stricter, not looser.
@@ -465,7 +470,7 @@ RUNG 3a EXISTS BECAUSE THE AUDIT COPY LANDS FLAT.  Section 27 copies a library f
 
 THE BACKSTOP FOR EVERY CASE THE RUNGS CANNOT SETTLE.  When identification holds, the row carries the candidates from each source and the detail dialog shows one list per source, so the operator confirms every component of the identity rather than one entity whose claims are then trusted.  For a show the sources are the Wikidata entity, which supplies the title and year, the TVDB series, which supplies the tvdb id and the catalogue, and the TMDB series;  for a movie the entity, the TMDB movie and IMDb.
 
-WHAT EACH SOURCE CAN ENUMERATE WITHOUT A KEY, MEASURED 2026-09-13.  Wikidata:  every entity '_resolve_from' scored, with its label, year, ids, score and the outcome in the words of the log line ('accepted, lacks tvdb', 'tvdb 85230 did not confirm the show', 'started in 1974, not 1979', 'below the 0.82 cutoff').  TVDB:  every P4835 on those entities plus the remote-id lookup for every entity carrying P345, each dereferenced to its series page for the English name and the IMDb and TMDB cross-links the page carries.  TMDB:  'https://www.themoviedb.org/search/tv?query=<name>' and '/search/movie?query=<name>' are server-rendered, each hit an anchor carrying the id, the title and a date;  six hits for 'Star Blazers', 7768 first.  Those are merged with every P4983 or P4947 on the entities.  IMDb:  every P345 on the entities;  there is no keyless search.  Every source has a free-text id field for the case where no listed candidate is right.  Lists are capped at 'CANDIDATE_LIMIT', eight per source.
+WHAT EACH SOURCE CAN ENUMERATE WITHOUT A KEY, MEASURED 2026-09-13.  Wikidata:  every entity '_resolve_from' scored, with its label, year, ids, score and the outcome in the words of the log line ('accepted, lacks tvdb', 'tvdb 85230 did not confirm the show', 'started in 1974, not 1979', 'below the 0.82 cutoff').  TVDB:  every P4835 on those entities plus the remote-id lookup for every entity carrying P345, each dereferenced to its series page for the English name and the IMDb and TMDB cross-links the page carries.  TMDB:  'https://www.themoviedb.org/search/tv?query=<name>' and '/search/movie?query=<name>' are server-rendered, each hit an anchor carrying the id, the title and a date;  six hits for 'Star Blazers', 7768 first.  Those are merged with every P4983 or P4947 on the entities.  IMDb:  every P345 on the entities;  there is no keyless search.  Every source has a free-text id field for the case where no listed candidate is right.  Lists are capped at 'candidate_limit', eight per source by default.
 
 THE LISTS ARE BUILT WHEN THE HOLD IS WRITTEN, on the assessment worker that produced it, through 'provider.hold_candidates', and stored on the row as 'candidates_json' together with the rung and name that were searched.  The cost is bounded:  one TMDB search, one series page per distinct TVDB candidate, under a minute.  A provider that cannot be reached leaves the lists incomplete with the error recorded, never fails the hold.
 
@@ -668,8 +673,10 @@ Forced subtitle tracks are exempt and keep their default.  Key that exception of
 English only.  Non-English audio and subtitle tracks are dropped at ingest.
 
 ```
-KEEP_LANGS = eng en und
+keep_langs = eng en und
 ```
+
+THE LIST IS ONE SETTING WITH FOUR READERS.  'probe.probe' counts foreign tracks with it, 'standards.screen' requires an audio track in it, 'media.strip_foreign' drops what is not in it, and 'tags.readiness' fails a track outside it;  each takes 'keep_langs' as a parameter and the orchestrator and the auditor pass the same value, so a library file is judged by the list an arrival is.  The module constants are its default.
 
 VIDEO TRACK LANGUAGE IS 'eng', not 'und'.  The one exception is cover art:  a V_MJPEG track is a poster, not video, and stays 'und'.
 
@@ -693,8 +700,8 @@ Evaluated in order, first match wins.  Implemented in 'encode.select', which is 
 1  source codec is hevc or av1          PASSTHROUGH
 2  television and the source is SD      PASSTHROUGH
 3  Dolby Vision RPU present             libx265    on any setting
-4  OUTPUT_CODEC=av1 and grainy          libsvtav1  CPU
-5  OUTPUT_CODEC=av1                     av1_qsv    GPU
+4  output_codec av1 and grainy          libsvtav1  CPU
+5  output_codec av1                     av1_qsv    GPU
 6  grainy                               libx265 aq-mode=4:tune=grain
 7  otherwise                            libx265 aq-mode=3
 ```
@@ -703,7 +710,7 @@ GATE ORDER IS LOAD BEARING AND BREAKS SILENTLY IF DISTURBED.  TESTPLAN.md cases 
 
 Gate 1:  an already-AV1 file is never transcoded back to HEVC.
 
-Gate 2:  SD television is never re-encoded by default.  An SD source has little to gain and a generation of quality to lose;  the field handling below removes the interlace half of that loss, and the default is unchanged.  SD means display height below 720, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays.  TV_ENCODE_SD re-enables it.
+Gate 2:  an SD source is never re-encoded by default.  An SD source has little to gain and a generation of quality to lose;  the field handling below removes the interlace half of that loss, and the default is unchanged.  SD means display height below 'sd_display_height', 720, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays.  'encode_sd' re-enables it per kind;  for movies it is reachable only once the standards floor admits an SD source, since the floor rejects one first.
 
 Gate 3:  an AV1 re-encode discards the Dolby Vision RPU, because AV1 Dolby Vision is profile 10 and effectively nothing plays it, so DV titles always take the x265 path and the x265 path can never be retired.  GATE 3 IS UNREACHABLE FOR REAL MATERIAL.  Every Dolby Vision profile is HEVC or AV1, so gate 1 passes every DV title through and is what protects the RPU;  gate 3 is the backstop for a DV source in a third codec, which does not exist, and 'build_command' refuses any encoder but libx265 for a DV title regardless, so a change to gate 1 cannot silently drop an RPU.
 
@@ -711,7 +718,7 @@ PASSTHROUGH MEANS NO VIDEO RE-ENCODE, NOT NO PROCESSING.  A passthrough title is
 
 ### x265 parameters
 
-Settled on a nine-film batch, 2026-08-27 and 2026-08-28.  DO NOT RETUNE THESE.
+Settled on a nine-film batch, 2026-08-27 and 2026-08-28.  THESE ARE THE DEFAULTS, AND THE DEFAULTS ARE NOT RETUNED IN CODE.  Every figure below is a per-kind setting on the Encoding group ('x265_preset', 'x265_crf', 'x265_aq_mode', 'x265_aq_mode_film', 'x265_tune_film', 'x265_psy_rd', 'x265_psy_rdoq', 'x265_deblock', 'x265_pix_fmt', and 'x265_extra_params' appended verbatim), so a deviation is made on the settings page, is marked as stored in the banner and on the page, and is carried in every routed title's decision.  The registry's defaults are the constants in 'encode.py'.
 
 ```
 libx265, preset slow, crf 18, pix_fmt yuv420p10le
@@ -721,9 +728,9 @@ aq = aq-mode=4:tune=grain on film sources, aq-mode=3 otherwise
 
 HDR SIGNALLING TRAVELS INSIDE THE PARAMS STRING TOO.  For an HDR source 'x265_hdr_params' appends 'colorprim', 'transfer', 'colormatrix', 'range=limited', 'hdr10=1', 'master-display' from the ST 2086 figures and 'max-cll' from the light levels, taking the bitstream figures first and the container's second.  Measured in the image on 2026-09-10, on ffmpeg 7.1.5 and again on 8.1.2:  the libx265 wrapper carries all of that through on its own, from either surface, so the params are a guard against a wrapper that stops doing so rather than the mechanism.  'hdr10-opt' is deliberately NOT passed:  it changes chroma QP offsets and is a tuning decision, not signalling.
 
-DOLBY VISION THROUGH AN ENCODE IS THREE PARAMETERS, NOT A NEW BINARY.  Measured on a Barbarella segment:  '-dolbyvision auto', which is what an unmodified argv gets, silently drops the RPU with no error and no DOVI record in the output.  '-dolbyvision 1' without VBV fails with "Dolby Vision requires VBV settings to enable HRD".  '-dolbyvision 1' with 'vbv-maxrate' and 'vbv-bufsize' carries the RPU intact, container record and per-frame data both.  So for a DV title 'build_command' passes '-dolbyvision 1' and 'X265_DV_VBV_KBPS' for both VBV figures, and the Dockerfile build gate asserts the wrapper has the option.
+DOLBY VISION THROUGH AN ENCODE IS THREE PARAMETERS, NOT A NEW BINARY.  Measured on a Barbarella segment:  '-dolbyvision auto', which is what an unmodified argv gets, silently drops the RPU with no error and no DOVI record in the output.  '-dolbyvision 1' without VBV fails with "Dolby Vision requires VBV settings to enable HRD".  '-dolbyvision 1' with 'vbv-maxrate' and 'vbv-bufsize' carries the RPU intact, container record and per-frame data both.  So for a DV title 'build_command' passes '-dolbyvision 1' and 'x265_dv_vbv_kbps', default 'X265_DV_VBV_KBPS', for both VBV figures, and the Dockerfile build gate asserts the wrapper has the option.
 
-KNOWN ISSUE:  'X265_DV_VBV_KBPS' IS AN UNMEASURED RATE CAP, AND IT IS THE ONLY CAP IN THE PIPELINE.  x265 will not encode a Dolby Vision profile without HRD, HRD needs VBV, so the DV path alone carries 'vbv-maxrate' and 'vbv-bufsize', both set from 'X265_DV_VBV_KBPS', currently 40000.  It is a deviation from "DO NOT RETUNE THESE", and the number controls two things:
+KNOWN ISSUE:  'x265_dv_vbv_kbps' IS AN UNMEASURED RATE CAP, AND IT IS THE ONLY CAP IN THE PIPELINE.  x265 will not encode a Dolby Vision profile without HRD, HRD needs VBV, so the DV path alone carries 'vbv-maxrate' and 'vbv-bufsize', both set from 'x265_dv_vbv_kbps', default 40000.  The number controls two things:
 
 - **Rate control.**  Under VBV, x265 raises QP wherever the bitrate over the buffer window would exceed the cap, so quality is surrendered in exactly the highest-complexity scenes whenever the cap binds.  40000 was chosen to sit above the peaks a 1080p CRF 18 slow encode produces, an expectation rather than a measurement.
 - **The signalled level and tier.**  x265 derives the HEVC level and tier from resolution, frame rate and the VBV maxrate.  Measured on the Barbarella segment:  the plain CRF 18 encode signals Level 4, Main tier;  the same encode with the VBV pair signals Level 4.1, High tier, because 40000 kbps exceeds Main tier's 20000 at that level.  High tier is a different compatibility surface, and some hardware decoders that accept Main tier at 4.1 do not accept High.  Every DV encode from this pipeline currently carries that tier.
@@ -732,7 +739,7 @@ KNOWN ISSUE:  'X265_DV_VBV_KBPS' IS AN UNMEASURED RATE CAP, AND IT IS THE ONLY C
 
 Unmeasured because gate 1 lets no DV title reach an encoder.  The value has been exercised once, on a ten-second 1920x816 segment, where it did not bind:  12.17 Mbps with the pair against 11.86 without, the difference being HRD's own decisions.  The first place the expectation would be tested is a UHD DV title after a change to gate 1.  Section 29 carries the settlement procedure;  until then the constant is a starting point in the sense the AV1 parameters below are.
 
-THE THREADING FIGURE IS NOT PART OF THAT TUNING.  'pools=' is appended to the same '-x265-params' string, and 'lp=' to '-svtav1-params', from ENCODE_THREADS divided by CPU_SLOTS.  The thread count is derived from the environment and differs between deployments, so a built command that carries 'pools=' has not been retuned.
+THE THREADING FIGURE IS NOT PART OF THAT TUNING.  'pools=' is appended to the same '-x265-params' string, and 'lp=' to '-svtav1-params', from 'encode_threads' divided by 'cpu_slots', autodetected from the cgroup quota when the setting is 0.  The thread count differs between deployments, so a built command that carries 'pools=' has not been retuned.
 
 USE tune=grain ON FILM SOURCES.  This is the single setting that separated the batch.  The two grain-tuned jobs produced the lowest and third-lowest bitrates at identical CRF.  The one grain-heavy 35mm source that ran plain 'aq-mode=3' produced the highest at 9,697k, nearly double another title on the same CRF and aq-mode.  Without the grain tune, x265 reads film grain as detail worth preserving and pays for it frame by frame.
 
@@ -757,7 +764,7 @@ BEFORE FLIPPING THE AV1 DEFAULT, run a calibration batch and score against the S
 
 The grain signal cannot come from a hand-written sidecar, because in an automatic chain nobody writes one and every film source would silently lose the largest measured lever in the project.
 
-Measured instead:  a 20 second sample from the middle of the file, encoded twice at a fixed CRF, once clean and once through a light 'hqdn3d' denoise.  Grain is expensive to encode, so a grainy source shows a large size delta and a clean digital source shows almost none.  The ratio is logged for every title so a bad threshold is visible rather than silent.  GRAIN_THRESHOLD tunes it.
+Measured instead:  a 20 second sample from the middle of the file, encoded twice at a fixed CRF, once clean and once through a light 'hqdn3d' denoise.  Grain is expensive to encode, so a grainy source shows a large size delta and a clean digital source shows almost none.  The ratio is logged for every title so a bad threshold is visible rather than silent.  'grain_threshold' tunes it, per kind;  the sample length, position and the probe's own CRF and preset are settings on the Probes group.
 
 THE PROBE RUNS AT ROUTING, ON THE SOURCE, ONE AT A TIME.  Routing is on the assessment side so the title can be queued for the right pool, and the probe reads its 20 seconds from the source on the array.  Its scratch directory is 'encode/.probe/<title_id>', removed afterwards and swept at startup as ownerless if a crash leaves it.  Probes are serialised on a semaphore of one, so three assessment workers cannot take three cores from the running encoders;  the bound is roughly one core for roughly ten seconds per title.  A sidecar 'film=' skips it, as does DRY_RUN.
 
@@ -773,7 +780,7 @@ fields=telecine         skip the field probe;  progressive, interlaced or teleci
 
 ### Field handling
 
-THE ENCODER IS NEVER HANDED FIELDS AS FRAMES.  Until 2026-09-13 the command mapped the video straight into the encoder, so a 480i source or a telecined DVD, reachable under 'TV_ENCODE_SD=1' or from an interlaced HD source, would have been encoded with the combing and the repeated fields baked in.  Now every encoder-bound title is classified at routing and the command carries a filter when it needs one.
+THE ENCODER IS NEVER HANDED FIELDS AS FRAMES.  Until 2026-09-13 the command mapped the video straight into the encoder, so a 480i source or a telecined DVD, reachable with 'encode_sd' on or from an interlaced HD source, would have been encoded with the combing and the repeated fields baked in.  Now every encoder-bound title is classified at routing and the command carries a filter when it needs one.
 
 THE PROBE IS 'idet' OVER THE GRAIN SAMPLE.  'media.field_probe' decodes the same 20 s at 45 percent the grain probe uses, video only, through 'idet', and reads the multi-frame counts and the repeated-field counts from the summary:
 
@@ -799,7 +806,7 @@ Fields are matched on the full stored frame, so the field filter precedes any cr
 
 VERIFICATION KNOWS ABOUT THE FIFTH FRAME.  '_verify' compares video packet counts as an equality;  for a 'telecine' decision the expected count is four fifths of the source within one percent and the note reads 'telecine removed n of m frames'.  The duration check is unchanged, the running time is preserved.  'total_frames' for the progress bar is scaled the same way.
 
-ACCEPTED LIMITATION:  a mixed episode classifies on one 20 s sample.  'fieldmatch' with 'yadif=deint=interlaced' behind it handles interlaced stretches inside a telecined episode, but a sample landing on a video-only stretch of a film-and-video show (DS9:  shot on film, finished on video, effects composited at 480i) classifies it interlaced and encodes every frame deinterlaced at 29.97.  The x265 parameters remain unmeasured at SD, and 'TV_ENCODE_SD' stays 0.
+ACCEPTED LIMITATION:  a mixed episode classifies on one 20 s sample.  'fieldmatch' with 'yadif=deint=interlaced' behind it handles interlaced stretches inside a telecined episode, but a sample landing on a video-only stretch of a film-and-video show (DS9:  shot on film, finished on video, effects composited at 480i) classifies it interlaced and encodes every frame deinterlaced at 29.97.  The x265 parameters remain unmeasured at SD, and 'encode_sd' defaults to off.
 
 ### Two traps in the command shapes
 
@@ -943,11 +950,11 @@ CPU encode threads   1     x265 preset slow and svt-av1 preset 4 both saturate t
 passthrough threads  1     fixed;  the I/O-only path, bounded by the disk rather than a core
 ```
 
-Each pool has exactly as many threads as the device has slots and pulls from its own queue, so there is no semaphore to wait on and no device sits idle while a thread blocks on the other one.  'MAX_JOBS' is the assessment pool and has nothing to do with encoding capacity.
+Each pool has exactly as many threads as the device has slots and pulls from its own queue, so there is no semaphore to wait on and no device sits idle while a thread blocks on the other one.  'max_jobs' is the assessment pool and has nothing to do with encoding capacity.  All three resize live per section 5:  a raised target starts threads at once, a lowered one lets the surplus thread finish its title before it exits, and a running encode is never interrupted by a settings change.
 
-TWO CPU ENCODERS GAIN LITTLE, AND ONLY AT LOW RESOLUTION.  'CPU_SLOTS=2' runs two encodes at 'pools=4' each on the same eight cores.  x265's wavefront parallelism is bounded by CTU rows, about 11 at 720p and 17 at 1080p, so one eight-thread encode leaves threads idle at low resolution and two four-thread encodes recover some of it.  Expect a modest aggregate gain on SD and 720p, near zero at 1080p and above, doubled per-title latency and doubled staged copies.  The setting is legitimate for an SD-heavy batch;  it is not a lever on throughput generally, and the GPU is the only thing that adds capacity rather than dividing it.
+TWO CPU ENCODERS GAIN LITTLE, AND ONLY AT LOW RESOLUTION.  'cpu_slots' at 2 runs two encodes at 'pools=4' each on the same eight cores.  x265's wavefront parallelism is bounded by CTU rows, about 11 at 720p and 17 at 1080p, so one eight-thread encode leaves threads idle at low resolution and two four-thread encodes recover some of it.  Expect a modest aggregate gain on SD and 720p, near zero at 1080p and above, doubled per-title latency and doubled staged copies.  The setting is legitimate for an SD-heavy batch;  it is not a lever on throughput generally, and the GPU is the only thing that adds capacity rather than dividing it.
 
-The GPU is shared with whatever else uses it on the host;  at the HEVC default the pipeline does not touch it, so contention is a constraint on switching OUTPUT_CODEC to av1 rather than a problem now.
+The GPU is shared with whatever else uses it on the host;  at the HEVC default the pipeline does not touch it, so contention is a constraint on switching 'output_codec' to av1 rather than a problem now.
 
 ## 20.  Logging
 
@@ -966,7 +973,9 @@ Every log line carries the title id where one exists, so a single title's path c
 
 A POLL THAT FINDS NOTHING NEW IS NOT AN ACTION.  The watcher's 'already claims this path' line fires once per in-flight title per poll and accounted for 223 of 328 lines in a three-title run, while the 108 minute encode that completed inside that same run logged nothing at all.  It is a debug line.  ENCODED and VERIFIED each emit an info line carrying the same outcome text they already write into the stage history, because an encode finishing is the most meaningful event the pipeline has.
 
-CONFIG RESOLUTION IS LOGGED BY 'main', NOT BY 'config'.  'Config' is constructed before logging is set up, so it records where each setting came from and 'main' prints that at debug once handlers exist.  Anything logging from inside 'Config' is discarded.
+CONFIG RESOLUTION IS LOGGED BY 'main', NOT BY 'config'.  'Config' is constructed before logging is set up, so it records where each variable came from and 'main' prints that at debug once handlers exist.  Anything logging from inside 'Config' is discarded.
+
+THE SETTINGS BANNER FOLLOWS THE CONFIG BANNER, AT INFO.  One 'setting' line per storage key with a '*' on a stored value, so a run's configuration is readable from its log alone;  every operator change logs the key with its old and new value, and 'pools retargeted' names the three targets after a slot change.
 
 ## 21.  Scripting rules and traps
 
@@ -1042,7 +1051,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.9.2.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.10.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  The repository does not use git tags, and since 2026-09-12 the workflow no longer looks at them.
 
@@ -1084,7 +1093,7 @@ AV1 is 25 to 30 percent more efficient and is where this library should end up. 
 
 Jellyfin transcodes AV1 to h264 on the fly for a client that cannot decode it.  That is a real mitigation when the transcode is hardware accelerated, but it spends at delivery time some of the quality the AV1 encode paid for, and it contends for the same media engine.  Direct play has no failure mode.
 
-So AV1 is fully built, tested and selectable, and OUTPUT_CODEC defaults to hevc.  Flipping it is a config change plus a calibration batch, not a code change.  That is the entire reason encoder selection is a router rather than a hardcoded ffmpeg line.
+So AV1 is fully built, tested and selectable, and 'output_codec' defaults to hevc for both kinds.  Flipping it is a settings change plus a calibration batch, not a code change.  That is the entire reason encoder selection is a router rather than a hardcoded ffmpeg line.
 
 Consequence:  four of the seven router paths are dormant at the default, which means they are least exercised at exactly the moment they get switched on.  TESTPLAN.md cases T-35 and T-36 exist to exercise them before that switch is flipped in anger.
 
@@ -1102,7 +1111,7 @@ Section 3's rule, stated here as a decision so it does not erode:  every depende
 
 ### The web UI is unauthenticated, over HTTPS only
 
-Intended for a trusted LAN.  Anyone who can reach the port can force a held title through and quarantine an incoming file.  That is a deliberate tradeoff for a home service, and it is the reason the port should be published deliberately rather than broadly.
+Intended for a trusted LAN.  Anyone who can reach the port can force a held title through, quarantine an incoming file and change every setting.  That is a deliberate tradeoff for a home service, and it is the reason the port should be published deliberately rather than broadly.
 
 TLS DOES NOT CHANGE THAT.  The listener is HTTPS on 443 with no HTTP listener and no redirect;  what TLS buys is that the traffic is not readable in transit, nothing more.
 
@@ -1190,8 +1199,8 @@ ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries
 Open items, all deferred by the developer.  Remove an entry when it is done or dropped;  do not let this list describe finished work.
 
 - **AV1 calibration.**  Section 14's AV1 parameters have no calibration behind them.  The first AV1 batch ran 2026-09-10;  score the outputs against their sources with the 'ssim' filter, per section 14.
-- **'X265_DV_VBV_KBPS'.**  The known issue in section 14.  Settle it with one full-length 1080p DV encode and one UHD at the current cap, reading the x265 log for VBV adjustments and the per-frame QP curve and comparing the bitrate curve against an uncapped CRF 18 encode of the same source;  if the cap never binds at 1080p keep it there, and decide the UHD figure separately and by tier.  Inert under gate 1 until then.
-- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), T-133 to T-135 (the full rescan), T-136 to T-142 (the ladder, page confirmation, the None guard, the zero content light pair), T-143 to T-150 (in the pipeline until promoted, the numeric title, the inconclusive reason, the emptied import folder, rows closing with their files, frame-counted progress), T-151 to T-157 (the incomplete-identity rule on both kinds, the IMDb route to TVDB, the English catalogue, the TMDB adaptation date, candidates per source, the operator selection, the title after the marker), T-158 and T-159 (the catalogue title under numbering, the held file under 'hold/'), T-160 to T-169 (the matcher's tag strip, part index and containment rung, the tie hold, the field probe and its three chains, the release corpus, the file hash, cropdetect sampling, editions, episode forms, extras words), the last eight groups written 2026-09-11, 2026-09-12 and 2026-09-13.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
+- **'x265_dv_vbv_kbps'.**  The known issue in section 14.  Settle it with one full-length 1080p DV encode and one UHD at the current cap, reading the x265 log for VBV adjustments and the per-frame QP curve and comparing the bitrate curve against an uncapped CRF 18 encode of the same source;  if the cap never binds at 1080p keep it there, and decide the UHD figure separately and by tier.  Inert under gate 1 until then.
+- **TESTPLAN cases written 2026-09-10 and not yet executed against the container:**  T-60e to T-60h (HDR declarations), T-94 to T-100 (reasons and force), T-101 to T-107 (the library audit), T-108 to T-115 (assessment ahead of encoding), T-116 to T-118 (audit copy feedback), T-119 to T-125 (origin ids, transform-aware search, Retry, the show ladder and specials), T-126 to T-132 (folder and file name alignment), T-133 to T-135 (the full rescan), T-136 to T-142 (the ladder, page confirmation, the None guard, the zero content light pair), T-143 to T-150 (in the pipeline until promoted, the numeric title, the inconclusive reason, the emptied import folder, rows closing with their files, frame-counted progress), T-151 to T-157 (the incomplete-identity rule on both kinds, the IMDb route to TVDB, the English catalogue, the TMDB adaptation date, candidates per source, the operator selection, the title after the marker), T-158 and T-159 (the catalogue title under numbering, the held file under 'hold/'), T-160 to T-169 (the matcher's tag strip, part index and containment rung, the tie hold, the field probe and its three chains, the release corpus, the file hash, cropdetect sampling, editions, episode forms, extras words), T-174 to T-181 (the settings page and menu, per-kind CRF, a routed title's frozen parameters, live pool resize, a rejected batch, ignored environment variables, reset, the kept languages), the last nine groups written 2026-09-11 to 2026-09-14.  Each was exercised in a scratch tree on the workstation;  the plan is run by hand against the built image.
 - **Review the library audit's first pass.**  Expected findings on the current library:  the three titles under-declaring ST 2086 and Forrest Gump's missing CLL, per section 12;  the last is a zero pair the container genuinely lacks, and its repair copy passes now that the probe reads the element through mkvmerge.  Anything else it reports is either a real defect or a check that needs correcting, and the edition false positive fixed on 2026-09-10 is the reference for the second kind.
-- **The grain probe against the 9,697k reference.**  Section 14's grain-heavy 35mm title encoded at 'aq-mode=3' before automatic detection existed.  Run the probe on that source and confirm the ratio clears 'GRAIN_THRESHOLD', so the tune that separated the nine-film batch is what an automatic run would choose.
+- **The grain probe against the 9,697k reference.**  Section 14's grain-heavy 35mm title encoded at 'aq-mode=3' before automatic detection existed.  Run the probe on that source and confirm the ratio clears 'grain_threshold', so the tune that separated the nine-film batch is what an automatic run would choose.
 - **Hardware decode on the QSV path.**  'build_command' decodes in software and uploads with 'hwupload';  on the A310 the media engine sat at 47 percent with the decode block near idle.  '-hwaccel qsv -hwaccel_output_format qsv' ahead of '-i' keeps frames on the device.  Needs a measurement and a software fallback for sources the hardware decoder does not accept.  Not planned;  noted as the next lever on the GPU path.

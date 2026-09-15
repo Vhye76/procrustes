@@ -26,6 +26,24 @@
   .pill.bad { color: var(--bad); border-color: #5b2323; }
   .pill.warn { color: var(--warn); border-color: #5b4a23; }
 
+  /*----- The menu */
+  #menu { margin-left: auto; position: relative; align-self: center; }
+  #menu-btn { background: none; border: 1px solid transparent; border-radius: 6px;
+              padding: 3px 5px; color: var(--ink); cursor: pointer; display: flex; }
+  #menu-btn:hover, #menu-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--line); }
+  #menu-btn svg { width: 26px; height: 26px; display: block; }
+  #menu-list { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+               min-width: 240px; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 6px 0; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #menu-list.open { display: block; }
+  #menu-list .st { padding: 6px 14px; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #menu-list .st.ok { color: var(--ok); }
+  #menu-list .st.warn { color: var(--warn); }
+  #menu-list hr { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
+  #menu-list a { display: block; padding: 7px 14px; font-size: 13px; color: var(--ink);
+                 text-decoration: none; }
+  #menu-list a:hover { background: #232833; color: var(--accent); }
+
   /*----- The flow */
   main { flex: 1 1 auto; min-height: 0; padding: 20px 24px 8px;
          display: grid; gap: 0 14px;
@@ -175,11 +193,27 @@
 <body>
 <header>
   <h1>procrustes</h1>
-  <span class="pill" id="codec">codec</span>
-  <span class="pill" id="gpu">gpu</span>
-  <span class="pill" id="encode">encode</span>
-  <span class="pill" id="libs">libraries</span>
   <span class="pill" id="dry"></span>
+  <div id="menu">
+    <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 10.5c0-3.6 3.6-6 8-6s8 2.4 8 6H4z"/>
+        <path d="M8.5 7.5h.01M12 6.5h.01M15.5 7.5h.01"/>
+        <path d="M3.5 13c1 .8 2 .8 3 0s2-.8 3 0 2 .8 3 0 2-.8 3 0 2 .8 3 0 2-.8 2.5 0"/>
+        <rect x="4" y="14.5" width="16" height="2.5" rx="1.25"/>
+        <path d="M4.5 18.5h15a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5z"/>
+      </svg>
+    </button>
+    <div id="menu-list" role="menu">
+      <div class="st" id="codec">output</div>
+      <div class="st" id="gpu">gpu</div>
+      <div class="st" id="encode">encode</div>
+      <div class="st" id="libs">libraries</div>
+      <hr>
+      <a href="/settings" role="menuitem">Application Settings</a>
+    </div>
+  </div>
 </header>
 
 <main>
@@ -263,6 +297,29 @@ function pill(el, text, cls) {
   el.textContent = text;
   el.className = "pill" + (cls ? " " + cls : "");
 }
+function menuRow(el, text, cls) {
+  el.textContent = text;
+  el.className = "st" + (cls ? " " + cls : "");
+}
+function codecText(settings) {
+  const oc = (settings && settings.output_codec) || {};
+  if (!oc.movie && !oc.tv) return "output unknown";
+  return oc.movie === oc.tv ? "output " + oc.movie : `output movies ${oc.movie}, tv ${oc.tv}`;
+}
+
+//----- The menu opens on its button and closes on a click elsewhere or Escape
+$("menu-btn").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const open = !$("menu-list").classList.contains("open");
+  $("menu-list").classList.toggle("open", open);
+  $("menu-btn").setAttribute("aria-expanded", open ? "true" : "false");
+});
+function closeMenu() {
+  $("menu-list").classList.remove("open");
+  $("menu-btn").setAttribute("aria-expanded", "false");
+}
+document.addEventListener("click", (ev) => { if (!ev.target.closest("#menu")) closeMenu(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeMenu(); });
 function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
 function num(n) { return Number(n).toLocaleString("en-US"); }
 function fmtEta(s) {
@@ -337,14 +394,14 @@ async function refresh() {
   try { s = await (await fetch("/api/status")).json(); }
   catch (e) { return; }
 
-  pill($("codec"), "output " + s.config.OUTPUT_CODEC);
-  pill($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded",
-       s.gpu.available ? "ok" : "warn");
-  pill($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
-       + (s.encode.separate_filesystem ? "" : " (same fs)"),
-       s.encode.separate_filesystem ? "" : "warn");
-  pill($("libs"), s.libraries_mounted ? "libraries mounted" : "no libraries, comparison off",
-       s.libraries_mounted ? "" : "warn");
+  menuRow($("codec"), codecText(s.settings));
+  menuRow($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded",
+          s.gpu.available ? "ok" : "warn");
+  menuRow($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
+          + (s.encode.separate_filesystem ? "" : " (same fs)"),
+          s.encode.separate_filesystem ? "" : "warn");
+  menuRow($("libs"), s.libraries_mounted ? "libraries mounted" : "no libraries, comparison off",
+          s.libraries_mounted ? "" : "warn");
   pill($("dry"), s.config.DRY_RUN ? "DRY RUN" : "", s.config.DRY_RUN ? "warn" : "");
   $("dry").style.display = s.config.DRY_RUN ? "" : "none";
 

@@ -354,7 +354,8 @@ def check_tv(path, expected_show, expected_episode_title, levels=(COLLECTION, SE
     return problems
 
 
-def check_tracks(path):
+def check_tracks(path, keep_langs=None):
+    keep_langs = tuple(keep_langs or KEEP_LANGS)
     problems = []
     rows, data = probemod.track_selectors(path)
 
@@ -370,7 +371,7 @@ def check_tracks(path):
 
     for row in rows:
         lang = row["language"]
-        if row["type"] in ("audio", "subtitles") and lang not in KEEP_LANGS:
+        if row["type"] in ("audio", "subtitles") and lang not in keep_langs:
             problems.append("foreign %s track tagged %s" % (row["type"], lang))
         if row["type"] == "video" and "V_MJPEG" not in (row["codec_id"] or "").upper():
             if lang != "eng":
@@ -429,7 +430,8 @@ def check_segment_title(path, expected):
     return []
 
 
-def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidentified=False):
+def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidentified=False,
+              keep_langs=None):
     problems = []
     if not os.path.isfile(path):
         return False, ["output file is missing"]
@@ -445,7 +447,7 @@ def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidenti
                 levels=(EPISODE,) if unidentified else (COLLECTION, SEASON, EPISODE),
             )
         problems += check_segment_title(path, expected_title)
-        problems += check_tracks(path)
+        problems += check_tracks(path, keep_langs=keep_langs)
         problems += check_hdr(path, baseline=hdr_baseline)
     except (TagError, probemod.ProbeError) as exc:
         return False, problems + [str(exc)]

@@ -19,7 +19,7 @@ REMUX_DURATION_TOLERANCE_S = 2.0
 
 GRAIN_SAMPLE_SECONDS = 20
 GRAIN_SAMPLE_POSITION = 0.45
-GRAIN_THRESHOLD = float(os.environ.get("GRAIN_THRESHOLD", "0.18"))
+GRAIN_THRESHOLD = 0.18
 GRAIN_PROBE_CRF = "20"
 GRAIN_PROBE_PRESET = "ultrafast"
 
@@ -230,7 +230,8 @@ def _unlink(path):
 
 
 #----- Language policy and track flags
-def strip_foreign(src, dst):
+def strip_foreign(src, dst, keep_langs=None):
+    keep_langs = tuple(keep_langs or KEEP_LANGS)
     rows, data = probemod.track_selectors(src)
     keep_audio = []
     keep_subs = []
@@ -243,13 +244,13 @@ def strip_foreign(src, dst):
         props = track.get("properties") or {}
         lang = (props.get("language") or "und").lower()
         target = keep_audio if kind == "audio" else keep_subs
-        if lang in KEEP_LANGS:
+        if lang in keep_langs:
             target.append(str(track.get("id")))
         else:
             dropped.append("%s:%s" % (kind, lang))
 
     if not dropped:
-        log.info("language strip: nothing to drop, all tracks are eng or und")
+        log.info("language strip: nothing to drop, every track is %s", " or ".join(keep_langs))
         return {"stripped": 0, "dropped": [], "output": str(src)}
 
     tmp = str(dst) + ".part"
@@ -382,10 +383,10 @@ def _black_level(path, offset, depth):
     return min(values)
 
 
-def _crop_positions(duration):
+def _crop_positions(duration, sample_count=CROP_SAMPLE_COUNT):
     start = duration * CROP_SAMPLE_START
     end = duration * CROP_SAMPLE_END
-    step = (end - start) / (CROP_SAMPLE_COUNT + 1)
+    step = (end - start) / (sample_count + 1)
     if step > CROP_SAMPLE_MAX_GAP:
         step = CROP_SAMPLE_MAX_GAP
     return start, end, step
@@ -405,7 +406,16 @@ def _plausible(cw, ch, cx, cy, width, height):
     return None
 
 
-def detect_crop(path, video, container=None):
+def detect_crop(path, video, container=None, sample_count=None, sample_seconds=None,
+                sample_attempts=None, black_level_factor=None, black_level_cap=None,
+                secondary_share=None, min_bars_px=None):
+    sample_count = int(sample_count or CROP_SAMPLE_COUNT)
+    sample_seconds = int(sample_seconds or CROP_SAMPLE_SECONDS)
+    sample_attempts = int(sample_attempts or CROP_SAMPLE_ATTEMPTS)
+    black_level_factor = float(black_level_factor or CROP_BLACK_LEVEL_FACTOR)
+    black_level_cap = float(black_level_cap or CROP_BLACK_LEVEL_CAP)
+    secondary_share = float(secondary_share or CROP_SECONDARY_SHARE)
+    min_bars_px = int(min_bars_px or CROP_MIN_BARS_PX)
     depth = int(video.get("bit_depth") or 8)
     floor = probemod.cropdetect_limit(depth)
     width = int(video.get("width") or 0)
@@ -418,13 +428,13 @@ def detect_crop(path, video, container=None):
         )
         return None
 
-    start, end, step = _crop_positions(duration)
+    start, end, step = _crop_positions(duration, sample_count)
     #----- the limit follows the source's own black, never below the depth-scaled floor.
     black = _black_level(path, int(start), depth)
-    cap = int((2 ** depth) * CROP_BLACK_LEVEL_CAP)
+    cap = int((2 ** depth) * black_level_cap)
     limit = floor
     if black is not None:
-        limit = max(floor, min(int(black * CROP_BLACK_LEVEL_FACTOR), cap))
+        limit = max(floor, min(int(black * black_level_factor), cap))
     log.debug(
         "cropdetect black level %s at %d-bit, limit %d (floor %d, cap %d)",
         black, depth, limit, floor, cap,
@@ -434,12 +444,12 @@ def detect_crop(path, video, container=None):
     rejected = []
     position = start
     attempts = 0
-    while attempts < CROP_SAMPLE_ATTEMPTS and position <= end - CROP_SAMPLE_SECONDS and len(samples) < CROP_SAMPLE_COUNT:
+    while attempts < sample_attempts and position <= end - sample_seconds and len(samples) < sample_count:
         attempts += 1
         offset = int(position)
         proc = run(
             [
-                FFMPEG, "-hide_banner", "-nostdin", "-ss", str(offset), "-t", str(CROP_SAMPLE_SECONDS),
+                FFMPEG, "-hide_banner", "-nostdin", "-ss", str(offset), "-t", str(sample_seconds),
                 "-i", str(path), "-map", "0:v:0",
                 "-vf", "cropdetect=limit=%d:round=2:reset=0" % limit,
                 "-f", "null", "-",
@@ -480,7 +490,7 @@ def detect_crop(path, video, container=None):
     for (ow, oh), others in ranked[1:]:
         share = len(others) / float(len(samples))
         aspect = (ow * sar) / oh if oh else 0.0
-        if share >= CROP_SECONDARY_SHARE and abs(aspect - primary_aspect) >= CROP_SECONDARY_ASPECT_DELTA:
+        if share >= secondary_share and abs(aspect - primary_aspect) >= CROP_SECONDARY_ASPECT_DELTA:
             secondary = {"width": ow, "height": oh, "share": round(share, 3), "aspect": round(aspect, 3)}
             break
 
@@ -504,9 +514,9 @@ def detect_crop(path, video, container=None):
             cw, ch, len(offsets), len(samples), secondary["width"], secondary["height"],
             secondary["share"] * 100,
         )
-    if bars < CROP_MIN_BARS_PX:
+    if bars < min_bars_px:
         log.info("cropdetect found %d px of bars, below the %d px floor, no crop applied",
-                 bars, CROP_MIN_BARS_PX)
+                 bars, min_bars_px)
         result["filter"] = None
         result["bars_px"] = 0
         result["picture_pixels"] = int(round(width * sar)) * height
@@ -528,14 +538,18 @@ FIELDS_TELECINE = "telecine"
 FIELD_MODES = (FIELDS_PROGRESSIVE, FIELDS_INTERLACED, FIELDS_TELECINE)
 
 
-def field_probe(path, video, container=None):
+def field_probe(path, video, container=None, sample_seconds=None, sample_position=None,
+                telecine_share=None):
+    sample_seconds = int(sample_seconds or GRAIN_SAMPLE_SECONDS)
+    sample_position = GRAIN_SAMPLE_POSITION if sample_position is None else float(sample_position)
+    telecine_share = float(telecine_share or FIELD_TELECINE_SHARE)
     duration = probemod.usable_duration(video, container)
     if not duration:
         return {"fields": FIELDS_PROGRESSIVE, "reason": "no usable duration, assumed progressive"}
-    offset = int(duration * GRAIN_SAMPLE_POSITION) if duration >= GRAIN_SAMPLE_SECONDS * 2 else 0
+    offset = int(duration * sample_position) if duration >= sample_seconds * 2 else 0
     proc = run(
         [
-            FFMPEG, "-nostdin", "-hide_banner", "-ss", str(offset), "-t", str(GRAIN_SAMPLE_SECONDS),
+            FFMPEG, "-nostdin", "-hide_banner", "-ss", str(offset), "-t", str(sample_seconds),
             "-i", str(path), "-map", "0:v:0", "-an", "-sn", "-vf", "idet", "-f", "null", "-",
         ]
     )
@@ -553,7 +567,7 @@ def field_probe(path, video, container=None):
         "repeated": repeated, "frames": frames,
     }
     #----- 3:2 pulldown repeats one field in five;  interlace without repeats is true 60i.
-    if frames and repeated / float(frames) >= FIELD_TELECINE_SHARE:
+    if frames and repeated / float(frames) >= telecine_share:
         result["fields"] = FIELDS_TELECINE
         result["reason"] = "%d of %d frames carry a repeated field, 3:2 pulldown" % (repeated, frames)
     elif tff + bff > progressive:
@@ -570,8 +584,13 @@ def field_probe(path, video, container=None):
 
 
 #----- Grain measurement
-def grain_probe(path, video, workdir, threshold=None, container=None):
+def grain_probe(path, video, workdir, threshold=None, container=None, sample_seconds=None,
+                sample_position=None, probe_crf=None, probe_preset=None):
     threshold = GRAIN_THRESHOLD if threshold is None else threshold
+    sample_seconds = int(sample_seconds or GRAIN_SAMPLE_SECONDS)
+    sample_position = GRAIN_SAMPLE_POSITION if sample_position is None else float(sample_position)
+    probe_crf = str(GRAIN_PROBE_CRF if probe_crf is None else probe_crf)
+    probe_preset = str(probe_preset or GRAIN_PROBE_PRESET)
     duration = probemod.usable_duration(video, container)
     if not duration:
         log.warning(
@@ -579,11 +598,11 @@ def grain_probe(path, video, workdir, threshold=None, container=None):
             os.path.basename(str(path)),
         )
         return {"grain": False, "ratio": None, "reason": "no usable duration"}
-    if duration < GRAIN_SAMPLE_SECONDS * 2:
+    if duration < sample_seconds * 2:
         log.info("grain probe skipped, clip is %.1fs, shorter than twice the sample", duration)
         return {"grain": False, "ratio": None, "reason": "clip too short to sample"}
 
-    offset = int(duration * GRAIN_SAMPLE_POSITION)
+    offset = int(duration * sample_position)
     clean = os.path.join(workdir, "grain_clean.mkv")
     denoised = os.path.join(workdir, "grain_denoised.mkv")
 
@@ -594,13 +613,13 @@ def grain_probe(path, video, workdir, threshold=None, container=None):
     ):
         cmd = [
             FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", str(offset), "-t", str(GRAIN_SAMPLE_SECONDS), "-i", str(path),
+            "-ss", str(offset), "-t", str(sample_seconds), "-i", str(path),
             "-map", "0:v:0", "-an", "-sn",
         ]
         if filters:
             cmd += ["-vf", filters]
         cmd += [
-            "-c:v", "libx265", "-preset", GRAIN_PROBE_PRESET, "-crf", GRAIN_PROBE_CRF,
+            "-c:v", "libx265", "-preset", probe_preset, "-crf", probe_crf,
             "-x265-params", "log-level=none",
             "-f", "matroska", target,
         ]

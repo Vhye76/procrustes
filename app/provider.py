@@ -105,9 +105,10 @@ class RateLimited(ProviderError):
 
 #----- The HTTP client, throttled and cached
 class Client:
-    def __init__(self, cache_dir, throttle=THROTTLE_SECONDS):
+    def __init__(self, cache_dir, throttle=THROTTLE_SECONDS, settings=None):
         self.cache_dir = str(cache_dir)
         self.throttle = throttle
+        self.settings = settings
         self._last = 0.0
         self._local = threading.local()
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -151,12 +152,22 @@ class Client:
         except OSError:
             pass
 
+    #----- Figures come from the settings object per request;  the constructor default serves a direct call.
+    def _figure(self, key, default):
+        if self.settings is None:
+            return default
+        return self.settings.get(key)
+
     def _wait(self):
+        throttle = float(self._figure("provider_throttle_s", self.throttle))
         elapsed = time.time() - self._last
-        if elapsed < self.throttle:
-            log.debug("throttling %.1fs before the next request", self.throttle - elapsed)
-            time.sleep(self.throttle - elapsed)
+        if elapsed < throttle:
+            log.debug("throttling %.1fs before the next request", throttle - elapsed)
+            time.sleep(throttle - elapsed)
         self._last = time.time()
+
+    def _timeout(self):
+        return float(self._figure("provider_timeout_s", TIMEOUT))
 
     def fetch(self, url, use_cache=True):
         if use_cache and not self._bypassing():
@@ -169,7 +180,7 @@ class Client:
         log.debug("GET %s", url)
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         try:
-            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            with urllib.request.urlopen(request, timeout=self._timeout()) as response:
                 status = response.getcode()
                 body = response.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
@@ -199,7 +210,7 @@ class Client:
     def final_url(self, url):
         self._wait()
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=self._timeout()) as response:
             return response.geturl()
 
 
@@ -261,11 +272,27 @@ def _year(value):
 
 #----- Resolution
 class Provider:
-    def __init__(self, client, roots=()):
+    def __init__(self, client, roots=(), settings=None):
         self.client = client
         self.roots = {os.path.normpath(str(root)) for root in roots if root}
+        self.settings = settings
         self._tvdb_posters = {}
         self._local = threading.local()
+
+    #----- Matching figures, read per call so a settings change reaches the next identification
+    def _figure(self, key, default):
+        if self.settings is None:
+            return default
+        return self.settings.get(key)
+
+    def title_cutoff(self):
+        return float(self._figure("title_cutoff", TITLE_CUTOFF))
+
+    def candidate_limit(self):
+        return int(self._figure("candidate_limit", CANDIDATE_LIMIT))
+
+    def contained_score(self):
+        return float(self._figure("contained_score", CONTAINED_SCORE))
 
     def search_entities(self, term, limit=20):
         url = "%s?%s" % (
@@ -351,6 +378,7 @@ class Provider:
         return _page_confirms(
             body, names, year, "tmdb %s" % tmdb_id,
             earlier_ok=bool(own_claim and kind == "tv"),
+            cutoff=self.title_cutoff(), contained=self.contained_score(),
         )
 
     def tvdb_page(self, tvdb_id):
@@ -370,7 +398,10 @@ class Provider:
         body = self.tvdb_page(tvdb_id)
         if body is None:
             return False, None
-        return _page_confirms(body, names, year, "tvdb %s" % tvdb_id)
+        return _page_confirms(
+            body, names, year, "tvdb %s" % tvdb_id,
+            cutoff=self.title_cutoff(), contained=self.contained_score(),
+        )
 
     def tvdb_by_imdb(self, imdb_id):
         status, body = self.client.fetch(TVDB_REMOTE_ID % imdb_id)
@@ -404,7 +435,10 @@ class Provider:
         if (IMDB_LINK % imdb_id) not in body:
             log.info("tvdb %s from imdb %s does not link that id back, skipping", found["tvdb"], imdb_id)
             return None
-        ok, _note = _page_confirms(body, names, year, "tvdb %s" % found["tvdb"])
+        ok, _note = _page_confirms(
+            body, names, year, "tvdb %s" % found["tvdb"],
+            cutoff=self.title_cutoff(), contained=self.contained_score(),
+        )
         if not ok:
             log.info("tvdb %s from imdb %s did not confirm %r, skipping", found["tvdb"], imdb_id, names[0] if names else None)
             return None
@@ -674,7 +708,7 @@ class Provider:
         if qids:
             score, resolved = self._resolve_from(
                 "text:%s" % title, self.labels(qids), title, wanted, year, seen, kind,
-                cutoff=TITLE_CUTOFF,
+                cutoff=self.title_cutoff(),
             )
             best = _prefer(best, (score, resolved), kind)
         return best
@@ -685,7 +719,7 @@ class Provider:
             if candidate["id"] in seen:
                 continue
             seen.add(candidate["id"])
-            score = _candidate_score(title, wanted, candidate)
+            score = _candidate_score(title, wanted, candidate, contained=self.contained_score())
             log.debug(
                 "search %r: %s %r scored %.3f", term, candidate["id"],
                 candidate.get("label"), score,
@@ -900,7 +934,7 @@ class Provider:
                 "term": c.get("term"),
                 "reading": c.get("reading"),
             })
-        entities = entities[:CANDIDATE_LIMIT]
+        entities = entities[:self.candidate_limit()]
         out = {"searched": searched, "wikidata": entities}
         names = []
         for reading in searched.get("readings") or [searched]:
@@ -925,10 +959,11 @@ class Provider:
 
     def _tvdb_candidates(self, entities):
         rows, seen = [], set()
+        limit = self.candidate_limit()
 
         def add(tvdb, origin, name_hint, year_hint):
             key = str(tvdb)
-            if key in seen or len(rows) >= CANDIDATE_LIMIT:
+            if key in seen or len(rows) >= limit:
                 return
             seen.add(key)
             row = {"id": key, "origin": origin, "name": name_hint, "year": year_hint,
@@ -960,11 +995,12 @@ class Provider:
 
     def _tmdb_candidates(self, kind, names, entities, prop):
         rows = {}
+        limit = self.candidate_limit()
         for name in names:
             status, body = self.client.fetch(TMDB_SEARCH % (kind, urllib.parse.quote_plus(name)))
             if status == 200:
                 for tmdb, title, date in TMDB_SEARCH_HIT.findall(body):
-                    if tmdb in rows or len(rows) >= CANDIDATE_LIMIT:
+                    if tmdb in rows or len(rows) >= limit:
                         continue
                     rows[tmdb] = {
                         "id": tmdb,
@@ -981,7 +1017,7 @@ class Provider:
             if tmdb in rows:
                 rows[tmdb]["origin"] += ", " + origin
                 continue
-            if len(rows) >= CANDIDATE_LIMIT:
+            if len(rows) >= limit:
                 break
             body = self.tmdb_page(kind, tmdb)
             title, year = _page_identity(body) if body else (None, None)
@@ -1068,9 +1104,11 @@ class Provider:
             return None
 
         segment = (container or {}).get("segment_title") if isinstance(container, dict) else None
-        entry, how, score = episodemod.match_episode(source, catalogue, extra=segment)
+        entry, how, score = episodemod.match_episode(
+            source, catalogue, cutoff=self.title_cutoff(), extra=segment,
+        )
         if entry is None:
-            parsed = episodemod.parse_path(source)
+            parsed = episodemod.parse_path(source, max_range_span=self._figure("max_range_span", episodemod.MAX_RANGE_SPAN))
             if parsed is None:
                 return None
             listed = _catalogue_entry(catalogue, parsed["season"], parsed["first"])
@@ -1187,7 +1225,7 @@ def _page_identity(body):
     return text.strip() or None, year
 
 
-def _page_confirms(body, names, year, what, earlier_ok=False):
+def _page_confirms(body, names, year, what, earlier_ok=False, cutoff=TITLE_CUTOFF, contained=CONTAINED_SCORE):
     names = [n for n in names if n]
     if not names:
         return False, None
@@ -1195,7 +1233,7 @@ def _page_confirms(body, names, year, what, earlier_ok=False):
     best = 0.0
     if page_title:
         wanted = titles.normalise_for_match(page_title)
-        best = max(_name_score(page_title, wanted, n) for n in names)
+        best = max(_name_score(page_title, wanted, n, contained) for n in names)
         log.debug("%s page title %r scored %.3f against %s", what, page_title, best, names[0])
     if year and page_year and abs(int(year) - page_year) > 1:
         if earlier_ok and page_year < int(year) and best >= 1.0:
@@ -1205,7 +1243,7 @@ def _page_confirms(body, names, year, what, earlier_ok=False):
             return True, note
         log.info("%s is titled %r from %s, not %s", what, page_title, page_year, year)
         return False, None
-    if best >= TITLE_CUTOFF:
+    if best >= cutoff:
         return True, None
     #----- The body fallback uses the label alone;  a short alias like 'TFA' is found somewhere in any page.
     needle = re.sub(r"[^a-z0-9]+", "", names[0].lower())
@@ -1282,7 +1320,7 @@ def _movie_search_terms(title, year):
     return terms
 
 
-def _name_score(title, wanted, name):
+def _name_score(title, wanted, name, contained=CONTAINED_SCORE):
     if titles.matches(name, title):
         return 1.0
     other = titles.normalise_for_match(name)
@@ -1292,7 +1330,7 @@ def _name_score(title, wanted, name):
         return 1.0
     #----- 'Return of the Jedi' inside 'Star Wars: Episode VI – Return of the Jedi'.
     if " %s " % wanted in " %s " % other:
-        return CONTAINED_SCORE
+        return contained
     return difflib.SequenceMatcher(None, wanted, other).ratio()
 
 

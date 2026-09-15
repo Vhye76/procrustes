@@ -130,7 +130,7 @@ def _movie_naming_rows(path, found):
     return rows
 
 
-def _tv_naming_rows(path, found):
+def _tv_naming_rows(path, found, max_range_span=None):
     name = os.path.basename(path)
     stem = _stem(path)
     season_dir = os.path.basename(os.path.dirname(path))
@@ -151,7 +151,7 @@ def _tv_naming_rows(path, found):
     show_year = years[-1] if years else "YYYY"
     show = _build(titles.show_folder, found["show"], show_year, found["tvdb"], found["tmdb"])
     season = titles.season_folder(found["season"])
-    parsed = episodes.parse_filename(stem)
+    parsed = episodes.parse_filename(stem, max_range_span=max_range_span)
     last = None
     if parsed and parsed["season"] == found["season"] and parsed["first"] == found["episode"]:
         last = parsed["last"]
@@ -198,8 +198,9 @@ def _hdr_rows(video):
 
 
 #----- Assessing one library file
-def assess(path, kind):
-    container = probemod.probe(path).container
+def assess(path, kind, profile=None):
+    profile = profile or {}
+    container = probemod.probe(path, keep_langs=profile.get("keep_langs")).container
     video = container.get("video") or {}
     rows = []
 
@@ -239,7 +240,7 @@ def assess(path, kind):
     if kind == "movie":
         rows += _movie_naming_rows(path, found)
     else:
-        rows += _tv_naming_rows(path, found)
+        rows += _tv_naming_rows(path, found, profile.get("max_range_span"))
     rows += _component_rows(path, kind)
 
     tag_title = found["title"]
@@ -273,8 +274,9 @@ def assess(path, kind):
 
 #----- The sweep
 class Auditor:
-    def __init__(self, cfg, layout, store, stop_event):
+    def __init__(self, cfg, layout, store, stop_event, settings=None):
         self.cfg = cfg
+        self.settings = settings
         self.layout = layout
         self.store = store
         self.stop_event = stop_event
@@ -370,7 +372,9 @@ class Auditor:
                 continue
             self._set(current=os.path.basename(path))
             try:
-                failed, measured, summary = assess(path, kind)
+                failed, measured, summary = assess(
+                    path, kind, self.settings.profile(kind) if self.settings else None,
+                )
             except Exception as exc:
                 log.warning("audit could not assess %s: %s", os.path.basename(path), exc)
                 failed, measured, summary = ["unreadable"], {"rows": []}, str(exc)

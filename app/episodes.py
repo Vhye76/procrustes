@@ -55,18 +55,19 @@ def classify(path):
     return "movie"
 
 
-def parse_filename(name, default_season=None):
+def parse_filename(name, default_season=None, max_range_span=MAX_RANGE_SPAN):
     text = str(name)
+    max_range_span = int(max_range_span or MAX_RANGE_SPAN)
     for pattern in RANGE_PATTERNS:
         m = pattern.search(text)
         if m:
             season, first, last = (int(g) for g in m.groups())
             if last >= first:
                 #----- a range wider than a two-parter is a mislabel, not a file holding a season.
-                if last - first + 1 > MAX_RANGE_SPAN:
+                if last - first + 1 > max_range_span:
                     log.warning(
                         "range E%02d-E%02d in %s spans %d episodes, more than %d, reading it as E%02d alone",
-                        first, last, text, last - first + 1, MAX_RANGE_SPAN, first,
+                        first, last, text, last - first + 1, max_range_span, first,
                     )
                     return {"season": season, "first": first, "last": first}
                 return {"season": season, "first": first, "last": last}
@@ -97,9 +98,9 @@ def season_from_folder(path):
     return int(m.group(1)) if m else None
 
 
-def parse_path(path):
+def parse_path(path, max_range_span=MAX_RANGE_SPAN):
     name = os.path.basename(str(path))
-    return parse_filename(name, default_season=season_from_folder(path))
+    return parse_filename(name, default_season=season_from_folder(path), max_range_span=max_range_span)
 
 
 def parse_marker(title):

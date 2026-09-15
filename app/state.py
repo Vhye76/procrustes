@@ -145,6 +145,12 @@ CREATE TABLE IF NOT EXISTS findings (
     audited_at    REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS findings_import ON findings(import_path);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value_json  TEXT NOT NULL,
+    updated_at  REAL NOT NULL
+);
 """
 
 ADDED_COLUMNS = (
@@ -523,3 +529,24 @@ class Store:
             title_id, finding["path"],
         )
         return finding["path"]
+
+    #----- Settings
+    def settings_all(self):
+        with self._lock:
+            cur = self._db.execute("SELECT key, value_json FROM settings ORDER BY key")
+            return [(r["key"], r["value_json"]) for r in cur.fetchall()]
+
+    def settings_put(self, rows):
+        with self._lock:
+            self._db.executemany(
+                "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json,"
+                " updated_at = excluded.updated_at",
+                [(str(k), str(v), float(at)) for k, v, at in rows],
+            )
+            self._db.commit()
+
+    def settings_delete(self, keys):
+        with self._lock:
+            self._db.executemany("DELETE FROM settings WHERE key = ?", [(str(k),) for k in keys])
+            self._db.commit()

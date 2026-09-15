@@ -6,9 +6,6 @@ log = logging.getLogger("encode")
 PASSTHROUGH_CODECS = ("hevc", "av1")
 SD_DISPLAY_HEIGHT = 720
 
-X265_COMMON = "psy-rd=2.0:psy-rdoq=1.0:deblock=-1,-1"
-AQ_DEFAULT = "aq-mode=3"
-AQ_FILM = "aq-mode=4:tune=grain"
 SDR_PRIMARIES_SD = "smpte170m"
 SDR_PRIMARIES_HD = "bt709"
 X265_SDR_COLOUR = "colorprim=%s:transfer=%s:colormatrix=%s:range=limited"
@@ -51,7 +48,8 @@ TELECINE_FRAME_RATIO = 4.0 / 5.0
 
 
 class Decision:
-    def __init__(self, action, gate, reason, encoder=None, grain=None, notes=None, fields=None):
+    def __init__(self, action, gate, reason, encoder=None, grain=None, notes=None, fields=None,
+                 params=None):
         self.action = action
         self.gate = gate
         self.reason = reason
@@ -60,6 +58,7 @@ class Decision:
         self.grain = grain
         self.fields = fields
         self.notes = list(notes or [])
+        self.params = dict(params) if params else None
 
     @property
     def is_passthrough(self):
@@ -75,6 +74,7 @@ class Decision:
             "grain": self.grain,
             "fields": self.fields,
             "notes": self.notes,
+            "params": self.params,
         }
 
     def __repr__(self):
@@ -87,21 +87,36 @@ class Decision:
 
 
 #----- Thread allocation
-def _threads(cfg):
-    value = getattr(cfg, "encode_threads_per_job", None)
+def _threads(params):
+    value = (params or {}).get("threads_per_job")
     log.debug("encoder thread figure resolved to %s", value)
     if value:
         return max(1, int(value))
     return max(1, os.cpu_count() or 1)
 
 
-def is_sd(video):
-    return int(video.get("display_height") or 0) < SD_DISPLAY_HEIGHT
+def is_sd(video, floor=SD_DISPLAY_HEIGHT):
+    return int(video.get("display_height") or 0) < int(floor or SD_DISPLAY_HEIGHT)
+
+
+#----- The encoder subset of a profile;  stored with the decision at ROUTED, so a queued title keeps it.
+PARAM_KEYS = (
+    "x265_preset", "x265_crf", "x265_aq_mode", "x265_aq_mode_film", "x265_tune_film",
+    "x265_psy_rd", "x265_psy_rdoq", "x265_deblock", "x265_pix_fmt", "x265_extra_params",
+    "x265_dv_vbv_kbps", "svtav1_preset", "svtav1_crf", "svtav1_params", "svtav1_pix_fmt",
+    "qsv_preset", "qsv_global_quality", "sd_display_height", "threads_per_job",
+)
+
+
+def encoder_params(profile, render_node=None):
+    out = {key: profile.get(key) for key in PARAM_KEYS}
+    out["render_node"] = render_node or RENDER_NODE
+    return out
 
 
 #----- The router
-def select(video, kind, cfg, grain=None, gpu_available=True, override=None):
-    decision = _select(video, kind, cfg, grain, gpu_available, override)
+def select(video, kind, profile, grain=None, gpu_available=True, override=None):
+    decision = _select(video, kind, profile, grain, gpu_available, override)
     log.debug(
         "router gate %s: %s, %s",
         decision.gate, decision.encoder or "passthrough", decision.reason,
@@ -115,7 +130,7 @@ def describe(decision):
     return "gate %s: %s, %s" % (decision.gate, decision.encoder, decision.reason)
 
 
-def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
+def _select(video, kind, profile, grain=None, gpu_available=True, override=None):
     override = override or {}
     notes = []
     log.debug(
@@ -124,7 +139,7 @@ def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
     )
 
     codec = (video.get("codec") or "").lower()
-    if codec in PASSTHROUGH_CODECS:
+    if codec in (profile.get("passthrough_codecs") or PASSTHROUGH_CODECS):
         return Decision(
             PASSTHROUGH,
             1,
@@ -132,12 +147,13 @@ def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
             grain=grain,
         )
 
-    if kind == "tv" and is_sd(video) and not cfg.tv_encode_sd:
+    sd_floor = profile.get("sd_display_height") or SD_DISPLAY_HEIGHT
+    if is_sd(video, sd_floor) and not profile.get("encode_sd"):
         return Decision(
             PASSTHROUGH,
             2,
-            "SD television, display height %s is below %d"
-            % (video.get("display_height"), SD_DISPLAY_HEIGHT),
+            "SD %s, display height %s is below %d and SD encoding is off"
+            % ("television" if kind == "tv" else "source", video.get("display_height"), sd_floor),
             grain=grain,
         )
 
@@ -155,7 +171,7 @@ def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
             notes=notes,
         )
 
-    codec_target = (override.get("output_codec") or cfg.output_codec).lower()
+    codec_target = (override.get("output_codec") or profile.get("output_codec") or "hevc").lower()
 
     if codec_target == "av1":
         if grain:
@@ -206,10 +222,10 @@ def _select(video, kind, cfg, grain=None, gpu_available=True, override=None):
 
 
 #----- Command fragments
-def sdr_stamp_primaries(video):
+def sdr_stamp_primaries(video, sd_floor=SD_DISPLAY_HEIGHT):
     if video.get("hdr") or video.get("colour_tagged"):
         return None
-    return SDR_PRIMARIES_SD if is_sd(video) else SDR_PRIMARIES_HD
+    return SDR_PRIMARIES_SD if is_sd(video, sd_floor) else SDR_PRIMARIES_HD
 
 
 def _map_args():
@@ -266,7 +282,7 @@ def _master_display(md):
     )
 
 
-def x265_hdr_params(video):
+def x265_hdr_params(video, dv_vbv_kbps=X265_DV_VBV_KBPS):
     colour = hdr_colour(video)
     if colour is None:
         return None
@@ -279,12 +295,27 @@ def x265_hdr_params(video):
     if cl:
         parts.append("max-cll=%d,%d" % (int(cl.get("max_content") or 0), int(cl.get("max_average") or 0)))
     if video.get("dolby_vision"):
-        parts.append("vbv-maxrate=%d:vbv-bufsize=%d" % (X265_DV_VBV_KBPS, X265_DV_VBV_KBPS))
+        parts.append("vbv-maxrate=%d:vbv-bufsize=%d" % (int(dv_vbv_kbps), int(dv_vbv_kbps)))
+    return ":".join(parts)
+
+
+#----- The head of the x265 params string, before colour, extra params and pools
+def x265_tuning(params, grain):
+    if grain:
+        parts = ["aq-mode=%d" % int(params.get("x265_aq_mode_film", 4))]
+        tune = str(params.get("x265_tune_film") or "grain").lower()
+        if tune != "none":
+            parts.append("tune=%s" % tune)
+    else:
+        parts = ["aq-mode=%d" % int(params.get("x265_aq_mode", 3))]
+    parts.append("psy-rd=%s" % params.get("x265_psy_rd", 2.0))
+    parts.append("psy-rdoq=%s" % params.get("x265_psy_rdoq", 1.0))
+    parts.append("deblock=%s" % (params.get("x265_deblock") or "-1,-1"))
     return ":".join(parts)
 
 
 #----- Command builders
-def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
+def build_command(decision, src, dst, video, params, crop=None, crf=None):
     if decision.is_passthrough:
         raise ValueError("build_command called on a passthrough decision")
     if video.get("dolby_vision") and decision.encoder != LIBX265:
@@ -292,11 +323,12 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
             "Dolby Vision RPU cannot be carried by %s, only libx265 preserves it"
             % decision.encoder
         )
+    params = params or {}
 
     args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1"]
 
     if decision.encoder == AV1_QSV:
-        node = getattr(cfg, "render_node", RENDER_NODE)
+        node = params.get("render_node") or RENDER_NODE
         args += ["-init_hw_device", "qsv=hw:%s" % node, "-filter_hw_device", "hw"]
 
     args += ["-i", str(src)]
@@ -314,39 +346,43 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     if filters:
         args += ["-vf", ",".join(filters)]
 
-    stamp = sdr_stamp_primaries(video)
+    stamp = sdr_stamp_primaries(video, params.get("sd_display_height") or SD_DISPLAY_HEIGHT)
     hdr = hdr_colour(video)
 
     if decision.encoder == LIBX265:
-        aq = AQ_FILM if decision.grain else AQ_DEFAULT
-        params = "%s:%s" % (aq, X265_COMMON)
+        x265 = x265_tuning(params, decision.grain)
         if stamp:
-            params = "%s:%s" % (params, X265_SDR_COLOUR % (stamp, stamp, stamp))
+            x265 = "%s:%s" % (x265, X265_SDR_COLOUR % (stamp, stamp, stamp))
         elif hdr:
-            params = "%s:%s" % (params, x265_hdr_params(video))
-        params = "%s:pools=%d" % (params, _threads(cfg))
+            x265 = "%s:%s" % (x265, x265_hdr_params(video, params.get("x265_dv_vbv_kbps") or X265_DV_VBV_KBPS))
+        #----- the operator's string goes after the built values and before pools, so it can override any of them.
+        extra = (params.get("x265_extra_params") or "").strip(":")
+        if extra:
+            x265 = "%s:%s" % (x265, extra)
+        x265 = "%s:pools=%d" % (x265, _threads(params))
         args += [
             "-c:v", "libx265",
-            "-preset", X265_PRESET,
-            "-crf", str(crf if crf is not None else cfg.crf),
-            "-pix_fmt", "yuv420p10le",
+            "-preset", str(params.get("x265_preset") or X265_PRESET),
+            "-crf", str(crf if crf is not None else params.get("x265_crf", 18)),
+            "-pix_fmt", str(params.get("x265_pix_fmt") or "yuv420p10le"),
         ]
         if video.get("dolby_vision"):
             args += ["-dolbyvision", "1"]
         args += [
             #----- colour travels inside the params string on this path, not as ffmpeg flags.
-            "-x265-params", params,
+            "-x265-params", x265,
         ]
         if stamp or hdr:
             args += ["-color_range", "tv"]
 
     elif decision.encoder == LIBSVTAV1:
+        svt = (params.get("svtav1_params") or SVTAV1_PARAMS).strip(":")
         args += [
             "-c:v", "libsvtav1",
-            "-preset", SVTAV1_PRESET,
-            "-crf", str(crf if crf is not None else SVTAV1_CRF),
-            "-pix_fmt", "yuv420p10le",
-            "-svtav1-params", "%s:lp=%d" % (SVTAV1_PARAMS, _threads(cfg)),
+            "-preset", str(params.get("svtav1_preset", SVTAV1_PRESET)),
+            "-crf", str(crf if crf is not None else params.get("svtav1_crf", SVTAV1_CRF)),
+            "-pix_fmt", str(params.get("svtav1_pix_fmt") or "yuv420p10le"),
+            "-svtav1-params", "%s:lp=%d" % (svt, _threads(params)) if svt else "lp=%d" % _threads(params),
         ]
         if stamp:
             args += _sdr_ffmpeg_colour_args(stamp)
@@ -356,8 +392,8 @@ def build_command(decision, src, dst, video, cfg, crop=None, crf=None):
     elif decision.encoder == AV1_QSV:
         args += [
             "-c:v", "av1_qsv",
-            "-preset", QSV_PRESET,
-            "-global_quality", str(crf if crf is not None else QSV_GLOBAL_QUALITY),
+            "-preset", str(params.get("qsv_preset") or QSV_PRESET),
+            "-global_quality", str(crf if crf is not None else params.get("qsv_global_quality", QSV_GLOBAL_QUALITY)),
         ]
         if stamp:
             args += _sdr_ffmpeg_colour_args(stamp)

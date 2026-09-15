@@ -8,6 +8,7 @@ import uuid
 
 from . import VERSION, audit, compare, encode, media, probe as probemod, provider as providermod
 from . import standards, state, tags, titles
+from .settings import POOL_KEYS
 
 log = logging.getLogger("orchestrator")
 
@@ -50,16 +51,42 @@ PASSTHROUGH_WORKERS = 1
 POOLS = (encode.CPU, encode.GPU, encode.PASSTHROUGH)
 
 
+ASSESS = "assess"
+
+
+#----- Queues, live targets and the thread registry;  a worker runs while its index is below its pool's target.
 class Pools:
-    def __init__(self, cfg):
-        self.sizes = {
-            encode.CPU: max(cfg.cpu_slots, 0),
-            encode.GPU: max(cfg.gpu_slots, 0),
-            encode.PASSTHROUGH: PASSTHROUGH_WORKERS,
-        }
+    def __init__(self, settings):
         self.queues = {name: queue.Queue() for name in POOLS}
         self.active = {name: 0 for name in POOLS}
+        self.target = {}
+        self.threads = {name: {} for name in POOLS + (ASSESS,)}
         self._lock = threading.Lock()
+        self.retarget(settings)
+
+    def retarget(self, settings):
+        with self._lock:
+            self.target = {
+                encode.CPU: max(int(settings.get("cpu_slots")), 0),
+                encode.GPU: max(int(settings.get("gpu_slots")), 0),
+                encode.PASSTHROUGH: PASSTHROUGH_WORKERS,
+                ASSESS: max(int(settings.get("max_jobs")), 1),
+            }
+
+    def wanted(self, name, index):
+        with self._lock:
+            return index < self.target.get(name, 0)
+
+    def missing(self, name):
+        #----- indices below the target with no live thread;  a shrink always retires the highest, so live ones stay contiguous.
+        with self._lock:
+            live = {i for i, t in self.threads[name].items() if t.is_alive()}
+            self.threads[name] = {i: t for i, t in self.threads[name].items() if i in live}
+            return [i for i in range(self.target.get(name, 0)) if i not in live]
+
+    def register(self, name, index, thread):
+        with self._lock:
+            self.threads[name][index] = thread
 
     def enter(self, name):
         with self._lock:
@@ -71,10 +98,17 @@ class Pools:
 
     def snapshot(self):
         with self._lock:
+            live = {name: sum(1 for t in threads.values() if t.is_alive()) for name, threads in self.threads.items()}
             return {
                 "gpu_active": self.active[encode.GPU],
                 "cpu_active": self.active[encode.CPU],
                 "passthrough_active": self.active[encode.PASSTHROUGH],
+                "gpu_target": self.target[encode.GPU],
+                "cpu_target": self.target[encode.CPU],
+                "assess_target": self.target[ASSESS],
+                "gpu_threads": live[encode.GPU],
+                "cpu_threads": live[encode.CPU],
+                "assess_threads": live[ASSESS],
             }
 
     def depths(self):
@@ -102,20 +136,18 @@ class RetryLater(RuntimeError):
     pass
 
 
-RETRY_MAX_ATTEMPTS = 6
-RETRY_BASE_DELAY = 120
-
-
 class Orchestrator:
-    def __init__(self, cfg, layout, store, gpu_status, provider=None):
+    def __init__(self, cfg, layout, store, gpu_status, settings, provider=None):
         self.cfg = cfg
+        self.settings = settings
         self.layout = layout
         self.store = store
         self.gpu = gpu_status
         self.provider = provider
-        self.pools = Pools(cfg)
+        self.pools = Pools(settings)
         self.queue = queue.Queue()
         self.workers = []
+        self._workers_lock = threading.Lock()
         self._grain_lock = threading.Semaphore(1)
         self.stop_event = threading.Event()
         self.started_at = time.time()
@@ -127,7 +159,7 @@ class Orchestrator:
         self._imports = {}
         self._imports_lock = threading.Lock()
         self._fresh_lookups = set()
-        self.auditor = audit.Auditor(cfg, layout, store, self.stop_event)
+        self.auditor = audit.Auditor(cfg, layout, store, self.stop_event, settings=settings)
 
     #----- Lifecycle
     def start(self):
@@ -139,17 +171,7 @@ class Orchestrator:
                 "encode job %s is owned by live pid %s and was NOT swept",
                 name, (owner or {}).get("pid"),
             )
-        for n in range(self.cfg.max_jobs):
-            t = threading.Thread(target=self._assess_worker, name="assess-%d" % n, daemon=True)
-            t.start()
-            self.workers.append(t)
-        for name in POOLS:
-            for n in range(self.pools.sizes[name]):
-                t = threading.Thread(
-                    target=self._work_worker, args=(name,), name="%s-%d" % (name, n), daemon=True
-                )
-                t.start()
-                self.workers.append(t)
+        self._ensure_workers()
         t = threading.Thread(target=self._watch, name="watcher", daemon=True)
         t.start()
         self.workers.append(t)
@@ -159,6 +181,36 @@ class Orchestrator:
     def stop(self):
         self.stop_event.set()
         self.terminate_encodes()
+
+    #----- Worker lifecycle
+    def _ensure_workers(self):
+        #----- serialised, since a thread registered and not yet started reads as dead to a second caller.
+        with self._workers_lock:
+            for index in self.pools.missing(ASSESS):
+                t = threading.Thread(
+                    target=self._assess_worker, args=(index,), name="assess-%d" % index, daemon=True
+                )
+                self.pools.register(ASSESS, index, t)
+                t.start()
+            for name in POOLS:
+                for index in self.pools.missing(name):
+                    t = threading.Thread(
+                        target=self._work_worker, args=(name, index), name="%s-%d" % (name, index),
+                        daemon=True,
+                    )
+                    self.pools.register(name, index, t)
+                    t.start()
+
+    def apply_settings(self, changed):
+        keys = {key.split(".")[0] for key, _old, _new in changed}
+        if keys & set(POOL_KEYS):
+            self.pools.retarget(self.settings)
+            self._ensure_workers()
+            snap = self.pools.snapshot()
+            log.info(
+                "pools retargeted: assess %d, cpu %d, gpu %d",
+                snap["assess_target"], snap["cpu_target"], snap["gpu_target"],
+            )
 
     #----- Encode progress
     def _progress_handler(self, title_id, total_frames):
@@ -217,7 +269,7 @@ class Orchestrator:
 
     #----- Requeueing
     def requeue_retries(self):
-        for row in self.store.due_for_retry(RETRY_MAX_ATTEMPTS):
+        for row in self.store.due_for_retry(self.settings.get("retry_max_attempts")):
             log.info(
                 "title %s retrying %s (attempt %d)",
                 row["id"], row["source_path"], (row["attempts"] or 0) + 1,
@@ -238,6 +290,9 @@ class Orchestrator:
             return None
         if decision.get("action") == encode.PASSTHROUGH:
             return encode.PASSTHROUGH
+        #----- an encode decision with no stored parameters predates the snapshot and is re-assessed.
+        if not decision.get("params"):
+            return None
         return decision.get("device") or encode.CPU
 
     def _enqueue(self, row):
@@ -260,7 +315,7 @@ class Orchestrator:
                 self.requeue_retries()
             except Exception:
                 log.exception("retry sweep failed")
-            self.stop_event.wait(self.cfg.poll_interval)
+            self.stop_event.wait(self.settings.get("poll_interval"))
 
     #----- Watching the import directory
     def scan(self):
@@ -351,7 +406,7 @@ class Orchestrator:
             stat = os.stat(path)
         except OSError:
             return False
-        if time.time() - stat.st_mtime < self.cfg.mtime_quiet:
+        if time.time() - stat.st_mtime < self.settings.get("mtime_quiet"):
             self._seen_sizes[path] = stat.st_size
             return False
         #----- stability means matching the size recorded by the previous poll, not merely being quiet.
@@ -360,8 +415,9 @@ class Orchestrator:
         return previous == stat.st_size
 
     #----- Workers, one half each
-    def _assess_worker(self):
-        while not self.stop_event.is_set():
+    def _assess_worker(self, index=0):
+        #----- the target is checked between titles, so a shrink never interrupts one.
+        while not self.stop_event.is_set() and self.pools.wanted(ASSESS, index):
             try:
                 title_id = self.queue.get(timeout=1)
             except queue.Empty:
@@ -370,10 +426,11 @@ class Orchestrator:
                 self._run(title_id, self._assess)
             finally:
                 self.queue.task_done()
+        log.debug("assessment worker %d exiting", index)
 
-    def _work_worker(self, pool):
+    def _work_worker(self, pool, index=0):
         q = self.pools.queues[pool]
-        while not self.stop_event.is_set():
+        while not self.stop_event.is_set() and self.pools.wanted(pool, index):
             try:
                 title_id = q.get(timeout=1)
             except queue.Empty:
@@ -384,6 +441,7 @@ class Orchestrator:
             finally:
                 self.pools.leave(pool)
                 q.task_done()
+        log.debug("%s worker %d exiting", pool, index)
 
     def _run(self, title_id, half):
         try:
@@ -427,15 +485,16 @@ class Orchestrator:
         kind = row["kind"]
         identity = row.get("identity") or {}
         try:
-            container = row.get("probe") or probemod.probe(source).container
-            workdir, work = self._stage(title_id, source, job_id, container)
-            work = self._remux(title_id, work, source)
+            profile = self.settings.profile(kind)
+            container = row.get("probe") or probemod.probe(source, keep_langs=profile["keep_langs"]).container
+            workdir, work = self._stage(title_id, source, job_id, container, profile)
+            work = self._remux(title_id, work, source, profile)
             if not self.cfg.dry_run:
-                container = probemod.probe(work).container
+                container = probemod.probe(work, keep_langs=profile["keep_langs"]).container
             carry = self._tag(title_id, work, identity, kind)
-            self._ready(title_id, work, identity, kind)
-            work = self._encode(title_id, work, workdir, container, kind, source, identity, carry)
-            self._verify(title_id, work, source, identity, kind)
+            self._ready(title_id, work, identity, kind, profile)
+            work = self._encode(title_id, work, workdir, container, kind, source, identity, carry, profile)
+            self._verify(title_id, work, source, identity, kind, profile)
             self._publish(title_id, work, identity, kind)
             try:
                 self._retire(title_id, source, job_id)
@@ -455,11 +514,11 @@ class Orchestrator:
     def _retry_later(self, title_id, source, exc):
         row = self.store.get(title_id) or {}
         attempts = row.get("attempts") or 0
-        if attempts + 1 >= RETRY_MAX_ATTEMPTS:
+        if attempts + 1 >= int(self.settings.get("retry_max_attempts")):
             log.warning("giving up after %d attempts: %s: %s", attempts + 1, source, exc)
             self._hold(title_id, source, "%s (gave up after %d attempts)" % (exc, attempts + 1))
         else:
-            delay = RETRY_BASE_DELAY * (2 ** attempts)
+            delay = int(self.settings.get("retry_base_delay")) * (2 ** attempts)
             log.warning("transient failure on %s, retrying in %ds: %s", source, delay, exc)
             self._hold(title_id, source, str(exc), retry_delay=delay)
 
@@ -487,7 +546,7 @@ class Orchestrator:
 
     #----- Stages, in chain order
     def _probe(self, title_id, source):
-        container = probemod.probe(source).container
+        container = probemod.probe(source, keep_langs=self.settings.get("keep_langs")).container
         self.store.advance(title_id, state.PROBED, "probed", probe=container)
         return container
 
@@ -502,7 +561,7 @@ class Orchestrator:
         if row.get("overridden"):
             self.store.advance(title_id, state.SCREENED, "standards overridden by operator")
             return []
-        verdict = standards.screen(container, kind, path=source)
+        verdict = standards.screen(container, kind, path=source, profile=self.settings.profile(kind))
         if not verdict.ok:
             self.store.record(
                 title_id, state.SCREENED, "failed minimum standards: %s" % "; ".join(verdict.problems)
@@ -659,7 +718,7 @@ class Orchestrator:
             title_id, os.path.basename(incumbent_path), route,
         )
         try:
-            incumbent = probemod.probe(incumbent_path).container
+            incumbent = probemod.probe(incumbent_path, keep_langs=self.settings.get("keep_langs")).container
         except probemod.ProbeError as exc:
             self.store.advance(title_id, state.COMPARED, "incumbent unreadable: %s" % exc)
             return []
@@ -667,6 +726,7 @@ class Orchestrator:
         result = compare.compare(
             compare.measure(source, crop=crops[0]),
             compare.measure(incumbent_path, crop=crops[1]),
+            profile=self.settings.profile(kind),
         )
         self.store.update(title_id, comparison=result.as_dict())
         if result.is_loss:
@@ -697,7 +757,7 @@ class Orchestrator:
             (incumbent_path, old_video, incumbent),
         ):
             try:
-                found = media.detect_crop(path, video, container=container)
+                found = self._detect_crop(path, video, container)
                 if found is None:
                     found = {
                         "bars_px": 0,
@@ -852,15 +912,16 @@ class Orchestrator:
     def _route(self, title_id, container, kind, source):
         override = read_sidecar(os.path.dirname(source))
         video = container["video"]
+        profile = self.settings.profile(kind)
         decision = encode.select(
-            video, kind, self.cfg, grain=None,
+            video, kind, profile, grain=None,
             gpu_available=self.gpu.available, override=override,
         )
         if not decision.is_passthrough and "film" not in override:
-            result = self._grain(title_id, source, video, container)
+            result = self._grain(title_id, source, video, container, profile)
             self.store.update(title_id, grain_ratio=result.get("ratio"))
             decision = encode.select(
-                video, kind, self.cfg, grain=result["grain"],
+                video, kind, profile, grain=result["grain"],
                 gpu_available=self.gpu.available, override=override,
             )
             log.info(
@@ -872,22 +933,47 @@ class Orchestrator:
                 decision.fields = override["fields"]
                 log.info("title %s field structure %s from the sidecar", title_id, decision.fields)
             else:
-                fields = self._fields(title_id, source, video, container)
+                fields = self._fields(title_id, source, video, container, profile)
                 decision.fields = fields["fields"]
                 log.info(
                     "title %s field probe %s: %s", title_id, fields["fields"], fields.get("reason"),
                 )
+        #----- the parameters travel with the decision, so a settings change never reshapes a queued title.
+        if not decision.is_passthrough:
+            decision.params = encode.encoder_params(profile, render_node=self.cfg.render_node)
         log.info("title %s router %s", title_id, encode.describe(decision))
         for note in decision.notes:
             log.info("title %s router note: %s", title_id, note)
         pool = self._pool_for(decision.as_dict())
+        detail = encode.describe(decision)
+        if decision.params:
+            detail = "%s; %s" % (detail, self._params_summary(decision))
         self.store.advance(
-            title_id, state.ROUTED, encode.describe(decision),
+            title_id, state.ROUTED, detail,
             decision=decision.as_dict(), encoder=decision.encoder,
         )
         return pool
 
-    def _grain(self, title_id, source, video, container):
+    @staticmethod
+    def _params_summary(decision):
+        #----- the ROUTED history line, so the detail dialog shows what the encode will run with.
+        p = decision.params or {}
+        if decision.encoder == encode.LIBX265:
+            return "x265 preset %s crf %s aq %s%s, %d threads" % (
+                p.get("x265_preset"), p.get("x265_crf"),
+                p.get("x265_aq_mode_film") if decision.grain else p.get("x265_aq_mode"),
+                " tune %s" % p.get("x265_tune_film") if decision.grain and p.get("x265_tune_film") != "none" else "",
+                int(p.get("threads_per_job") or 0),
+            )
+        if decision.encoder == encode.LIBSVTAV1:
+            return "svt-av1 preset %s crf %s, %d threads" % (
+                p.get("svtav1_preset"), p.get("svtav1_crf"), int(p.get("threads_per_job") or 0),
+            )
+        if decision.encoder == encode.AV1_QSV:
+            return "qsv preset %s quality %s" % (p.get("qsv_preset"), p.get("qsv_global_quality"))
+        return ""
+
+    def _grain(self, title_id, source, video, container, profile):
         if self.cfg.dry_run:
             return {"grain": False, "ratio": None, "reason": "dry run"}
         scratch = os.path.join(self.layout.encode, ".probe", str(title_id))
@@ -896,21 +982,44 @@ class Orchestrator:
             try:
                 return media.grain_probe(
                     source, video, scratch,
-                    threshold=self.cfg.grain_threshold, container=container,
+                    threshold=profile["grain_threshold"], container=container,
+                    sample_seconds=profile["grain_sample_seconds"],
+                    sample_position=profile["grain_sample_position"],
+                    probe_crf=profile["grain_probe_crf"],
+                    probe_preset=profile["grain_probe_preset"],
                 )
             finally:
                 shutil.rmtree(scratch, ignore_errors=True)
 
-    def _fields(self, title_id, source, video, container):
+    def _fields(self, title_id, source, video, container, profile):
         if self.cfg.dry_run:
             return {"fields": media.FIELDS_PROGRESSIVE, "reason": "dry run"}
         with self._grain_lock:
-            return media.field_probe(source, video, container=container)
+            return media.field_probe(
+                source, video, container=container,
+                sample_seconds=profile["grain_sample_seconds"],
+                sample_position=profile["grain_sample_position"],
+                telecine_share=profile["field_telecine_share"],
+            )
+
+    def _detect_crop(self, path, video, container):
+        #----- cropdetect's floor is the standards limit, one setting, so the defer condition keeps no middle.
+        profile = self.settings.profile(None)
+        return media.detect_crop(
+            path, video, container=container,
+            sample_count=profile["crop_sample_count"],
+            sample_seconds=profile["crop_sample_seconds"],
+            sample_attempts=profile["crop_sample_attempts"],
+            black_level_factor=profile["crop_black_level_factor"],
+            black_level_cap=profile["crop_black_level_cap"],
+            secondary_share=profile["crop_secondary_share"],
+            min_bars_px=profile["letterbox_bars_px"],
+        )
 
     #----- Staging, remux and tagging
-    def _stage(self, title_id, source, job_id, container):
+    def _stage(self, title_id, source, job_id, container, profile):
         size = container.get("size_bytes") or os.path.getsize(source)
-        ok, need = self.layout.has_headroom(size)
+        ok, need = self.layout.has_headroom(size, profile["encode_headroom"])
         while not ok and not self.stop_event.is_set():
             log.info(
                 "title %s waiting for encode space: need %d bytes, have %d",
@@ -919,7 +1028,7 @@ class Orchestrator:
                 self.layout.encode_free_bytes(),
             )
             self.stop_event.wait(30)
-            ok, need = self.layout.has_headroom(size)
+            ok, need = self.layout.has_headroom(size, self.settings.get("encode_headroom"))
 
         workdir = self.layout.make_job_dir(job_id)
         work = os.path.join(workdir, os.path.basename(source))
@@ -939,7 +1048,7 @@ class Orchestrator:
         )
         return workdir, work
 
-    def _remux(self, title_id, work, source):
+    def _remux(self, title_id, work, source, profile):
         base, ext = os.path.splitext(work)
         detail = []
         current = work
@@ -957,7 +1066,7 @@ class Orchestrator:
         if self.cfg.dry_run:
             log.info("title %s DRY RUN would strip foreign tracks from %s", title_id, current)
         else:
-            info = media.strip_foreign(current, stripped)
+            info = media.strip_foreign(current, stripped, keep_langs=profile["keep_langs"])
             if info["stripped"]:
                 detail.append("stripped %d foreign track(s)" % info["stripped"])
                 if current != source:
@@ -965,7 +1074,7 @@ class Orchestrator:
                 current = stripped
             media.fix_flags_and_language(current)
             detail.append("flags and languages normalised")
-            video = probemod.probe(current).video
+            video = probemod.probe(current, keep_langs=profile["keep_langs"]).video
             if video.get("hdr"):
                 repair = media.repair_hdr_declaration(current, video)
                 if repair["repaired"]:
@@ -1010,13 +1119,13 @@ class Orchestrator:
         self.store.advance(title_id, state.TAGGED, "statistics byte-sum ratio %.4f" % ratio)
         return carry
 
-    def _ready(self, title_id, work, identity, kind):
+    def _ready(self, title_id, work, identity, kind, profile):
         if self.cfg.dry_run:
             self.store.advance(title_id, state.READY, "dry run")
             return
         ok, problems = tags.readiness(
             work, kind, identity["title"], show=identity.get("show"),
-            unidentified=bool(identity.get("unidentified")),
+            unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
         )
         if not ok:
             if self._forced(title_id, state.READY, problems):
@@ -1034,7 +1143,7 @@ class Orchestrator:
         return True
 
     #----- Encoding
-    def _encode(self, title_id, work, workdir, container, kind, source, identity, carry):
+    def _encode(self, title_id, work, workdir, container, kind, source, identity, carry, profile):
         row = self.store.get(title_id)
         override = read_sidecar(os.path.dirname(source))
         video = container["video"]
@@ -1047,6 +1156,7 @@ class Orchestrator:
             grain=stored.get("grain"),
             notes=stored.get("notes"),
             fields=stored.get("fields"),
+            params=stored.get("params"),
         )
 
         if decision.is_passthrough:
@@ -1059,7 +1169,7 @@ class Orchestrator:
         if override.get("crop"):
             crop = override["crop"]
         elif not self.cfg.dry_run:
-            detected = media.detect_crop(work, video, container=container)
+            detected = self._detect_crop(work, video, container)
             if detected and detected.get("filter"):
                 crop = detected["filter"]
                 log.info(
@@ -1069,8 +1179,9 @@ class Orchestrator:
 
         target = os.path.join(workdir, "encoded.mkv")
         try:
+            params = decision.params or encode.encoder_params(profile, render_node=self.cfg.render_node)
             cmd = encode.build_command(
-                decision, work, target, video, self.cfg, crop=crop, crf=override.get("crf")
+                decision, work, target, video, params, crop=crop, crf=override.get("crf")
             )
         except ValueError as exc:
             raise HoldError(str(exc), stage=state.ENCODING)
@@ -1127,7 +1238,7 @@ class Orchestrator:
         return target
 
     #----- Verification and publication
-    def _verify(self, title_id, work, source, identity, kind):
+    def _verify(self, title_id, work, source, identity, kind, profile):
         if self.cfg.dry_run:
             self.store.advance(title_id, state.VERIFIED, "dry run")
             return
@@ -1171,7 +1282,7 @@ class Orchestrator:
         baseline = ((self.store.get(title_id) or {}).get("probe") or {}).get("video")
         ok, readiness_problems = tags.readiness(
             work, kind, identity["title"], show=identity.get("show"), hdr_baseline=baseline,
-            unidentified=bool(identity.get("unidentified")),
+            unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
         )
         if not ok:
             problems += ["published file failed readiness: %s" % p for p in readiness_problems]
@@ -1365,4 +1476,5 @@ class Orchestrator:
             "libraries_mounted": bool(self.layout.libraries),
             "audit": self.auditor.status(),
             "config": self.cfg.as_dict(),
+            "settings": self.settings.as_dict(),
         }

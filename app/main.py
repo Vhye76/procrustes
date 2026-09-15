@@ -9,7 +9,7 @@ from . import gpu as gpumod
 from . import locks
 from . import provider as providermod
 from . import VERSION
-from . import state, webui
+from . import settings as settingsmod, state, webui
 from .config import Config, ConfigError
 from .orchestrator import Orchestrator
 from .paths import Layout, LayoutError
@@ -59,10 +59,11 @@ def main():
         log.info("config  %s", line)
     for name in sorted(cfg.sources):
         log.debug("config  %s came from %s", name, cfg.sources[name])
-    log.debug(
-        "config  encoder threads %d from %s, %d per job at CPU_SLOTS=%d",
-        cfg.encode_threads, cfg.thread_source, cfg.encode_threads_per_job, cfg.cpu_slots,
-    )
+    for name in cfg.ignored:
+        log.warning(
+            "config  %s is no longer read from the environment and is ignored;"
+            " it is set on the settings page", name,
+        )
 
     try:
         layout.ensure()
@@ -129,8 +130,6 @@ def main():
         log.info("gpu     %s", gpu_status.reason)
     else:
         log.warning("gpu     degraded: %s", gpu_status.reason)
-        if cfg.output_codec == "av1":
-            log.warning("gpu     OUTPUT_CODEC is av1, every encode will fall back to libsvtav1")
 
     try:
         webui.build_ssl_context(cfg)
@@ -142,12 +141,25 @@ def main():
     if cfg.dry_run:
         log.warning("DRY_RUN is set, no file will be moved, encoded or quarantined")
 
+    #----- Settings live in the store, so they load after it and before anything that reads them.
     store = state.Store(layout.state_db)
-    client = providermod.Client(layout.provider_cache)
-    provider = providermod.Provider(client, roots=(layout.imports, layout.held))
+    settings = settingsmod.Settings(store)
+    for line in settings.banner().splitlines():
+        log.info("setting %s", line)
+    threads, source = settings.threads()
+    log.debug(
+        "setting encoder threads %d from %s, %d per job at cpu_slots=%d",
+        threads, source, settings.profile("movie")["threads_per_job"], settings.get("cpu_slots"),
+    )
+    if not gpu_status.available and "av1" in (
+        settings.get("output_codec", "movie"), settings.get("output_codec", "tv")
+    ):
+        log.warning("gpu     an output codec is av1, every av1 encode will fall back to libsvtav1")
+    client = providermod.Client(layout.provider_cache, settings=settings)
+    provider = providermod.Provider(client, roots=(layout.imports, layout.held), settings=settings)
 
-    orchestrator = Orchestrator(cfg, layout, store, gpu_status, provider=provider)
-    ui = webui.WebUI(cfg, orchestrator, store, log_path=log_path)
+    orchestrator = Orchestrator(cfg, layout, store, gpu_status, settings, provider=provider)
+    ui = webui.WebUI(cfg, orchestrator, store, settings, log_path=log_path)
 
     running["orchestrator"] = orchestrator
     running["ui"] = ui

@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from . import provider as providermod, state
+from .settings import SettingsError
 
 log = logging.getLogger("webui")
 
@@ -90,6 +91,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/":
                 return self._static("index.html", "text/html; charset=utf-8")
+            if path == "/settings":
+                return self._static("settings.html", "text/html; charset=utf-8")
+            if path == "/api/settings":
+                return self._json(200, self.app.settings_view())
             if path == "/favicon.ico":
                 return self._static("procrustes.png", "image/png", cache="max-age=86400")
             if path == "/api/status":
@@ -131,6 +136,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "body must be JSON"})
 
         m = path.split("/")
+        if path == "/api/settings":
+            try:
+                return self._json(200, self.app.change_settings(body))
+            except SettingsError as exc:
+                return self._json(400, {"errors": exc.errors})
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
         if path == "/api/audit":
             return self._json(200, self.app.sweep(bool(body.get("rescan"))))
         if len(m) == 5 and m[1] == "api" and m[2] == "audit" and m[4] == "import":
@@ -202,16 +214,46 @@ def _search_key(row):
 
 
 class WebUI:
-    def __init__(self, cfg, orchestrator, store, log_path=None):
+    def __init__(self, cfg, orchestrator, store, settings, log_path=None):
         self.cfg = cfg
         self.orchestrator = orchestrator
         self.store = store
+        self.settings = settings
         self.log_path = log_path
         self.httpd = None
         self.thread = None
 
     def status(self):
         return self.orchestrator.status()
+
+    #----- Application settings
+    def settings_view(self):
+        view = self.settings.describe()
+        view["pools"] = self.orchestrator.pools.snapshot()
+        threads, source = self.settings.threads()
+        view["threads"] = {"total": threads, "source": source}
+        return view
+
+    def change_settings(self, body):
+        body = body or {}
+        changed = []
+        #----- resets run first, so a set in the same batch on the same key wins.
+        if body.get("reset"):
+            if not isinstance(body["reset"], list):
+                raise ValueError("reset must be a list of keys")
+            changed += self.settings.reset(body["reset"])
+        if body.get("set"):
+            if not isinstance(body["set"], dict):
+                raise ValueError("set must be an object of key to value")
+            changed += self.settings.update(body["set"])
+        if not body.get("reset") and not body.get("set"):
+            raise ValueError("nothing to change, pass set or reset")
+        for key, old, new in changed:
+            log.info("setting %s changed %s -> %s by operator", key, old, new)
+        self.orchestrator.apply_settings(changed)
+        view = self.settings_view()
+        view["changed"] = [k for k, _o, _n in changed]
+        return view
 
     #----- Library audit
     def audit(self):

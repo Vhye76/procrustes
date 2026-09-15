@@ -13,7 +13,7 @@ import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
          ->  tag  ->  readiness  ->  encode  ->  verify  ->  complete/
 ```
 
-Assessment runs ahead of encoding.  MAX_JOBS workers take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles from their queues in order.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
+Assessment runs ahead of encoding.  The assessment workers, three by default, take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles from their queues in order.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
 
 Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.  A folder under 'import/' that is left empty by that move is removed, so a title dropped in as a whole folder does not leave its shell behind.
 
@@ -23,7 +23,7 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 
 | Stage | Shown as | Meaning |
 | --- | --- | --- |
-| DETECTED | queued | Seen in 'import/', size stable across two polls and untouched for MTIME_QUIET seconds.  Waiting for a free worker.  A title returns here when you press Retry or Force through, and when a retry backoff expires. |
+| DETECTED | queued | Seen in 'import/', size stable across two polls and untouched for the quiet window, 30 seconds by default.  Waiting for a free worker.  A title returns here when you press Retry or Force through, and when a retry backoff expires. |
 | PROBED | probed | One ffprobe pass done.  Classified as a movie or as television. |
 | SCREENED | screened | Passed the minimum standards gate. |
 | IDENTIFIED | identified | Provider IDs resolved and verified.  The canonical name is settled from here on. |
@@ -143,26 +143,17 @@ The transform runs one way.  A filename can always be derived from a tag;  a tag
 | PUID / PGID | required | identity the supervisor drops to;  enforced by 'entrypoint.sh', which refuses to start without both |
 | RENDER_GID | unset | supplementary group for /dev/dri, GPU off if unset |
 | RENDER_NODE | /dev/dri/renderD128 | render node the GPU probe and QSV encoder use |
-| OUTPUT_CODEC | hevc | hevc or av1 |
-| MAX_JOBS | 3 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
-| GPU_SLOTS | 1 | GPU encode threads |
-| CPU_SLOTS | 1 | CPU encode threads, each at ENCODE_THREADS divided by CPU_SLOTS;  two gain little except on SD |
-| ENCODE_HEADROOM | 3.0 | multiple of source size required to admit a job |
-| ENCODE_THREADS | 0 | 0 autodetects from the cgroup CPU quota |
-| CRF | 18 | default quality target |
-| TV_ENCODE_SD | 0 | 1 re-enables SD television encoding |
 | WEB_PORT | 443 | HTTPS only, there is no HTTP listener |
 | DRY_RUN | 0 | 1 logs every intended action and performs none |
-| POLL_INTERVAL | 15 | import watch interval in seconds |
-| MTIME_QUIET | 30 | seconds a file must be untouched before it counts as stable.  Keep POLL_INTERVAL below this |
 | LOCK_WAIT_TIMEOUT | 0 | seconds to wait for the instance lock, 0 waits indefinitely |
 | LOCK_WAIT_INTERVAL | 15 | how often to retry the instance lock |
-| GRAIN_THRESHOLD | 0.18 | denoise delta above which a source counts as grainy |
 | LOG_LEVEL | info | 'info' records what happened, 'debug' adds why |
 | AUDIT_INTERVAL | 2 | seconds between library files audited;  0 disables the sweep |
 | AUDIT_SWEEP_INTERVAL | 3600 | seconds between passes over the libraries |
 
 Every one of these is echoed into the log and onto /api/status at startup, so what the container thinks it was configured with is always visible without exec-ing into it.
+
+The environment is the deployment surface only.  OUTPUT_CODEC, CRF, TV_ENCODE_SD, MAX_JOBS, GPU_SLOTS, CPU_SLOTS, ENCODE_HEADROOM, ENCODE_THREADS, POLL_INTERVAL, MTIME_QUIET and GRAIN_THRESHOLD are not read from the environment;  each is a setting in the section below, and one left in the environment is logged as ignored at startup.
 
 Every module logs what it does.  At the default 'info' the log records one line per meaningful action, naming the title, the stage and the outcome, and says why when something fails or degrades.  Set 'LOG_LEVEL=debug' to add the detail behind each of those lines:  command lines, per-gate comparisons, measured figures against their thresholds.  Logs go to stdout and to 'config/logs/procrustes.log', and the tail is served at /api/logs.
 
@@ -172,7 +163,7 @@ Two host-side values are consumed by the compose file rather than the container,
 
 | Name | Default | Purpose |
 |---|---|---|
-| CONTAINER_CPUS | 8 | CPU quota;  ENCODE_THREADS derives the encoder thread count from it |
+| CONTAINER_CPUS | 8 | CPU quota;  the encoder thread count autodetects from it |
 | CONTAINER_MEM | 16g | memory ceiling;  nothing derives from it, it just has to be enough |
 
 Get RENDER_GID from the host that will run the container:
@@ -181,21 +172,73 @@ Get RENDER_GID from the host that will run the container:
 stat -c %g /dev/dri/renderD128
 ```
 
+## Settings
+
+Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard, read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
+
+Every setting under Encoding except the SD height, the passthrough codec list and the Dolby Vision VBV figure has one value for movies and one for television, and so do the grain threshold and the standards floors.  The rest are global.
+
+| Group | Setting | Default | Meaning |
+|---|---|---|---|
+| Pipeline | max_jobs | 3 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
+| Pipeline | gpu_slots | 1 | GPU encode threads |
+| Pipeline | cpu_slots | 1 | CPU encode threads, each at the encoder thread count divided by this;  two gain little except on SD |
+| Pipeline | encode_headroom | 3.0 | multiple of source size required to admit a job |
+| Pipeline | encode_threads | 0 | 0 autodetects from the cgroup CPU quota |
+| Pipeline | poll_interval | 15 | import watch interval in seconds;  the page refuses a value at or above mtime_quiet |
+| Pipeline | mtime_quiet | 30 | seconds a file must be untouched before it counts as stable |
+| Pipeline | retry_max_attempts | 6 | transient failures retried this many times before the title holds |
+| Pipeline | retry_base_delay | 120 | seconds before the first retry, doubling each time |
+| Encoding | output_codec | hevc / hevc | hevc or av1 |
+| Encoding | encode_sd | off / off | on sends an SD source to the encoder instead of passing it through |
+| Encoding | sd_display_height | 720 | display height below which a source is SD |
+| Encoding | passthrough_codecs | hevc, av1 | source codecs never re-encoded |
+| Encoding | x265_preset, x265_crf | slow, 18 | libx265 speed and quality |
+| Encoding | x265_aq_mode, x265_aq_mode_film, x265_tune_film | 3, 4, grain | adaptive quantisation on a clean and on a grainy source, and the tune on a grainy one |
+| Encoding | x265_psy_rd, x265_psy_rdoq, x265_deblock | 2.0, 1.0, -1,-1 | the rest of the x265 params string |
+| Encoding | x265_pix_fmt | yuv420p10le | 10-bit output |
+| Encoding | x265_extra_params | empty | appended verbatim to the params string |
+| Encoding | x265_dv_vbv_kbps | 40000 | VBV pair on a Dolby Vision encode |
+| Encoding | svtav1_preset, svtav1_crf, svtav1_params, svtav1_pix_fmt | 4, 24, tune=0:film-grain=8, yuv420p10le | libsvtav1 |
+| Encoding | qsv_preset, qsv_global_quality | veryslow, 26 | av1_qsv |
+| Probes | grain_threshold | 0.18 / 0.18 | denoise delta above which a source counts as grainy |
+| Probes | grain_sample_seconds, grain_sample_position | 20, 0.45 | the sample the grain and field probes decode |
+| Probes | grain_probe_crf, grain_probe_preset | 20, ultrafast | the two sample encodes the grain probe compares |
+| Probes | field_telecine_share | 0.10 | share of repeated fields at which a source is telecined |
+| Probes | crop_sample_count, crop_sample_seconds, crop_sample_attempts | 6, 2, 12 | cropdetect sampling |
+| Probes | crop_black_level_factor, crop_black_level_cap | 1.5, 0.13 | the cropdetect limit from the measured black |
+| Probes | crop_secondary_share | 0.06 | share of samples at which a second geometry is a variable aspect |
+| Standards | min_display_width, min_display_height | 1920x800 / 0x0 | resolution floor, 0 for none |
+| Standards | min_runtime_min | 40 / 15 | runtime floor in minutes |
+| Standards | letterbox_bars_px | 20 | bars at or above this are cropped, and above it fail the standards |
+| Standards | pal_speedup_check | on | fail a 25 fps source at a PAL height |
+| Standards | keep_langs | eng, en, und | audio and subtitle languages kept at ingest |
+| Comparison | pixel_tolerance, bitrate_tolerance | 0.05, 0.25 | below these differences gates 2, 3 and 6 cast no vote |
+| Comparison | codec_efficiency | h264 1.0, hevc 1.7, av1 2.2, vc1 0.9, mpeg4 0.7, mpeg2video 0.45 | bitrate weighting per codec |
+| Matching | title_cutoff, contained_score | 0.82, 0.9 | the episode and search matcher's scores |
+| Matching | max_range_span | 3 | widest 'E01-E03' range read as a range |
+| Matching | candidate_limit | 8 | candidates listed per source on an identification hold |
+| Matching | provider_throttle_s, provider_timeout_s | 3.0, 30 | spacing and timeout of provider requests |
+
+A change applies to the next title that reaches the stage reading it.  A title already routed keeps the encoder parameters it was routed with, stored in its decision and shown on its detail, so a queue does not change shape under a running configuration;  Retry re-assesses a title under the current settings.  A change to max_jobs, gpu_slots or cpu_slots resizes the pools live:  a pool grows at once, and a pool that shrinks lets its surplus thread finish the title it is on before it exits.
+
+The page posts every changed value in one request and nothing is written unless every value is valid;  a rejected value is named beside its field.  'Reset' beside a stored value, or on a whole group, returns it to the default.
+
 ## The encoder router
 
 Evaluated in order, first match wins.
 
 ```
-1  source codec is hevc or av1          PASSTHROUGH
-2  television and the source is SD      PASSTHROUGH
-3  Dolby Vision RPU present             libx265    on any setting
-4  OUTPUT_CODEC=av1 and grainy          libsvtav1  CPU
-5  OUTPUT_CODEC=av1                     av1_qsv    GPU
-6  grainy                               libx265 aq-mode=4:tune=grain
-7  otherwise                            libx265 aq-mode=3
+1  source codec is in passthrough_codecs   PASSTHROUGH
+2  SD source and encode_sd is off          PASSTHROUGH
+3  Dolby Vision RPU present                libx265    on any setting
+4  output_codec av1 and grainy             libsvtav1  CPU
+5  output_codec av1                        av1_qsv    GPU
+6  grainy                                  libx265 aq-mode=4:tune=grain
+7  otherwise                               libx265 aq-mode=3
 ```
 
-x265 is the default because no Apple TV decodes AV1 in hardware.  AV1 is fully built and selectable with OUTPUT_CODEC=av1, but the calibration batch has not been run, so the AV1 rate control values are starting points rather than settled ones.
+x265 is the default because no Apple TV decodes AV1 in hardware.  AV1 is fully built and selectable per kind on the settings page, but the calibration batch has not been run, so the AV1 rate control values are starting points rather than settled ones.
 
 Gate 3 exists because an AV1 re-encode discards the Dolby Vision RPU.  Those titles always take the x265 path, on any setting.
 
@@ -304,13 +347,15 @@ GET  /api/titles/<id>             one title with its stage history and compariso
 GET  /api/held                    the decision queue, held and failed titles together
 GET  /api/poster/<hash>           cached cover art by the 'poster' hash on a title, 404 when there is none
 GET  /api/logs                    log tail
+GET  /api/settings                every setting with its value, default and source, grouped, plus the pool targets
+POST /api/settings                {"set": {key: value}} and/or {"reset": [keys]};  400 with {"errors": {key: why}} writes nothing
 GET  /api/audit                   sweep status and every library finding
 POST /api/audit                   start a sweep now;  {"rescan": true} wipes the findings first
 POST /api/audit/<id>/import       copy that finding's file into import/ for repair, in the background
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-A strip along the top carries the output codec, the GPU state, free space in the encode area, whether a library is mounted and a DRY_RUN badge, so a degraded GPU or an unmounted library is visible without opening anything.
+A menu at the top right, behind a hamburger, carries the output codec per kind, the GPU state, free space in the encode area and whether a library is mounted, then Application Settings, which opens the settings page;  the settings page carries the same menu with Dashboard in its place.  A DRY_RUN badge stays in the header itself.
 
 The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters in the lower right:  library findings, with a scanning line beneath it while a pass runs, then quarantined files and failed jobs.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
 
@@ -346,7 +391,7 @@ Run it against a throwaway tree first:
 
 ```
 docker run --rm -e PUID=1000 -e PGID=1000 -e DRY_RUN=1 \
-  -e POLL_INTERVAL=15 -e MTIME_QUIET=30 -e LOG_LEVEL=info \
+  -e LOG_LEVEL=info \
   -v /tmp/testtree:/media \
   -v /srv/certs:/certs:ro \
   -p 443:443 procrustes:local

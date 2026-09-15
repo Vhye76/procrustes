@@ -40,10 +40,11 @@ def pedigree(name):
     return None
 
 
-def normalised_bitrate(bitrate, codec):
+def normalised_bitrate(bitrate, codec, efficiency=None):
     if not bitrate:
         return None
-    return float(bitrate) * CODEC_EFFICIENCY.get(str(codec or "").lower(), 1.0)
+    table = efficiency or CODEC_EFFICIENCY
+    return float(bitrate) * float(table.get(str(codec or "").lower(), 1.0))
 
 
 def _pedigree_rank(label):
@@ -312,7 +313,11 @@ def _cast(votes, gate, reason, new, old):
     log.debug("gate %s votes %s: incoming %s versus incumbent %s", gate, verdict, new, old)
 
 
-def compare(incoming, incumbent):
+def compare(incoming, incumbent, profile=None):
+    profile = profile or {}
+    pixel_tolerance = float(profile.get("pixel_tolerance", PIXEL_TOLERANCE))
+    bitrate_tolerance = float(profile.get("bitrate_tolerance", BITRATE_TOLERANCE))
+    efficiency = profile.get("codec_efficiency") or CODEC_EFFICIENCY
     notes = []
     votes = []
     log.debug(
@@ -359,7 +364,7 @@ def compare(incoming, incumbent):
             "gate 2 deferred, bars incoming %d px, incumbent %d px", new_bars, old_bars
         )
     elif new_px and old_px:
-        if abs(new_px - old_px) / float(max(new_px, old_px)) > PIXEL_TOLERANCE:
+        if abs(new_px - old_px) / float(max(new_px, old_px)) > pixel_tolerance:
             _cast(votes, 2, "the %s has the larger display resolution", new_px, old_px)
     else:
         notes.append("display pixel count unavailable on one side, gate 2 skipped")
@@ -367,7 +372,7 @@ def compare(incoming, incumbent):
     new_pic = incoming.get("picture_pixels")
     old_pic = incumbent.get("picture_pixels")
     if new_pic and old_pic:
-        if abs(new_pic - old_pic) / float(max(new_pic, old_pic)) > PIXEL_TOLERANCE:
+        if abs(new_pic - old_pic) / float(max(new_pic, old_pic)) > pixel_tolerance:
             _cast(
                 votes, 3,
                 "the %s has the larger real picture area once baked-in bars are discounted",
@@ -386,10 +391,10 @@ def compare(incoming, incumbent):
     if new_depth != old_depth:
         _cast(votes, 5, "the %s has the greater bit depth", new_depth, old_depth)
 
-    new_rate = normalised_bitrate(incoming.get("video_bitrate"), incoming.get("codec"))
-    old_rate = normalised_bitrate(incumbent.get("video_bitrate"), incumbent.get("codec"))
+    new_rate = normalised_bitrate(incoming.get("video_bitrate"), incoming.get("codec"), efficiency)
+    old_rate = normalised_bitrate(incumbent.get("video_bitrate"), incumbent.get("codec"), efficiency)
     if new_rate and old_rate:
-        if abs(new_rate - old_rate) / float(max(new_rate, old_rate)) > BITRATE_TOLERANCE:
+        if abs(new_rate - old_rate) / float(max(new_rate, old_rate)) > bitrate_tolerance:
             _cast(
                 votes, 6,
                 "the %s has the higher video bitrate once weighted for codec efficiency",

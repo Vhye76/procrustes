@@ -107,9 +107,30 @@ def runtime_seconds(container):
 
 
 #----- The gate
-def screen(container, kind, path=None, crop=None):
+#----- The per-kind floors, 0 meaning none;  the module constants are the defaults
+def floors(kind, profile=None):
+    profile = profile or {}
+    if kind == "movie":
+        defaults = (MOVIE_MIN_DISPLAY_WIDTH, MOVIE_MIN_DISPLAY_HEIGHT, MOVIE_MIN_RUNTIME_S)
+    else:
+        defaults = (0, 0, TV_MIN_RUNTIME_S)
+    width = profile.get("min_display_width")
+    height = profile.get("min_display_height")
+    runtime_min = profile.get("min_runtime_min")
+    return (
+        int(defaults[0] if width is None else width),
+        int(defaults[1] if height is None else height),
+        int(defaults[2] if runtime_min is None else runtime_min * 60),
+    )
+
+
+def screen(container, kind, path=None, crop=None, profile=None):
     problems = []
     warnings = []
+    profile = profile or {}
+    keep_langs = tuple(profile.get("keep_langs") or KEEP_LANGS)
+    bars_limit = int(profile.get("letterbox_bars_px") or LETTERBOX_MAX_BARS_PX)
+    pal_check = profile.get("pal_speedup_check", True)
     log.debug("screening as %s, crop=%s, path=%s", kind, crop, path)
 
     video = container.get("video") or {}
@@ -121,13 +142,13 @@ def screen(container, kind, path=None, crop=None):
 
     if not audio:
         problems.append("no audio streams")
-    elif not any((a.get("language") or "und").lower() in KEEP_LANGS for a in audio):
+    elif not any((a.get("language") or "und").lower() in keep_langs for a in audio):
         problems.append(
-            "no audio track tagged eng or und, found %s"
-            % ", ".join(sorted({(a.get("language") or "und") for a in audio}))
+            "no audio track tagged %s, found %s"
+            % (" or ".join(keep_langs), ", ".join(sorted({(a.get("language") or "und") for a in audio})))
         )
 
-    if is_pal_speedup_suspect(video):
+    if pal_check and is_pal_speedup_suspect(video):
         problems.append(
             "25 fps at %dx%d, likely a PAL speed-up of film material"
             % (video.get("width") or 0, video.get("height") or 0)
@@ -135,10 +156,10 @@ def screen(container, kind, path=None, crop=None):
 
     if crop:
         bars = crop.get("bars_px") or 0
-        if bars > LETTERBOX_MAX_BARS_PX:
+        if bars > bars_limit:
             problems.append(
                 "baked-in letterbox of %d px exceeds the %d px limit"
-                % (bars, LETTERBOX_MAX_BARS_PX)
+                % (bars, bars_limit)
             )
     elif is_letterbox_candidate(video):
         warnings.append(
@@ -148,24 +169,21 @@ def screen(container, kind, path=None, crop=None):
 
     runtime = runtime_seconds(container)
 
-    if kind == "movie":
+    if kind in ("movie", "tv"):
+        min_width, min_height, min_runtime = floors(kind, profile)
+        noun = "movie" if kind == "movie" else "episode"
         dw = int(video.get("display_width") or 0)
         dh = int(video.get("display_height") or 0)
-        if dw < MOVIE_MIN_DISPLAY_WIDTH or dh < MOVIE_MIN_DISPLAY_HEIGHT:
+        #----- a zero floor is no floor, which is how television carries no resolution floor.
+        if (min_width and dw < min_width) or (min_height and dh < min_height):
             problems.append(
-                "movie display resolution %dx%d is below the %dx%d floor"
-                % (dw, dh, MOVIE_MIN_DISPLAY_WIDTH, MOVIE_MIN_DISPLAY_HEIGHT)
+                "%s display resolution %dx%d is below the %dx%d floor"
+                % (noun, dw, dh, min_width, min_height)
             )
-        if runtime and runtime < MOVIE_MIN_RUNTIME_S:
+        if runtime and min_runtime and runtime < min_runtime:
             problems.append(
-                "movie runtime %s is below the %d min floor"
-                % (_human_runtime(runtime), MOVIE_MIN_RUNTIME_S / 60)
-            )
-    elif kind == "tv":
-        if runtime and runtime < TV_MIN_RUNTIME_S:
-            problems.append(
-                "episode runtime %s is below the %d min floor"
-                % (_human_runtime(runtime), TV_MIN_RUNTIME_S / 60)
+                "%s runtime %s is below the %d min floor"
+                % (noun, _human_runtime(runtime), min_runtime / 60)
             )
     else:
         problems.append("unknown kind %r" % kind)

@@ -21,20 +21,8 @@ services:
       TLS_CERT_FILE: fullchain.pem
       TLS_KEY_FILE: privkey.pem
 
-      OUTPUT_CODEC: hevc
-      CRF: 18
-      TV_ENCODE_SD: 0
-
-      MAX_JOBS: 3
-      GPU_SLOTS: 1
-      CPU_SLOTS: 1
-      ENCODE_HEADROOM: 3.0
-      ENCODE_THREADS: 0
-
       WEB_PORT: 443
       DRY_RUN: 0
-      POLL_INTERVAL: 15
-      MTIME_QUIET: 30
       LOG_LEVEL: info
 
     #----- Host paths come from .env
@@ -53,7 +41,7 @@ services:
     ports:
       - "443:443"
 
-    #----- Kernel cgroup limits;  ENCODE_THREADS derives from the CPU quota
+    #----- Kernel cgroup limits;  the encoder thread count autodetects from the CPU quota
     cpus: ${CONTAINER_CPUS:-8}
     mem_limit: ${CONTAINER_MEM:-16g}
 
