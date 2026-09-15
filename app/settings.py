@@ -12,12 +12,13 @@ log = logging.getLogger("settings")
 KINDS = ("movie", "tv")
 
 GROUPS = (
-    ("pipeline", "Pipeline"),
-    ("encoding", "Encoding"),
-    ("probes", "Probes"),
-    ("standards", "Minimum standards"),
-    ("comparison", "Comparison"),
-    ("matching", "Matching and provider"),
+    ("pipeline", "Pipeline", "settings"),
+    ("encoding", "Encoding", "settings"),
+    ("probes", "Probes", "settings"),
+    ("standards", "Minimum standards", "settings"),
+    ("comparison", "Comparison", "settings"),
+    ("matching", "Matching and provider", "settings"),
+    ("access", "Access", "account"),
 )
 
 X265_PRESETS = (
@@ -267,10 +268,20 @@ SETTINGS = (
     Setting("provider_timeout_s", "matching", "Provider timeout",
             "Seconds a provider request may take before it counts as unreachable.",
             "int", providermod.TIMEOUT, minimum=5, maximum=300),
+
+    Setting("auth_enabled", "access", "Require authentication",
+            "Off opens the dashboard and the API to anyone who can reach the port.",
+            "bool", True),
+    Setting("session_hours", "access", "Session lifetime",
+            "Hours a login stays valid;  signing out ends it sooner.",
+            "int", 168, minimum=1, maximum=8760),
 )
 
 BY_KEY = {s.key: s for s in SETTINGS}
 POOL_KEYS = ("max_jobs", "gpu_slots", "cpu_slots")
+#----- written only through the account endpoint, which checks a factor first;  the settings batch refuses them.
+SWITCH_KEYS = ("auth_enabled",)
+SWITCH_MESSAGE = "set from the User Settings page"
 
 
 #----- Coercion and validation of one value, from JSON or from the form
@@ -452,13 +463,16 @@ class Settings:
         return out
 
     #----- Writing
-    def update(self, changes):
+    def update(self, changes, internal=False):
         errors = {}
         staged = {}
         for key, value in (changes or {}).items():
             setting = BY_KEY.get(key)
             if setting is None:
                 errors[key] = "unknown setting"
+                continue
+            if key in SWITCH_KEYS and not internal:
+                errors[key] = SWITCH_MESSAGE
                 continue
             if setting.per_kind:
                 if not isinstance(value, dict):
@@ -518,6 +532,8 @@ class Settings:
             setting = BY_KEY.get(base)
             if setting is None:
                 raise SettingsError({key: "unknown setting"})
+            if base in SWITCH_KEYS:
+                raise SettingsError({key: SWITCH_MESSAGE})
             if kind is None:
                 storage_keys.extend(setting.storage_keys())
             elif setting.per_kind:
@@ -539,7 +555,7 @@ class Settings:
         groups = []
         with self._lock:
             stored = dict(self._values)
-        for name, label in GROUPS:
+        for name, label, page in GROUPS:
             rows = []
             for setting in SETTINGS:
                 if setting.group != name:
@@ -558,7 +574,7 @@ class Settings:
                     row["value"] = stored.get(setting.key, setting.default)
                     row["source"] = "stored" if setting.key in stored else "default"
                 rows.append(row)
-            groups.append({"name": name, "label": label, "settings": rows})
+            groups.append({"name": name, "label": label, "page": page, "settings": rows})
         return {"groups": groups}
 
     def as_dict(self):

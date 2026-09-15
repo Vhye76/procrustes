@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>procrustes</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
+<style>
+  /*----- Palette, the dashboard's */
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e7eaf0; --dim: #98a2b3; --accent: #6ea8fe;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+         display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+          padding: 26px 28px; width: 100%; max-width: 440px; }
+  h1 { font-size: 16px; margin: 0 0 4px; font-weight: 600; letter-spacing: .02em; }
+  h2 { font-size: 13px; margin: 18px 0 8px; font-weight: 600; color: var(--dim);
+       text-transform: uppercase; letter-spacing: .06em; }
+  p { margin: 6px 0 12px; color: var(--dim); font-size: 13px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 12px 0 4px; }
+  input[type=text], input[type=password] {
+    background: #14161a; color: var(--ink); border: 1px solid var(--line); border-radius: 5px;
+    padding: 7px 9px; font-size: 14px; width: 100%; font-family: inherit; }
+  input:focus { outline: none; border-color: var(--accent); }
+  input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
+  .radios label { display: flex; align-items: center; gap: 9px; margin: 6px 0; color: var(--ink);
+                  font-size: 13px; cursor: pointer; }
+  .radios input { accent-color: var(--accent); width: 15px; height: 15px; }
+  .row { display: flex; gap: 10px; margin-top: 18px; align-items: center; }
+  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 5px; padding: 7px 14px; font-size: 13px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .msg { font-size: 12px; color: var(--dim); min-height: 18px; margin-top: 12px; }
+  .msg.bad { color: var(--bad); }
+  .msg.ok { color: var(--ok); }
+  /*----- The enrolment:  the SVG is inserted inline, so it is sized here */
+  .qr { display: flex; gap: 16px; align-items: flex-start; margin-top: 8px; }
+  .qr svg { width: 168px; height: 168px; background: #fff; border-radius: 6px; padding: 6px; flex: 0 0 auto; }
+  .qr .secret { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+                word-break: break-all; color: var(--ink); }
+  .qr .note { font-size: 12px; color: var(--dim); margin-top: 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>procrustes</h1>
+
+  <!----- The first-run question, shown while the store has no account -->
+  <div id="ask" hidden>
+    <p>This is the first visit to a new store.</p>
+    <h2>Require Authentication?</h2>
+    <p>Yes creates the first account and puts a login in front of the dashboard and the API.  No opens both to anyone who can reach the port;  it can be switched on later under User Settings.</p>
+    <div class="row">
+      <button class="primary" onclick="showCreate()">Yes</button>
+      <button onclick="decline()">No</button>
+    </div>
+  </div>
+
+  <!----- The first account:  username, method, and the authenticator enrolled inline -->
+  <div id="create" hidden>
+    <h2>First account</h2>
+    <label for="c-user">Username</label>
+    <input type="text" id="c-user" autocomplete="username" onchange="userChanged()">
+    <h2>Authentication method</h2>
+    <div class="radios">
+      <label><input type="radio" name="mode" value="password" checked onchange="modeChanged()"> Password</label>
+      <label><input type="radio" name="mode" value="totp" onchange="modeChanged()"> OTP / Google Authenticator</label>
+      <label><input type="radio" name="mode" value="both" onchange="modeChanged()"> MFA with both</label>
+    </div>
+    <div id="c-pw">
+      <label for="c-pass">Password</label>
+      <input type="password" id="c-pass" autocomplete="new-password">
+      <label for="c-pass2">Confirm password</label>
+      <input type="password" id="c-pass2" autocomplete="new-password">
+    </div>
+    <div id="c-otp" hidden>
+      <h2>Authenticator</h2>
+      <div id="c-enrol"><p>Type the username first, then scan the code that appears here.</p></div>
+      <label for="c-code">Code from the authenticator</label>
+      <input type="text" id="c-code" class="mono" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+    </div>
+    <div class="row">
+      <button class="primary" id="c-go" onclick="create()">Create account</button>
+      <button onclick="showAsk()">Back</button>
+    </div>
+    <div class="msg" id="c-msg"></div>
+  </div>
+
+  <!----- One form for every mode;  the server ignores a factor the account does not need -->
+  <div id="login" hidden>
+    <p>Sign in to continue.</p>
+    <form onsubmit="signIn(event)">
+      <label for="l-user">Username</label>
+      <input type="text" id="l-user" autocomplete="username" autofocus>
+      <label for="l-pass">Password</label>
+      <input type="password" id="l-pass" autocomplete="current-password">
+      <label for="l-code">Authenticator code</label>
+      <input type="text" id="l-code" class="mono" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+      <div class="row">
+        <button class="primary" id="l-go" type="submit">Sign in</button>
+      </div>
+      <div class="msg" id="l-msg"></div>
+    </form>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let ENROL = null;
+let ENROL_USER = null;
+
+function show(id) {
+  for (const x of ["ask", "create", "login"]) $(x).hidden = x !== id;
+}
+function showAsk() { show("ask"); }
+function showCreate() { show("create"); $("c-user").focus(); }
+function mode() { return document.querySelector("input[name=mode]:checked").value; }
+function msg(id, text, cls) { const el = $(id); el.textContent = text || ""; el.className = "msg " + (cls || ""); }
+
+async function post(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify(body || {}) });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  return { res, data };
+}
+
+//----- The server says which form applies;  the page never decides that itself
+async function boot() {
+  let state;
+  try { state = await (await fetch("/api/login")).json(); }
+  catch (e) { msg("l-msg", "The service did not answer.", "bad"); show("login"); return; }
+  if (!state.enabled) { location.href = "/"; return; }
+  if (state.setup) show("ask"); else show("login");
+}
+
+async function decline() {
+  const { res, data } = await post("/api/setup", { require: false });
+  if (!res.ok) { show("create"); msg("c-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  location.href = "/";
+}
+
+function modeChanged() {
+  const m = mode();
+  $("c-pw").hidden = m === "totp";
+  $("c-otp").hidden = m === "password";
+  if (m !== "password") userChanged();
+}
+
+//----- Enrolment is issued per username, because the otpauth label carries it
+async function userChanged() {
+  if (mode() === "password") return;
+  const user = $("c-user").value.trim();
+  if (!user || user === ENROL_USER) return;
+  const { res, data } = await post("/api/setup/totp", { username: user });
+  if (!res.ok) { $("c-enrol").innerHTML = `<p>${esc(data.error || "Could not enrol.")}</p>`; ENROL = null; return; }
+  ENROL = data; ENROL_USER = user;
+  $("c-enrol").innerHTML = `<div class="qr">${data.qr}<div>
+    <div>Scan with Google Authenticator, or enter the secret by hand:</div>
+    <div class="secret">${esc(data.secret)}</div>
+    <div class="note">Then enter the six-digit code it shows.</div></div></div>`;
+}
+
+//----- Creation sends the issued secret back with the code;  the server verifies before it writes
+async function create() {
+  const m = mode();
+  const body = { require: true, username: $("c-user").value.trim(), mode: m };
+  if (m !== "totp") {
+    if ($("c-pass").value !== $("c-pass2").value) { msg("c-msg", "The passwords differ.", "bad"); return; }
+    body.password = $("c-pass").value;
+  }
+  if (m !== "password") {
+    if (!ENROL) { msg("c-msg", "Enrol the authenticator first.", "bad"); return; }
+    if (ENROL_USER !== body.username) { msg("c-msg", "The username changed;  scan the new code and enter it.", "bad"); return; }
+    body.secret = ENROL.secret;
+    body.code = $("c-code").value.trim();
+  }
+  $("c-go").disabled = true;
+  const { res, data } = await post("/api/setup", body);
+  $("c-go").disabled = false;
+  if (!res.ok) { msg("c-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  location.reload();
+}
+
+//----- Sign in
+async function signIn(ev) {
+  ev.preventDefault();
+  $("l-go").disabled = true;
+  msg("l-msg", "");
+  const { res, data } = await post("/api/login", {
+    username: $("l-user").value.trim(), password: $("l-pass").value, code: $("l-code").value.trim(),
+  });
+  $("l-go").disabled = false;
+  if (res.status === 429) {
+    const s = Number(data.retry_after || 0);
+    msg("l-msg", `Too many failures;  try again in ${s ? Math.ceil(s / 60) + " min" : "a while"}.`, "bad");
+    return;
+  }
+  if (!res.ok) { msg("l-msg", data.error === "login failed" ? "Login failed." : (data.error || `Failed (${res.status})`), "bad"); $("l-code").value = ""; return; }
+  location.reload();
+}
+
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+boot();
+</script>
+</body>
+</html>

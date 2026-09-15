@@ -151,6 +151,27 @@ CREATE TABLE IF NOT EXISTS settings (
     value_json  TEXT NOT NULL,
     updated_at  REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS users (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    username       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash  TEXT,
+    totp_secret    TEXT,
+    totp_pending   TEXT,
+    last_totp_step INTEGER,
+    mode           TEXT NOT NULL DEFAULT 'password',
+    created_at     REAL NOT NULL,
+    updated_at     REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    created_at  REAL NOT NULL,
+    expires_at  REAL NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 """
 
 ADDED_COLUMNS = (
@@ -549,4 +570,91 @@ class Store:
     def settings_delete(self, keys):
         with self._lock:
             self._db.executemany("DELETE FROM settings WHERE key = ?", [(str(k),) for k in keys])
+            self._db.commit()
+
+    #----- Users
+    def user_count(self):
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+
+    def user_get(self, user_id):
+        with self._lock:
+            row = self._db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            return dict(row) if row else None
+
+    def user_by_name(self, username):
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (str(username),)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def users(self):
+        with self._lock:
+            cur = self._db.execute("SELECT * FROM users ORDER BY username COLLATE NOCASE")
+            return [dict(r) for r in cur.fetchall()]
+
+    def user_create(self, username, password_hash, mode, totp_secret=None, only_if_empty=False):
+        now = time.time()
+        with self._lock:
+            #----- the emptiness check and the insert share the lock, so the first account is created once.
+            if only_if_empty and self._db.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]:
+                return None
+            try:
+                cur = self._db.execute(
+                    "INSERT INTO users (username, password_hash, totp_secret, mode, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (str(username), password_hash, totp_secret, mode, now, now),
+                )
+            except sqlite3.IntegrityError:
+                return None
+            self._db.commit()
+            return cur.lastrowid
+
+    def user_update(self, user_id, **fields):
+        if not fields:
+            return
+        fields["updated_at"] = time.time()
+        assignments = ", ".join("%s = ?" % k for k in fields)
+        with self._lock:
+            self._db.execute(
+                "UPDATE users SET %s WHERE id = ?" % assignments, list(fields.values()) + [user_id]
+            )
+            self._db.commit()
+
+    def user_delete(self, user_id):
+        with self._lock:
+            self._db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            self._db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            self._db.commit()
+
+    #----- Sessions, stored by the hash of the token and never the token
+    def session_create(self, token_hash, user_id, created_at, expires_at):
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                (token_hash, user_id, created_at, expires_at),
+            )
+            self._db.commit()
+
+    def session_get(self, token_hash):
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def session_delete(self, token_hash):
+        with self._lock:
+            self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+            self._db.commit()
+
+    def sessions_delete_for_user(self, user_id):
+        with self._lock:
+            self._db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            self._db.commit()
+
+    def sessions_purge_expired(self, now):
+        with self._lock:
+            self._db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
             self._db.commit()

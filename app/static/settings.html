@@ -112,6 +112,7 @@
 <header>
   <h1><a href="/">procrustes</a> <span>Application Settings</span></h1>
   <span class="pill" id="dry" style="display:none"></span>
+  <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
   <div id="menu">
     <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
@@ -130,6 +131,8 @@
       <div class="st" id="libs">libraries</div>
       <hr>
       <a href="/" role="menuitem">Dashboard</a>
+      <a href="/account" role="menuitem">User Settings</a>
+      <a href="#" role="menuitem" id="signout" onclick="signOut(event)">Sign out</a>
     </div>
   </div>
 </header>
@@ -144,6 +147,24 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+//----- A 401 anywhere reloads the page, which then serves the login form
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 401) { location.reload(); throw new Error("login required"); }
+  return res;
+}
+async function signOut(ev) {
+  ev.preventDefault();
+  try { await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); }
+  catch (e) {}
+  location.href = "/";
+}
+//----- The AUTH OFF pill and the Sign out entry follow the switch
+function authPill(s) {
+  const off = s.auth && s.auth.enabled === false;
+  $("authoff").style.display = off ? "" : "none";
+  $("signout").style.display = off ? "none" : "";
+}
 const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const KINDS = ["movie", "tv"];
@@ -189,7 +210,7 @@ function codecText(settings) {
 //----- The status rows in the menu, polled like the dashboard
 async function status() {
   let s;
-  try { s = await (await fetch("/api/status")).json(); } catch (e) { return; }
+  try { s = await (await api("/api/status")).json(); } catch (e) { return; }
   menuRow($("codec"), codecText(s.settings));
   menuRow($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded", s.gpu.available ? "ok" : "warn");
   menuRow($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
@@ -200,6 +221,7 @@ async function status() {
   $("dry").textContent = s.config.DRY_RUN ? "DRY RUN" : "";
   $("dry").className = "pill warn";
   $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+  authPill(s);
 }
 
 //----- Rendering:  one control per storage key, a per-kind row under the two columns, a global one spanning them
@@ -266,6 +288,7 @@ function render(view) {
   RESETS = new Set();
   const parts = [];
   for (const g of view.groups) {
+    if (g.page !== "settings") continue;
     const rows = g.settings.map(st => {
       SCHEMA[st.key] = st;
       ORIGINAL[st.key] = JSON.parse(JSON.stringify(st.value));
@@ -384,7 +407,7 @@ function resetGroup(name) {
 //----- Loading and saving;  one request carries every change, and a 400 marks its fields and writes nothing
 async function load() {
   let view;
-  try { view = await (await fetch("/api/settings")).json(); }
+  try { view = await (await api("/api/settings")).json(); }
   catch (e) { $("main").innerHTML = `<div id="loading">Could not load settings.</div>`; return; }
   render(view);
   $("msg").className = "msg";
@@ -397,7 +420,7 @@ async function save() {
   $("save").disabled = true;
   let res, data;
   try {
-    res = await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
+    res = await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" },
                                           body: JSON.stringify(body) });
     data = await res.json();
   } catch (e) {

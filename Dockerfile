@@ -10,6 +10,8 @@ RUN set -eux; \
         ffmpeg \
         mkvtoolnix \
         python3 \
+        py3-argon2-cffi \
+        py3-qrcode \
         bash \
         coreutils \
         findutils \
@@ -48,6 +50,10 @@ RUN set -eux; \
         echo "BUILD GATE FAILED: this ffmpeg's libx265 wrapper has no -dolbyvision option," >&2; \
         echo "so a Dolby Vision RPU cannot be carried through an encode. Needs ffmpeg 7.1 or later." >&2; \
         exit 1; \
+    fi; \
+    if ! python3 -c "import argon2, qrcode.image.svg; from argon2.low_level import Type; Type.ID" 2>/dev/null; then \
+        echo "BUILD GATE FAILED: python3 lacks argon2-cffi or qrcode, the two modules the login depends on." >&2; \
+        exit 1; \
     fi
 
 #----- Image metadata
@@ -76,7 +82,7 @@ EXPOSE 443
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
     CMD python3 -c "import ssl,urllib.request,os; \
         ctx=ssl._create_unverified_context(); \
-        urllib.request.urlopen('https://127.0.0.1:%s/api/status' % os.environ.get('WEB_PORT','443'), timeout=5, context=ctx)" \
+        urllib.request.urlopen('https://127.0.0.1:%s/api/health' % os.environ.get('WEB_PORT','443'), timeout=5, context=ctx)" \
         || exit 1
 
 #----- Entry

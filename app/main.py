@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 
+from . import auth as authmod
 from . import gpu as gpumod
 from . import locks
 from . import provider as providermod
@@ -155,11 +156,17 @@ def main():
         settings.get("output_codec", "movie"), settings.get("output_codec", "tv")
     ):
         log.warning("gpu     an output codec is av1, every av1 encode will fall back to libsvtav1")
+    #----- Authentication reads its switch from the settings, so it follows them.
+    auth = authmod.Auth(store, settings)
+    if not auth.enabled:
+        log.warning("authentication is off, the dashboard and the API are open to anyone who can reach the port")
+    elif auth.first_run():
+        log.warning("no account exists yet, the first visit to the dashboard creates one")
     client = providermod.Client(layout.provider_cache, settings=settings)
     provider = providermod.Provider(client, roots=(layout.imports, layout.held), settings=settings)
 
     orchestrator = Orchestrator(cfg, layout, store, gpu_status, settings, provider=provider)
-    ui = webui.WebUI(cfg, orchestrator, store, settings, log_path=log_path)
+    ui = webui.WebUI(cfg, orchestrator, store, settings, auth, log_path=log_path)
 
     running["orchestrator"] = orchestrator
     running["ui"] = ui

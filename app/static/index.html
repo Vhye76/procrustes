@@ -194,6 +194,7 @@
 <header>
   <h1>procrustes</h1>
   <span class="pill" id="dry"></span>
+  <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
   <div id="menu">
     <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
@@ -212,6 +213,8 @@
       <div class="st" id="libs">libraries</div>
       <hr>
       <a href="/settings" role="menuitem">Application Settings</a>
+      <a href="/account" role="menuitem">User Settings</a>
+      <a href="#" role="menuitem" id="signout" onclick="signOut(event)">Sign out</a>
     </div>
   </div>
 </header>
@@ -281,6 +284,24 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+//----- A 401 anywhere reloads the page, which then serves the login form
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 401) { location.reload(); throw new Error("login required"); }
+  return res;
+}
+async function signOut(ev) {
+  ev.preventDefault();
+  try { await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); }
+  catch (e) {}
+  location.href = "/";
+}
+//----- The AUTH OFF pill and the Sign out entry follow the switch
+function authPill(s) {
+  const off = s.auth && s.auth.enabled === false;
+  $("authoff").style.display = off ? "" : "none";
+  $("signout").style.display = off ? "none" : "";
+}
 const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -391,7 +412,7 @@ function paint(boxId, countId, list, sub, emptyText) {
 //----- Fetch and redraw
 async function refresh() {
   let s;
-  try { s = await (await fetch("/api/status")).json(); }
+  try { s = await (await api("/api/status")).json(); }
   catch (e) { return; }
 
   menuRow($("codec"), codecText(s.settings));
@@ -404,10 +425,11 @@ async function refresh() {
           s.libraries_mounted ? "" : "warn");
   pill($("dry"), s.config.DRY_RUN ? "DRY RUN" : "", s.config.DRY_RUN ? "warn" : "");
   $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+  authPill(s);
 
   const prog = s.progress || {};
   let titles;
-  try { titles = await (await fetch("/api/titles")).json(); }
+  try { titles = await (await api("/api/titles")).json(); }
   catch (e) { return; }
   ALL = titles;
   TITLES = {};
@@ -456,7 +478,7 @@ async function refresh() {
 //----- Detail dialog
 async function showDetail(id) {
   let t = TITLES[id];
-  try { t = await (await fetch(`/api/titles/${id}`)).json(); } catch (e) {}
+  try { t = await (await api(`/api/titles/${id}`)).json(); } catch (e) {}
   if (!t) return;
   TITLES[id] = t;
 
@@ -697,7 +719,7 @@ function cell(v) {
 
 async function showCompare(id) {
   let t = TITLES[id];
-  try { t = await (await fetch(`/api/titles/${id}`)).json(); } catch (e) {}
+  try { t = await (await api(`/api/titles/${id}`)).json(); } catch (e) {}
   const c = t.comparison || {};
   const out = t.output_probe || null;
   const rows = c.table || [];
@@ -777,7 +799,7 @@ function findingSide(f) {
 
 async function renderAudit() {
   let a;
-  try { a = await (await fetch("/api/audit")).json(); } catch (e) { return; }
+  try { a = await (await api("/api/audit")).json(); } catch (e) { return; }
   if (LIST_KIND !== "AUDIT") return;
   const st = a.status || {};
   const rows = a.findings || [];
@@ -845,7 +867,7 @@ async function showFinding(id) {
 async function importFinding(id) {
   let r;
   try {
-    r = await (await fetch(`/api/audit/${id}/import`, {method: "POST",
+    r = await (await api(`/api/audit/${id}/import`, {method: "POST",
       headers: {"Content-Type": "application/json"}, body: "{}"})).json();
   } catch (e) { return; }
   if (r.error) alert(r.error);
@@ -853,20 +875,20 @@ async function importFinding(id) {
 }
 
 async function sweepNow() {
-  try { await fetch("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); }
+  try { await api("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); }
   catch (e) {}
   renderAudit();
 }
 
 async function rescanAll() {
-  try { await fetch("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({rescan: true})}); }
+  try { await api("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({rescan: true})}); }
   catch (e) {}
   renderAudit();
 }
 
 //----- Operator actions
 async function decide(id, action, extra) {
-  const res = await fetch(`/api/held/${id}/decision`, {
+  const res = await api(`/api/held/${id}/decision`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(Object.assign({action}, extra || {})),

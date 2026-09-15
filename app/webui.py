@@ -7,10 +7,12 @@ import ssl
 import threading
 import urllib.error
 import urllib.request
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from . import provider as providermod, state
+from . import VERSION
+from . import auth as authmod, provider as providermod, state
 from .settings import SettingsError
 
 log = logging.getLogger("webui")
@@ -64,6 +66,17 @@ def build_ssl_context(cfg):
 
 
 #----- Request handling
+#----- each page serves the login form in its place without a session.
+PUBLIC_PAGES = {
+    "/": "index.html",
+    "/settings": "settings.html",
+    "/account": "account.html",
+}
+HTML = "text/html; charset=utf-8"
+#----- the caller while authentication is off:  every gate passes, no account endpoint applies.
+OPERATOR = {"id": None, "username": None}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "procrustes"
 
@@ -74,31 +87,76 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log.debug("%s %s", self.address_string(), fmt % args)
 
-    def _send(self, status, body, content_type="application/json", cache="no-store"):
+    def _send(self, status, body, content_type="application/json", cache="no-store", headers=None):
         payload = body if isinstance(body, bytes) else body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", cache)
+        for name, value in (headers or ()):
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
-    def _json(self, status, data):
-        self._send(status, json.dumps(data, default=str, indent=2))
+    def _json(self, status, data, headers=None):
+        self._send(status, json.dumps(data, default=str, indent=2), headers=headers)
 
+    #----- The session gate
+    def _cookie_token(self):
+        raw = self.headers.get("Cookie")
+        if not raw:
+            return None
+        jar = SimpleCookie()
+        try:
+            jar.load(raw)
+        except CookieError:
+            return None
+        morsel = jar.get(authmod.COOKIE)
+        return morsel.value if morsel else None
+
+    def _user(self):
+        auth = self.app.auth
+        if not auth.enabled:
+            return OPERATOR
+        return auth.session_user(self._cookie_token())
+
+    def _address(self):
+        return self.client_address[0] if self.client_address else ""
+
+    def _set_cookie(self, token):
+        return [("Set-Cookie", "%s=%s; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=%d"
+                 % (authmod.COOKIE, token, self.app.auth.session_hours() * 3600))]
+
+    def _clear_cookie(self):
+        return [("Set-Cookie", "%s=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0" % authmod.COOKIE)]
+
+    def _login_required(self):
+        return self._json(401, {"error": "login required"})
+
+    #----- Routes
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
         try:
-            if path == "/":
-                return self._static("index.html", "text/html; charset=utf-8")
-            if path == "/settings":
-                return self._static("settings.html", "text/html; charset=utf-8")
-            if path == "/api/settings":
-                return self._json(200, self.app.settings_view())
+            #----- health, the favicon and the login state are the only reads open without a session.
+            if path == "/api/health":
+                return self._json(200, {"ok": True, "version": VERSION})
             if path == "/favicon.ico":
                 return self._static("procrustes.png", "image/png", cache="max-age=86400")
+            if path == "/api/login":
+                return self._json(200, self.app.login_state())
+            user = self._user()
+            if path in PUBLIC_PAGES:
+                if user is None:
+                    return self._static("login.html", HTML)
+                return self._static(PUBLIC_PAGES[path], HTML)
+            if user is None:
+                return self._login_required()
+            if path == "/api/settings":
+                return self._json(200, self.app.settings_view())
+            if path == "/api/account":
+                return self._json(200, self.app.auth.account_view(user))
             if path == "/api/status":
-                return self._json(200, self.app.status())
+                return self._json(200, self.app.status(user))
             if path == "/api/titles":
                 return self._json(200, [self.app.annotate(r) for r in self.app.store.all()])
             if path == "/api/held":
@@ -132,8 +190,25 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("not an object")
         except (TypeError, ValueError):
-            return self._json(400, {"error": "body must be JSON"})
+            return self._json(400, {"error": "body must be a JSON object"})
+
+        try:
+            #----- setup and login are the way in;  everything after the gate needs a session.
+            if path.startswith("/api/setup") or path == "/api/login":
+                return self._entry(path, body)
+            user = self._user()
+            if user is None:
+                return self._login_required()
+            if path == "/api/logout":
+                self.app.auth.logout(self._cookie_token())
+                return self._json(200, {"ok": True}, headers=self._clear_cookie())
+            if path.startswith("/api/account") or path.startswith("/api/users"):
+                return self._account(path, body, user)
+        except authmod.AuthRefused as exc:
+            return self._json(exc.status, {"error": str(exc)})
 
         m = path.split("/")
         if path == "/api/settings":
@@ -166,6 +241,66 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._json(400, {"error": str(exc)})
             return self._json(200, result)
+        return self._json(404, {"error": "not found"})
+
+    #----- First run and login
+    def _entry(self, path, body):
+        auth = self.app.auth
+        address = self._address()
+        if path == "/api/setup/totp":
+            if not auth.first_run():
+                raise authmod.AuthRefused("the first account already exists", 409)
+            username = authmod.check_username(body.get("username"))
+            return self._json(200, authmod.enrolment(username))
+        if path == "/api/setup":
+            token = auth.setup(body, address)
+            if token is None:
+                return self._json(200, {"ok": True, "enabled": False})
+            return self._json(200, {"ok": True, "enabled": True}, headers=self._set_cookie(token))
+        if path == "/api/login":
+            if not auth.enabled:
+                return self._json(409, {"error": "authentication is disabled"})
+            try:
+                token = auth.login(body.get("username"), body.get("password"), body.get("code"), address)
+            except authmod.LockedOut as exc:
+                return self._json(429, {"error": str(exc), "retry_after": exc.retry_after},
+                                  headers=[("Retry-After", str(exc.retry_after))])
+            except authmod.AuthError as exc:
+                return self._json(401, {"error": str(exc)})
+            return self._json(200, {"ok": True}, headers=self._set_cookie(token))
+        return self._json(404, {"error": "not found"})
+
+    #----- Account and user management
+    def _account(self, path, body, user):
+        auth = self.app.auth
+        #----- the switch is reachable while authentication is off, since turning it on happens from there.
+        if path == "/api/account/auth":
+            changed = auth.set_enabled(user, body.get("enabled"), body.get("password"), body.get("code"),
+                                       self._address())
+            return self._json(200, {"ok": True, "changed": changed, "enabled": auth.enabled})
+        if not auth.enabled or user.get("id") is None:
+            return self._json(409, {"error": "authentication is disabled"})
+        if path == "/api/account/password":
+            auth.change_password(user, body.get("current"), body.get("new"), body.get("code"))
+            return self._json(200, {"ok": True, "action": "password changed, other sessions signed out"})
+        if path == "/api/account/totp/enrol":
+            return self._json(200, auth.enrol_totp(user))
+        if path == "/api/account/totp/confirm":
+            auth.confirm_totp(user, body.get("code"))
+            return self._json(200, {"ok": True, "action": "authenticator confirmed"})
+        if path == "/api/account/totp/disable":
+            auth.disable_totp(user, body.get("password"), body.get("code"))
+            return self._json(200, {"ok": True, "action": "authenticator removed"})
+        if path == "/api/account/mode":
+            changed = auth.set_mode(user, body.get("mode"), body.get("password"), body.get("code"))
+            return self._json(200, {"ok": True, "changed": changed})
+        if path == "/api/users":
+            auth.add_user(user, body.get("username"), body.get("password"))
+            return self._json(200, {"ok": True, "action": "user added"})
+        m = path.split("/")
+        if len(m) == 5 and m[1] == "api" and m[2] == "users" and m[4] == "delete":
+            auth.remove_user(user, m[3])
+            return self._json(200, {"ok": True, "action": "user removed"})
         return self._json(404, {"error": "not found"})
 
     def _static(self, name, content_type, cache="no-store"):
@@ -214,17 +349,26 @@ def _search_key(row):
 
 
 class WebUI:
-    def __init__(self, cfg, orchestrator, store, settings, log_path=None):
+    def __init__(self, cfg, orchestrator, store, settings, auth, log_path=None):
         self.cfg = cfg
         self.orchestrator = orchestrator
         self.store = store
         self.settings = settings
+        self.auth = auth
         self.log_path = log_path
         self.httpd = None
         self.thread = None
 
-    def status(self):
-        return self.orchestrator.status()
+    def status(self, user=None):
+        out = self.orchestrator.status()
+        out["auth"] = {
+            "enabled": self.auth.enabled,
+            "user": (user or {}).get("username"),
+        }
+        return out
+
+    def login_state(self):
+        return {"enabled": self.auth.enabled, "setup": self.auth.first_run()}
 
     #----- Application settings
     def settings_view(self):

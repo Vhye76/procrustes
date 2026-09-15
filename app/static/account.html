@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>User Settings</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
+<style>
+  /*----- Palette, the dashboard's */
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e7eaf0; --dim: #98a2b3; --accent: #6ea8fe;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+         display: flex; flex-direction: column; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; flex: 0 0 auto; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  h1 a { color: inherit; text-decoration: none; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.warn { color: var(--warn); border-color: #5b4a23; }
+
+  /*----- The menu */
+  #menu { margin-left: auto; position: relative; align-self: center; }
+  #menu-btn { background: none; border: 1px solid transparent; border-radius: 6px;
+              padding: 3px 5px; color: var(--ink); cursor: pointer; display: flex; }
+  #menu-btn:hover, #menu-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--line); }
+  #menu-btn svg { width: 26px; height: 26px; display: block; }
+  #menu-list { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+               min-width: 240px; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 6px 0; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #menu-list.open { display: block; }
+  #menu-list .st { padding: 6px 14px; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #menu-list .st.ok { color: var(--ok); }
+  #menu-list .st.warn { color: var(--warn); }
+  #menu-list hr { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
+  #menu-list a { display: block; padding: 7px 14px; font-size: 13px; color: var(--ink);
+                 text-decoration: none; }
+  #menu-list a:hover { background: #232833; color: var(--accent); }
+
+  /*----- The page */
+  main { flex: 1 1 auto; overflow-y: auto; padding: 20px 24px 60px; max-width: 900px;
+         width: 100%; margin: 0 auto; }
+  .grp { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+         margin-bottom: 16px; }
+  .grp h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+            color: var(--dim); margin: 0; padding: 11px 14px; font-weight: 600;
+            border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 12px; }
+  .grp .body { padding: 12px 14px; }
+  .grp p { margin: 4px 0 10px; color: var(--dim); font-size: 13px; }
+  .grp .n { font-weight: 600; font-size: 13px; }
+  .grp .h { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  .field { margin: 10px 0; }
+  .field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; }
+  input[type=text], input[type=password], input[type=number] {
+    background: #14161a; color: var(--ink); border: 1px solid var(--line); border-radius: 5px;
+    padding: 6px 9px; font-size: 13px; width: 100%; max-width: 360px; font-family: inherit; }
+  input.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
+  input:focus { outline: none; border-color: var(--accent); }
+  input.stored { background: #171d2a; }
+  .radios label { display: flex; align-items: center; gap: 9px; margin: 6px 0; font-size: 13px; cursor: pointer; }
+  .radios label.off { color: var(--dim); cursor: default; }
+  .radios input { accent-color: var(--accent); width: 15px; height: 15px; }
+  .radios .why { font-size: 12px; color: var(--dim); }
+  label.chk { display: flex; align-items: center; gap: 9px; font-size: 13px; cursor: pointer; }
+  label.chk input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 5px; padding: 5px 11px; font-size: 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.bad:hover { border-color: var(--bad); color: var(--bad); }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.link { background: none; border-color: transparent; color: var(--dim); font-size: 11px; padding: 2px 6px; }
+  button.link:hover { color: var(--accent); }
+  .msg { font-size: 12px; color: var(--dim); min-height: 18px; margin-top: 8px; }
+  .msg.bad { color: var(--bad); }
+  .msg.ok { color: var(--ok); }
+  .qr { display: flex; gap: 16px; align-items: flex-start; margin: 10px 0; }
+  .qr svg { width: 168px; height: 168px; background: #fff; border-radius: 6px; padding: 6px; flex: 0 0 auto; }
+  .qr .secret { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+                word-break: break-all; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  tr:last-child td { border-bottom: none; }
+  td.act { text-align: right; white-space: nowrap; }
+  /*----- The confirming factor, asked for inline beside the change it confirms */
+  .confirm { border: 1px dashed var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 10px;
+             max-width: 420px; }
+  .confirm .t { font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+  #loading { color: var(--dim); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">procrustes</a> <span>User Settings</span></h1>
+  <span class="pill" id="dry" style="display:none"></span>
+  <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
+  <div id="menu">
+    <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 10.5c0-3.6 3.6-6 8-6s8 2.4 8 6H4z"/>
+        <path d="M8.5 7.5h.01M12 6.5h.01M15.5 7.5h.01"/>
+        <path d="M3.5 13c1 .8 2 .8 3 0s2-.8 3 0 2 .8 3 0 2-.8 3 0 2 .8 3 0 2-.8 2.5 0"/>
+        <rect x="4" y="14.5" width="16" height="2.5" rx="1.25"/>
+        <path d="M4.5 18.5h15a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5z"/>
+      </svg>
+    </button>
+    <div id="menu-list" role="menu">
+      <div class="st" id="codec">output</div>
+      <div class="st" id="gpu">gpu</div>
+      <div class="st" id="encode">encode</div>
+      <div class="st" id="libs">libraries</div>
+      <hr>
+      <a href="/" role="menuitem">Dashboard</a>
+      <a href="/settings" role="menuitem">Application Settings</a>
+      <a href="#" role="menuitem" id="signout" onclick="signOut(event)">Sign out</a>
+    </div>
+  </div>
+</header>
+
+<main id="main"><div id="loading">Loading...</div></main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const MODE_LABELS = { password: "Password only", totp: "OTP only", both: "MFA with both" };
+
+let ACCOUNT = null;
+let ACCESS = null;
+
+//----- A 401 anywhere reloads the page, which then serves the login form
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 401) { location.reload(); throw new Error("login required"); }
+  return res;
+}
+async function post(path, body) {
+  const res = await api(path, { method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify(body || {}) });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  return { res, data };
+}
+async function signOut(ev) {
+  ev.preventDefault();
+  try { await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); }
+  catch (e) {}
+  location.href = "/";
+}
+function authPill(s) {
+  const off = s.auth && s.auth.enabled === false;
+  $("authoff").style.display = off ? "" : "none";
+  $("signout").style.display = off ? "none" : "";
+}
+function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+
+//----- The menu opens on its button and closes on a click elsewhere or Escape
+$("menu-btn").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const open = !$("menu-list").classList.contains("open");
+  $("menu-list").classList.toggle("open", open);
+  $("menu-btn").setAttribute("aria-expanded", open ? "true" : "false");
+});
+function closeMenu() {
+  $("menu-list").classList.remove("open");
+  $("menu-btn").setAttribute("aria-expanded", "false");
+}
+document.addEventListener("click", (ev) => { if (!ev.target.closest("#menu")) closeMenu(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeMenu(); });
+
+function menuRow(el, text, cls) {
+  el.textContent = text;
+  el.className = "st" + (cls ? " " + cls : "");
+}
+function codecText(settings) {
+  const oc = (settings && settings.output_codec) || {};
+  if (!oc.movie && !oc.tv) return "output unknown";
+  return oc.movie === oc.tv ? "output " + oc.movie : `output movies ${oc.movie}, tv ${oc.tv}`;
+}
+//----- The status rows in the menu, polled like the dashboard
+async function status() {
+  let s;
+  try { s = await (await api("/api/status")).json(); } catch (e) { return; }
+  menuRow($("codec"), codecText(s.settings));
+  menuRow($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded", s.gpu.available ? "ok" : "warn");
+  menuRow($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
+          + (s.encode.separate_filesystem ? "" : " (same fs)"),
+          s.encode.separate_filesystem ? "" : "warn");
+  menuRow($("libs"), s.libraries_mounted ? "libraries mounted" : "no libraries, comparison off",
+          s.libraries_mounted ? "" : "warn");
+  $("dry").textContent = s.config.DRY_RUN ? "DRY RUN" : "";
+  $("dry").className = "pill warn";
+  $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+  authPill(s);
+}
+
+function msg(id, text, cls) { const el = $(id); if (el) { el.textContent = text || ""; el.className = "msg " + (cls || ""); } }
+
+//----- The confirming factor:  the password when the account has one, an authenticator code otherwise
+function confirmBox(id) {
+  const byPassword = ACCOUNT.has_password;
+  return `<div class="confirm" id="${id}"><div class="t">Confirm with ${byPassword ? "your password" : "an authenticator code"}</div>
+    <input type="${byPassword ? "password" : "text"}" id="${id}-v" class="${byPassword ? "" : "mono"}"
+      autocomplete="${byPassword ? "current-password" : "one-time-code"}" ${byPassword ? "" : 'inputmode="numeric" maxlength="6"'}></div>`;
+}
+function factor(id) {
+  const v = ($(id + "-v") || {}).value || "";
+  return ACCOUNT.has_password ? { password: v } : { code: v.trim() };
+}
+
+//----- Rendering:  the Access group first, then the account sections only while authentication is on
+function render() {
+  const a = ACCOUNT;
+  const parts = [];
+  const enabledSt = ACCESS.settings.find(s => s.key === "auth_enabled");
+  const hoursSt = ACCESS.settings.find(s => s.key === "session_hours");
+  parts.push(`<section class="grp"><h2>${esc(ACCESS.label)}</h2><div class="body">
+    <div class="n">${esc(enabledSt.label)}</div><div class="h">${esc(enabledSt.help)}</div>
+    <div class="row"><label class="chk"><input type="checkbox" id="auth-on" ${a.enabled ? "checked" : ""}
+      onchange="authToggled()"> ${a.enabled ? "on" : "off"}</label></div>
+    <div id="auth-confirm" hidden>${a.enabled ? confirmBox("auth-c") : ""}
+      <div class="row"><button class="primary" onclick="setAuth()">Switch authentication ${a.enabled ? "off" : "on"}</button>
+      <button onclick="cancelAuth()">Cancel</button></div></div>
+    <div class="msg" id="auth-msg"></div>
+    <div class="n" style="margin-top:14px">${esc(hoursSt.label)}</div><div class="h">${esc(hoursSt.help)}</div>
+    <div class="row"><input type="number" id="hours" class="${hoursSt.source === "stored" ? "stored" : ""}"
+      value="${esc(hoursSt.value)}" min="${hoursSt.minimum}" max="${hoursSt.maximum}" step="1" style="max-width:120px">
+      <button onclick="saveHours()">Save</button><span class="h">default ${esc(hoursSt.default)}</span></div>
+    <div class="msg" id="hours-msg"></div>
+  </div></section>`);
+
+  if (!a.enabled) {
+    parts.push(`<section class="grp"><h2>Account</h2><div class="body">
+      <p>Authentication is off.  Switch it on above to sign in and manage accounts;  with no account yet, the next visit creates the first one.</p></div></section>`);
+    $("main").innerHTML = parts.join("");
+    return;
+  }
+
+  const radios = ["password", "totp", "both"].map(m => {
+    const why = a.modes[m];
+    return `<label class="${why ? "off" : ""}"><input type="radio" name="mode" value="${m}" ${a.mode === m ? "checked" : ""}
+      ${why ? "disabled" : ""} onchange="modeChanged()"> ${MODE_LABELS[m]}${why ? ` <span class="why">- ${esc(why)}</span>` : ""}</label>`;
+  }).join("");
+  parts.push(`<section class="grp"><h2>Account <span style="text-transform:none;letter-spacing:0;color:var(--ink)">${esc(a.username)}</span></h2><div class="body">
+    <div class="n">Login mode</div>
+    <div class="radios">${radios}</div>
+    <div id="mode-confirm" hidden>${confirmBox("mode-c")}
+      <div class="row"><button class="primary" onclick="setMode()">Save login mode</button>
+      <button onclick="render()">Cancel</button></div></div>
+    <div class="msg" id="mode-msg"></div>
+  </div></section>`);
+
+  parts.push(`<section class="grp"><h2>Change password</h2><div class="body">
+    ${a.has_password ? `<div class="field"><label for="pw-cur">Current password</label><input type="password" id="pw-cur" autocomplete="current-password"></div>`
+                     : `<div class="field"><label for="pw-code">Authenticator code</label><input type="text" id="pw-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></div>`}
+    <div class="field"><label for="pw-new">New password</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+    <div class="field"><label for="pw-new2">Confirm new password</label><input type="password" id="pw-new2" autocomplete="new-password"></div>
+    <div class="row"><button class="primary" onclick="changePassword()">${a.has_password ? "Change password" : "Set password"}</button></div>
+    <div class="msg" id="pw-msg"></div>
+  </div></section>`);
+
+  let totp;
+  if (a.totp_enrolled) {
+    totp = `<p>An authenticator is enrolled.  Removing it is refused while the login mode needs it.</p>
+      <div class="row"><button class="bad" onclick="showDisable()">Remove authenticator</button></div>
+      <div id="totp-disable" hidden>${confirmBox("totp-c")}
+        <div class="row"><button class="bad" onclick="disableTotp()">Confirm removal</button><button onclick="render()">Cancel</button></div></div>`;
+  } else {
+    totp = `<p>No authenticator is enrolled.  Enrol one to allow OTP only or MFA with both.</p>
+      <div class="row"><button onclick="enrol()">Enrol authenticator</button></div>
+      <div id="totp-enrol"></div>`;
+  }
+  parts.push(`<section class="grp"><h2>Authenticator</h2><div class="body">${totp}<div class="msg" id="totp-msg"></div></div></section>`);
+
+  const rows = (a.users || []).map(u => `<tr><td>${esc(u.username)}</td><td>${esc(MODE_LABELS[u.mode] || u.mode)}</td>
+    <td>${u.totp_enrolled ? "enrolled" : "-"}</td>
+    <td class="act">${u.username === a.username ? "<span class='h'>you</span>" : `<button class="link bad" onclick="removeUser('${esc(u.username)}')">remove</button>`}</td></tr>`).join("");
+  parts.push(`<section class="grp"><h2>Users</h2><div class="body">
+    <table><thead><tr><th>Username</th><th>Login mode</th><th>Authenticator</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="n" style="margin-top:14px">Add a user</div>
+    <p>A new user signs in with a password and can change their own mode afterwards.</p>
+    <div class="field"><label for="nu-name">Username</label><input type="text" id="nu-name" autocomplete="off"></div>
+    <div class="field"><label for="nu-pass">Password</label><input type="password" id="nu-pass" autocomplete="new-password"></div>
+    <div class="row"><button onclick="addUser()">Add user</button></div>
+    <div class="msg" id="users-msg"></div>
+  </div></section>`);
+
+  $("main").innerHTML = parts.join("");
+}
+
+//----- Access
+function authToggled() {
+  $("auth-confirm").hidden = false;
+  const v = $("auth-c-v");
+  if (v) v.focus();
+}
+function cancelAuth() {
+  $("auth-on").checked = ACCOUNT.enabled;
+  $("auth-confirm").hidden = true;
+}
+async function setAuth() {
+  const enabled = $("auth-on").checked;
+  const body = Object.assign({ enabled }, enabled ? {} : factor("auth-c"));
+  const { res, data } = await post("/api/account/auth", body);
+  if (!res.ok) { msg("auth-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  location.reload();
+}
+async function saveHours() {
+  const value = Number($("hours").value);
+  const { res, data } = await post("/api/settings", { set: { session_hours: value } });
+  if (res.status === 400 && data.errors) { msg("hours-msg", data.errors.session_hours || "rejected", "bad"); return; }
+  if (!res.ok) { msg("hours-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  msg("hours-msg", "Saved;  applies to the next login.", "ok");
+  await load(false);
+}
+
+//----- Login mode and password
+function modeChanged() {
+  const chosen = document.querySelector("input[name=mode]:checked").value;
+  $("mode-confirm").hidden = chosen === ACCOUNT.mode;
+  const v = $("mode-c-v");
+  if (v && chosen !== ACCOUNT.mode) v.focus();
+}
+async function setMode() {
+  const mode = document.querySelector("input[name=mode]:checked").value;
+  const { res, data } = await post("/api/account/mode", Object.assign({ mode }, factor("mode-c")));
+  if (!res.ok) { msg("mode-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  await load(false);
+  msg("mode-msg", `Login mode is now ${MODE_LABELS[mode]}.`, "ok");
+}
+async function changePassword() {
+  const n = $("pw-new").value;
+  if (n !== $("pw-new2").value) { msg("pw-msg", "The new passwords differ.", "bad"); return; }
+  const body = { new: n };
+  if (ACCOUNT.has_password) body.current = $("pw-cur").value; else body.code = $("pw-code").value.trim();
+  const { res, data } = await post("/api/account/password", body);
+  if (!res.ok) { msg("pw-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  location.reload();
+}
+
+//----- Authenticator:  nothing is enabled until the first code confirms the pending secret
+async function enrol() {
+  const { res, data } = await post("/api/account/totp/enrol", {});
+  if (!res.ok) { msg("totp-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  $("totp-enrol").innerHTML = `<div class="qr">${data.qr}<div>
+      <div>Scan with Google Authenticator, or enter the secret by hand:</div>
+      <div class="secret">${esc(data.secret)}</div>
+      <div class="h">Then enter the six-digit code it shows.</div>
+      <div class="field"><input type="text" id="totp-code" class="mono" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000"></div>
+      <div class="row"><button class="primary" onclick="confirmTotp()">Confirm</button></div></div></div>`;
+  $("totp-code").focus();
+}
+async function confirmTotp() {
+  const { res, data } = await post("/api/account/totp/confirm", { code: $("totp-code").value.trim() });
+  if (!res.ok) { msg("totp-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  await load(false);
+  msg("totp-msg", "Authenticator confirmed;  OTP only and MFA with both are now available.", "ok");
+}
+function showDisable() { $("totp-disable").hidden = false; const v = $("totp-c-v"); if (v) v.focus(); }
+async function disableTotp() {
+  const { res, data } = await post("/api/account/totp/disable", factor("totp-c"));
+  if (!res.ok) { msg("totp-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  await load(false);
+  msg("totp-msg", "Authenticator removed.", "ok");
+}
+
+//----- Users
+async function addUser() {
+  const { res, data } = await post("/api/users", { username: $("nu-name").value.trim(), password: $("nu-pass").value });
+  if (!res.ok) { msg("users-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  await load(false);
+  msg("users-msg", "User added.", "ok");
+}
+async function removeUser(name) {
+  if (!confirm(`Remove the user ${name}?`)) return;
+  const { res, data } = await post(`/api/users/${encodeURIComponent(name)}/delete`, {});
+  if (!res.ok) { msg("users-msg", data.error || `Failed (${res.status})`, "bad"); return; }
+  await load(false);
+  msg("users-msg", `User ${name} removed.`, "ok");
+}
+
+//----- Loading:  the Access group from the registry, the account from its own endpoint
+async function load(first) {
+  try {
+    const view = await (await api("/api/settings")).json();
+    ACCESS = view.groups.find(g => g.page === "account");
+    ACCOUNT = await (await api("/api/account")).json();
+  } catch (e) {
+    if (first !== false) $("main").innerHTML = `<div id="loading">Could not load the account.</div>`;
+    return;
+  }
+  render();
+}
+
+load(true);
+status();
+setInterval(status, 5000);
+</script>
+</body>
+</html>

@@ -69,10 +69,12 @@ app/            the pipeline: one module per concern
   episodes.py     episode matching, ranges, part markers
   provider.py     Wikidata, TMDB and TVDB lookups
   state.py        SQLite store, one row per title
-  webui.py        JSON API and dashboard
+  webui.py        JSON API, the session gate and the pages
+  auth.py         passwords, TOTP, sessions, the lockout and the account rules
+  settings.py     the settings registry
   audit.py        the background library sweep
   check_names.py  the third source check
-  static/         the dashboard page
+  static/         the dashboard, the settings pages and the login form
   data/           FileBot's release-group and media-source lists, CC0, vendored
 Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
@@ -174,7 +176,7 @@ stat -c %g /dev/dri/renderD128
 
 ## Settings
 
-Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard, read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
+Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard (the Access group on the User Settings page instead), read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
 
 Every setting under Encoding except the SD height, the passthrough codec list and the Dolby Vision VBV figure has one value for movies and one for television, and so do the grain threshold and the standards floors.  The rest are global.
 
@@ -219,6 +221,8 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Matching | max_range_span | 3 | widest 'E01-E03' range read as a range |
 | Matching | candidate_limit | 8 | candidates listed per source on an identification hold |
 | Matching | provider_throttle_s, provider_timeout_s | 3.0, 30 | spacing and timeout of provider requests |
+| Access | auth_enabled | on | a login in front of every page and API route;  off opens both to anyone who can reach the port.  Written only from User Settings |
+| Access | session_hours | 168 | hours a login stays valid;  signing out ends it sooner |
 
 A change applies to the next title that reaches the stage reading it.  A title already routed keeps the encoder parameters it was routed with, stored in its decision and shown on its detail, so a queue does not change shape under a running configuration;  Retry re-assesses a title under the current settings.  A change to max_jobs, gpu_slots or cpu_slots resizes the pools live:  a pool grows at once, and a pool that shrinks lets its surplus thread finish the title it is on before it exits.
 
@@ -334,14 +338,33 @@ Encode job directories record their owning PID.  The startup sweep reclaims only
 
 HTTPS only, on WEB_PORT, which defaults to 443.  There is no HTTP listener and no redirect.  The certificate and key come from the '/certs' mount and are never generated:  if they are missing or unreadable the container logs the reason and exits rather than starting without TLS.
 
-No authentication.  Anyone who can reach the port can drive it, including forcing a held title through and quarantining an incoming file, so publish the port deliberately.  TLS protects the traffic in transit;  it does not restrict who can use the API.
+A login in front of everything.  The first visit to a fresh store asks 'Require Authentication?'.  No opens the dashboard and the API to anyone who can reach the port, marked by an 'AUTH OFF' pill in the header and a warning at startup;  Yes takes a username and an authentication method and creates the first account.  Three methods per user:  password only, OTP only (a Google Authenticator or any RFC 6238 app, enrolled from a QR code or the secret typed by hand), or MFA with both.  Passwords are argon2id;  a code is accepted once;  five failures in fifteen minutes lock the username and the address for the rest of the window.  The switch, the session lifetime, the login mode, the password, the authenticator and the user list are all on the User Settings page under the menu.  Without a session every '/api/' route but the four below answers 401 and every page shows the login form;  the session cookie is Secure, HttpOnly and SameSite=Strict.
 
 ```
-GET  /                            dashboard
+GET  /                            dashboard, or the login form without a session
+GET  /settings                    Application Settings, likewise
+GET  /account                     User Settings, likewise
+GET  /api/health                  {ok, version}, the only status readable without a session;  the Docker healthcheck
+GET  /api/login                   {enabled, setup}:  whether authentication is on and whether the first account is still to be created
+POST /api/setup                   first run only:  {"require": false} switches authentication off;
+                                  {"require": true, username, mode, password, secret, code} creates the first account and signs in
+POST /api/setup/totp              first run only:  {username} returns {secret, uri, qr} for the enrolment
+POST /api/login                   {username, password, code};  401 on any failure, 429 with Retry-After when locked out
+POST /api/logout                  ends the session
+GET  /api/account                 {enabled, username, mode, has_password, totp_enrolled, totp_pending, modes, users}
+POST /api/account/auth            {enabled, password | code};  the only writer of auth_enabled, a factor needed to turn it off
+POST /api/account/mode            {mode, password | code}
+POST /api/account/password        {current | code, new};  other sessions are signed out
+POST /api/account/totp/enrol      returns {secret, uri, qr};  nothing is enabled until confirmed
+POST /api/account/totp/confirm    {code}
+POST /api/account/totp/disable    {password | code};  refused while the login mode needs it
+POST /api/users                   {username, password} adds a user in password mode
+POST /api/users/<name>/delete     refuses the caller's own account, so one account always remains
 GET  /api/status                  version, config, GPU state, encode space, stage counts, the depth of
                                   the assessment queue and each encoder pool's queue, active
-                                  threads per pool, uptime, audit status, and for every running
-                                  encode its frame, total_frames, fps and eta_s
+                                  threads per pool, uptime, audit status, whether authentication is
+                                  on and who is signed in, and for every running encode its frame,
+                                  total_frames, fps and eta_s
 GET  /api/titles                  every title
 GET  /api/titles/<id>             one title with its stage history and comparison table
 GET  /api/held                    the decision queue, held and failed titles together
@@ -355,7 +378,9 @@ POST /api/audit/<id>/import       copy that finding's file into import/ for repa
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-A menu at the top right, behind a hamburger, carries the output codec per kind, the GPU state, free space in the encode area and whether a library is mounted, then Application Settings, which opens the settings page;  the settings page carries the same menu with Dashboard in its place.  A DRY_RUN badge stays in the header itself.
+A menu at the top right, behind a hamburger, carries the output codec per kind, the GPU state, free space in the encode area and whether a library is mounted, then Application Settings, User Settings and Sign out;  each page's menu links the other two.  A DRY_RUN badge stays in the header itself, and an AUTH OFF badge beside it while authentication is off.
+
+User Settings opens with the Access group:  the authentication switch, which asks for the current password or a fresh code before it turns off, and the session lifetime.  Below it, for the signed-in account:  the login mode as three options with any option the account cannot satisfy yet greyed out and the reason beside it, a password change, the authenticator with Enrol (a QR code and the secret as text, confirmed by the first code) or Remove, and the user list with Add and Remove.
 
 The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters in the lower right:  library findings, with a scanning line beneath it while a pass runs, then quarantined files and failed jobs.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
 
@@ -375,15 +400,15 @@ python3 -c "import app.main"
 python3 -m app.check_names
 ```
 
-That is the whole of local validation.  The third reports any name a function loads that its module never defines, which the first two cannot see.  None of the commands executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
+That is the whole of local validation.  The second needs 'argon2-cffi' and 'qrcode' importable on the workstation, the two modules 'app/auth.py' imports;  a scratch venv with 'pip install argon2-cffi==25.1.0 qrcode==8.2' is enough.  The third reports any name a function loads that its module never defines, which the first two cannot see.  None of the commands executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
 
 ```
 docker build -t procrustes:local .
 ```
 
-The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, or if its libx265 wrapper has no '-dolbyvision' option.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
+The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, if its libx265 wrapper has no '-dolbyvision' option, or if 'argon2' or 'qrcode' does not import.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
 
-The image is Alpine 3.24, 282 MB, everything from Alpine's own repositories.  Every build increments the version in 'app/__init__.py', and the image is tagged with it.
+The image is Alpine 3.24, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  Every build increments the version in 'app/__init__.py', and the image is tagged with it.
 
 Functionality is validated against the built container by hand, following 'TESTPLAN.md'.  That plan measures outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
 
@@ -413,7 +438,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.9.2, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.11.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 
