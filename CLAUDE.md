@@ -1051,7 +1051,7 @@ Every encode logs which encoder actually ran, so a GPU that has quietly stopped 
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.10.0.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.10.1.
 
 EVERY BUILD INCREMENTS THE VERSION.  Adopted 2026-09-10, applying from the build after 0.0.12.  A build whose 'VERSION' equals the one before it is a build that cannot be told apart from it, on the provider User-Agent, on the image label, or in a bug report.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR, and that is the whole consequence.  The repository does not use git tags, and since 2026-09-12 the workflow no longer looks at them.
 

@@ -1334,13 +1334,13 @@ def _name_score(title, wanted, name, contained=CONTAINED_SCORE):
     return difflib.SequenceMatcher(None, wanted, other).ratio()
 
 
-def _candidate_score(title, wanted, candidate):
+def _candidate_score(title, wanted, candidate, contained=CONTAINED_SCORE):
     names = [candidate.get("label")]
     names.extend(candidate.get("aliases") or [])
     match = candidate.get("match") or {}
     if match.get("text"):
         names.append(match["text"])
-    return max((_name_score(title, wanted, n) for n in names if n), default=0.0)
+    return max((_name_score(title, wanted, n, contained) for n in names if n), default=0.0)
 
 
 #----- the edition comes from the arrival name, the parent folder, or a repair copy's origin name.
