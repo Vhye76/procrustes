@@ -78,7 +78,6 @@ app/            the pipeline: one module per concern
   data/           FileBot's release-group and media-source lists, CC0, vendored
 Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
-TESTPLAN.md     container validation cases, executed by hand
 media/          the container icon and dashboard favicon, a placeholder
 ```
 
@@ -410,7 +409,7 @@ The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, if its libx
 
 The image is Alpine 3.24, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  Every build increments the version in 'app/__init__.py', and the image is tagged with it.
 
-Functionality is validated against the built container by hand, following 'TESTPLAN.md'.  That plan measures outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
+Functionality is validated against the built container by hand, measuring outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
 
 Run it against a throwaway tree first:
 
@@ -438,7 +437,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.11.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.11.1, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

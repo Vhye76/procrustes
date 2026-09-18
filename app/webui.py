@@ -213,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
         m = path.split("/")
         if path == "/api/settings":
             try:
-                return self._json(200, self.app.change_settings(body))
+                return self._json(200, self.app.change_settings(body, user))
             except SettingsError as exc:
                 return self._json(400, {"errors": exc.errors})
             except ValueError as exc:
@@ -378,8 +378,10 @@ class WebUI:
         view["threads"] = {"total": threads, "source": source}
         return view
 
-    def change_settings(self, body):
+    def change_settings(self, body, user=None):
         body = body or {}
+        #----- The synthetic row while authentication is off carries no username.
+        actor = (user or {}).get("username") or "operator"
         changed = []
         #----- resets run first, so a set in the same batch on the same key wins.
         if body.get("reset"):
@@ -393,7 +395,7 @@ class WebUI:
         if not body.get("reset") and not body.get("set"):
             raise ValueError("nothing to change, pass set or reset")
         for key, old, new in changed:
-            log.info("setting %s changed %s -> %s by operator", key, old, new)
+            log.info("setting %s changed %s -> %s by %s", key, old, new, actor)
         self.orchestrator.apply_settings(changed)
         view = self.settings_view()
         view["changed"] = [k for k, _o, _n in changed]
