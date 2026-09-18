@@ -349,6 +349,13 @@ function fmtEta(s) {
   return h ? h + "h " + m + "m" : m + "m";
 }
 function base(p) { return String(p || "").split("/").pop(); }
+function episodeCode(t) {
+  const pad = n => String(n).padStart(2, "0");
+  let code = "S" + pad(t.season) + "E" + pad(t.episode);
+  if (t.episode_last != null && t.episode_last !== t.episode) code += "-E" + pad(t.episode_last);
+  return code;
+}
+
 function label(t) { return t.title || t.show || base(t.source_path); }
 
 //----- Artwork, with a text placeholder on the same footprint
@@ -563,9 +570,7 @@ function showList(kind, show) {
     : rows.map(t => `<div class="row">
         <div>
           <div class="nm">${esc(label(t))}${
-            t.season != null && t.episode != null
-              ? " - S" + String(t.season).padStart(2, "0") + "E" + String(t.episode).padStart(2, "0")
-              : ""}</div>
+            t.season != null && t.episode != null ? " - " + episodeCode(t) : ""}</div>
           <div style="font-size:12px;color:var(--dim)">${esc(base(t.source_path))}</div>
           ${t.reason ? `<div class="why">${esc(t.reason)}</div>` : ""}
         </div>
@@ -778,8 +783,10 @@ function findingSide(f) {
     action = f.in_pipeline.id != null
       ? `<button onclick="$('lst').close();showDetail(${f.in_pipeline.id})">In Pipeline</button>`
       : `<button disabled>In Pipeline</button>`;
-  } else {
+  } else if (f.repairable) {
     action = `<button onclick="importFinding(${f.id})"${copying ? " disabled" : ""}>Import</button>`;
+  } else {
+    action = "";
   }
   let progress = "";
   if (copying) {
@@ -849,9 +856,10 @@ async function showFinding(id) {
   const section = (title, subset, a, b) => subset.length === 0 ? "" :
     `<tr><th>${title}</th><th>${a}</th><th>${b}</th><th>Repair</th></tr>` +
     subset.map(r => `<tr class="${r.ok ? "" : "differs"}">
-      <td>${esc(r.check)}${r.ok ? "" : '<span class="tag ungated">differs</span>'}</td>
+      <td>${esc(r.check)}${r.ok ? "" : '<span class="tag ungated">differs</span>'}${
+        r.detail ? `<div style="font-size:12px;color:var(--dim)">${esc(r.detail)}</div>` : ""}</td>
       ${cell(r.expected)}${cell(r.actual)}
-      <td class="gate">${r.ok ? "" : esc(r.repair || "not correctable")}</td>
+      <td class="gate">${r.ok ? "" : esc(r.repair || "listed, no repair")}</td>
     </tr>`).join("");
   const hdr = rows.filter(r => r.surface);
   const rest = rows.filter(r => !r.surface);
@@ -859,7 +867,10 @@ async function showFinding(id) {
     section("Check", hdr, "Bitstream", "Container") +
     section("Check", rest, "Expected", "Actual") + `</table>`;
   const failed = rows.filter(r => !r.ok).length;
-  pill($("cmp-verdict"), failed ? `${failed} finding(s), correctable without re-encode` : "meets the standard",
+  const repairable = rows.some(r => !r.ok && r.repair);
+  pill($("cmp-verdict"),
+       failed ? `${failed} finding(s)` + (repairable ? ", correctable without re-encode" : ", listed for the operator")
+              : "meets the standard",
        failed ? "warn" : "ok");
   $("cmp").showModal();
 }

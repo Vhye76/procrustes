@@ -1107,8 +1107,9 @@ class Provider:
         entry, how, score = episodemod.match_episode(
             source, catalogue, cutoff=self.title_cutoff(), extra=segment,
         )
+        max_range_span = self._figure("max_range_span", episodemod.MAX_RANGE_SPAN)
         if entry is None:
-            parsed = episodemod.parse_path(source, max_range_span=self._figure("max_range_span", episodemod.MAX_RANGE_SPAN))
+            parsed = episodemod.parse_path(source, max_range_span=max_range_span)
             if parsed is None:
                 return None
             listed = _catalogue_entry(catalogue, parsed["season"], parsed["first"])
@@ -1133,17 +1134,25 @@ class Provider:
             how = "fallback-numbering"
 
         warnings = self._order_warning(slug, catalogue)
+        episode_last, episode_title, shared = episodemod.episode_range(source, entry, catalogue, max_range_span)
+        notes = list(resolved.get("notes") or [])
+        if not shared:
+            notes.append(
+                "covers S%02dE%02d-E%02d, episodes with differing titles, named for the first"
+                % (entry["season"], entry["episode"], episode_last)
+            )
         return {
-            "title": episodemod.to_part_suffix(entry["title"]),
+            "title": episode_title,
             "show": resolved["show"],
             "show_year": resolved["show_year"],
             "season": entry["season"],
             "episode": entry["episode"],
+            "episode_last": episode_last,
             "tvdb": resolved["tvdb"],
             "tvdb_from": resolved.get("tvdb_from"),
             "tmdb": resolved["tmdb"],
             "qid": resolved.get("qid"),
-            "notes": resolved.get("notes") or [],
+            "notes": notes,
             "match_method": how,
             "match_score": score,
             "order_warnings": warnings,

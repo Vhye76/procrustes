@@ -264,85 +264,37 @@ def _match_episode(name, catalogue, cutoff=FUZZY_CUTOFF, probe=None):
     return None, "none", 0.0
 
 
-#----- Assignment and ranges
-def assign(files, catalogue):
-    results = []
-    claimed = set()
-
-    for path in files:
-        entry, how, score = match_episode(path, catalogue)
-        if entry is not None:
-            key = (entry["season"], entry["episode"])
-            if key not in claimed:
-                claimed.add(key)
-                results.append(
-                    {
-                        "path": path,
-                        "season": entry["season"],
-                        "first": entry["episode"],
-                        "last": entry["episode"],
-                        "title": to_part_suffix(entry["title"]),
-                        "method": how,
-                        "score": score,
-                    }
-                )
-                continue
-
-        parsed = parse_filename(os.path.basename(str(path)))
-        if parsed is None:
-            results.append({"path": path, "method": "unmatched", "score": 0.0})
-            continue
-        results.append(
-            {
-                "path": path,
-                "season": parsed["season"],
-                "first": parsed["first"],
-                "last": parsed["last"],
-                "title": None,
-                "method": "fallback-numbering",
-                "score": 0.0,
-            }
-        )
-
-    return results
-
-
-def extend_ranges(assignments, catalogue):
+#----- Ranges
+def episode_range(source, entry, catalogue, max_range_span=MAX_RANGE_SPAN):
+    single = (None, to_part_suffix(entry["title"]), True)
+    parsed = parse_path(source, max_range_span=max_range_span)
+    if parsed is None or parsed["last"] == parsed["first"]:
+        return single
+    season = entry["season"]
+    first = entry["episode"]
+    #----- the span comes from the source name, applied from the episode the title match settled on.
+    last = first + (parsed["last"] - parsed["first"])
     by_key = {(e["season"], e["episode"]): e for e in catalogue}
-    claimed = {
-        (a["season"], n)
-        for a in assignments
-        if a.get("season") is not None
-        for n in range(a["first"], a.get("last", a["first"]) + 1)
-    }
-    for a in assignments:
-        if a.get("season") is None or a["method"] == "unmatched":
-            continue
-        nxt = (a["season"], a["last"] + 1)
-        if nxt in claimed or nxt not in by_key:
-            continue
-        this_base = parse_marker(by_key.get((a["season"], a["first"]), {}).get("title", ""))[0]
-        next_base = parse_marker(by_key[nxt]["title"])[0]
-        if this_base and this_base == next_base:
-            a["last"] = nxt[1]
-            a["title"] = this_base
-            claimed.add(nxt)
-    return assignments
+    for number in range(first + 1, last + 1):
+        if (season, number) not in by_key:
+            log.warning(
+                "%s names a range ending E%02d but the catalogue has no S%02dE%02d, publishing as E%02d alone",
+                os.path.basename(str(source)), parsed["last"], season, number, first,
+            )
+            return single
+    anchor_base = parse_marker(entry["title"])[0]
+    bases = {parse_marker(by_key[(season, n)]["title"])[0] for n in range(first + 1, last + 1)}
+    if bases == {anchor_base}:
+        return last, anchor_base, True
+    log.info(
+        "%s covers S%02dE%02d-E%02d with differing titles, publishing under %r",
+        os.path.basename(str(source)), season, first, last, entry["title"],
+    )
+    return last, to_part_suffix(entry["title"]), False
 
 
 def season_counts(catalogue):
     counts = {}
     for entry in catalogue:
         counts[entry["season"]] = counts.get(entry["season"], 0) + 1
-    return counts
-
-
-def disk_counts(assignments):
-    counts = {}
-    for a in assignments:
-        season = a.get("season")
-        if season is None:
-            continue
-        span = a.get("last", a.get("first")) - a.get("first") + 1
-        counts[season] = counts.get(season, 0) + span
     return counts

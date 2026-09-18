@@ -642,6 +642,7 @@ class Orchestrator:
             show=identity.get("show"),
             season=identity.get("season"),
             episode=identity.get("episode"),
+            episode_last=identity.get("episode_last"),
             tmdb=identity.get("tmdb"),
             imdb=identity.get("imdb"),
             tvdb=identity.get("tvdb"),
@@ -876,7 +877,11 @@ class Orchestrator:
     def _find_tv_incumbent(self, root, identity):
         show = titles.to_filename(identity.get("show") or "")
         season = identity.get("season")
-        code = titles.episode_code(season, identity.get("episode"))
+        #----- a library file may be named with the range code or the single code.
+        codes = [titles.episode_code(season, identity.get("episode"), identity.get("episode_last"))]
+        single = titles.episode_code(season, identity.get("episode"))
+        if single not in codes:
+            codes.append(single)
         by_name = None
         scanned = 0
         for name in sorted(os.listdir(root)):
@@ -886,27 +891,29 @@ class Orchestrator:
             scanned += 1
             matched = self._id_match(identity, name, ("tvdb", "tmdb"))
             if matched:
-                found = self._episode_file(folder, season, code)
+                found, code = self._episode_file(folder, season, codes)
                 if found:
-                    return found, "matched on %s" % matched
-                return None, "show matched on %s, %s not in the library" % (matched, code)
+                    return found, "matched on %s as %s" % (matched, code)
+                return None, "show matched on %s, %s not in the library" % (matched, codes[0])
             if by_name is None and name.startswith(show + " ("):
                 by_name = folder
         if by_name is not None:
-            found = self._episode_file(by_name, season, code)
+            found, code = self._episode_file(by_name, season, codes)
             if found:
-                return found, "matched on folder name, no provider id match"
+                return found, "matched on folder name as %s, no provider id match" % code
         return None, "scanned %d library folder(s), none matched" % scanned
 
     @staticmethod
-    def _episode_file(folder, season, code):
+    def _episode_file(folder, season, codes):
         season_dir = os.path.join(folder, titles.season_folder(season))
         if not os.path.isdir(season_dir):
-            return None
-        for entry in sorted(os.listdir(season_dir)):
-            if code in entry and entry.lower().endswith(".mkv"):
-                return os.path.join(season_dir, entry)
-        return None
+            return None, None
+        entries = sorted(e for e in os.listdir(season_dir) if e.lower().endswith(".mkv"))
+        for code in codes:
+            for entry in entries:
+                if code in entry:
+                    return os.path.join(season_dir, entry), code
+        return None, None
 
     #----- Routing, the last assessment step
     def _route(self, title_id, container, kind, source):

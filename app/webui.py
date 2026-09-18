@@ -434,6 +434,8 @@ class WebUI:
                 "display_stage": "awaiting detection",
             }
         finding["name"] = os.path.splitext(os.path.basename(finding["path"]))[0]
+        rows = (finding.get("measured") or {}).get("rows") or []
+        finding["repairable"] = any(not r.get("ok") and r.get("repair") for r in rows)
         return finding
 
     def log_tail(self, lines=400):

@@ -1,5 +1,6 @@
 import logging
 import os
+import statistics
 import threading
 import time
 
@@ -20,6 +21,9 @@ REPAIR_NAMING = "republish"
 REPAIR_NONE = None
 
 TAG_INCOMPLETE = "tag incomplete"
+EPISODES_IN_FILE = "episodes in file"
+RANGE_DURATION_RATIO = 1.8
+RANGE_MEDIAN_FLOOR = 3
 
 HDR_ROWS = (
     ("mastering_display", "mastering display"),
@@ -265,11 +269,72 @@ def assess(path, kind, profile=None):
         "size_bytes": int(container.get("size_bytes") or 0),
         "hdr_format": video.get("hdr_format"),
         "codec": video.get("codec"),
+        "duration_s": probemod.usable_duration(video, container),
+        "tag": _tag_fields(found),
     }
-    summary = "; ".join(
+    return failed, measured, _summary(rows)
+
+
+def _summary(rows):
+    return "; ".join(
         "%s: %s" % (r["check"], r["actual"]) for r in rows if not r["ok"]
     ) or "meets the standard"
-    return failed, measured, summary
+
+
+def _tag_fields(found):
+    return {k: found.get(k) for k in ("show", "season", "episode", "title")}
+
+
+#----- The two-episode listing
+def _season_number(folder):
+    m = episodes.SEASON_FOLDER.match(os.path.basename(folder).strip())
+    return int(m.group(1)) if m else None
+
+
+def _range_candidates(rows, ratio, max_range_span=None):
+    coded = []
+    for row in rows:
+        parsed = episodes.parse_filename(_stem(row["path"]), max_range_span=max_range_span)
+        if parsed is not None:
+            coded.append((row, parsed))
+    claimed = {n for _row, p in coded for n in range(p["first"], p["last"] + 1)}
+    found = []
+    for row, parsed in coded:
+        duration = row.get("duration_s")
+        if duration is None or parsed["first"] != parsed["last"]:
+            continue
+        others = [r.get("duration_s") for r, _p in coded if r is not row and r.get("duration_s")]
+        if len(others) < RANGE_MEDIAN_FLOOR:
+            continue
+        median = statistics.median(others)
+        if parsed["first"] + 1 in claimed or duration < ratio * median:
+            continue
+        found.append((row, parsed, duration, median))
+    return found
+
+
+def _range_row(row, parsed, duration, median):
+    tag = (row.get("measured") or {}).get("tag") or {}
+    title = tag.get("title") or "TITLE"
+    title = episodes.parse_marker(title)[0] or title
+    proposed = _build(
+        titles.episode_filename, tag.get("show") or "SHOW", parsed["season"], parsed["first"],
+        title, parsed["first"] + 1,
+    )
+    detail = "%.1f min against a season median of %.1f min (%.2fx), no S%02dE%02d file in the folder" % (
+        duration / 60.0, median / 60.0, duration / median, parsed["season"], parsed["first"] + 1,
+    )
+    return _row(EPISODES_IN_FILE, proposed, os.path.basename(row["path"]), False, REPAIR_NONE), detail
+
+
+def _with_range_row(measured, row, detail):
+    rows = [r for r in (measured.get("rows") or []) if r.get("check") != EPISODES_IN_FILE]
+    if row is not None:
+        row = dict(row, detail=detail)
+        rows.append(row)
+    measured = dict(measured, rows=rows)
+    failed = [r["check"] for r in rows if not r["ok"]]
+    return failed, measured, _summary(rows)
 
 
 #----- The sweep
@@ -378,7 +443,10 @@ class Auditor:
             except Exception as exc:
                 log.warning("audit could not assess %s: %s", os.path.basename(path), exc)
                 failed, measured, summary = ["unreadable"], {"rows": []}, str(exc)
-            self.store.audit_record(path, kind, st.st_size, st.st_mtime, failed, measured, summary)
+            self.store.audit_record(
+                path, kind, st.st_size, st.st_mtime, failed, measured, summary,
+                duration_s=measured.get("duration_s"),
+            )
             assessed += 1
             if failed:
                 log.info("audit finding on %s: %s", os.path.basename(path), summary)
@@ -388,9 +456,63 @@ class Auditor:
         #----- an interrupted pass has not seen every file, so it must not prune the ones it missed.
         interrupted = self.stop_event.is_set() or self._restart.is_set()
         removed = self.store.audit_forget_missing(seen) if not interrupted else 0
+        listed = self._folder_phase() if not interrupted else 0
         self._set(running=False, finished_at=time.time(), current=None)
         totals = self.store.audit_totals()
         log.info(
-            "library audit pass finished: %d assessed, %d unchanged, %d forgotten, %d finding(s)",
-            assessed, len(seen) - assessed, removed, totals["findings"],
+            "library audit pass finished: %d assessed, %d unchanged, %d forgotten, %d finding(s),"
+            " %d file(s) listed as two episodes",
+            assessed, len(seen) - assessed, removed, totals["findings"], listed,
         )
+
+    def _folder_phase(self):
+        profile = self.settings.profile("tv") if self.settings else {}
+        ratio = float(profile.get("range_duration_ratio") or RANGE_DURATION_RATIO)
+        max_range_span = profile.get("max_range_span")
+        folders = {}
+        for row in self.store.audit_rows("tv"):
+            folders.setdefault(os.path.dirname(row["path"]), []).append(row)
+        listed = 0
+        for folder, rows in sorted(folders.items()):
+            if self.stop_event.is_set() or self._restart.is_set():
+                break
+            season = _season_number(folder)
+            #----- 0 is season 0, exempt because specials vary in length;  None is not a season folder at all.
+            if not season:
+                continue
+            for row in rows:
+                if row.get("duration_s") is None and not self._measure(row):
+                    break
+            flagged = {}
+            for row, parsed, duration, median in _range_candidates(rows, ratio, max_range_span):
+                flagged[row["path"]] = _range_row(row, parsed, duration, median)
+            for row in rows:
+                measured = row.get("measured") or {}
+                has = any(r.get("check") == EPISODES_IN_FILE for r in measured.get("rows") or [])
+                entry = flagged.get(row["path"])
+                if entry is None and not has:
+                    continue
+                check, detail = entry if entry else (None, None)
+                failed, measured, summary = _with_range_row(measured, check, detail)
+                self.store.audit_update(row["path"], failed, measured, summary)
+                if entry:
+                    listed += 1
+                    log.info("audit lists %s as two episodes: %s", os.path.basename(row["path"]), detail)
+        return listed
+
+    def _measure(self, row):
+        self._set(current=os.path.basename(row["path"]))
+        try:
+            container = probemod.probe(row["path"]).container
+            duration = probemod.usable_duration(container.get("video") or {}, container)
+            measured = dict(row.get("measured") or {}, duration_s=duration)
+            if "tag" not in measured:
+                measured["tag"] = _tag_fields(_tag_identity(tags.read_tags(row["path"]), "tv"))
+            row["duration_s"] = duration
+            row["measured"] = measured
+            self.store.audit_update(row["path"], row.get("checks") or [], measured, row.get("summary"), duration_s=duration)
+        except Exception as exc:
+            log.warning("audit could not measure %s: %s", os.path.basename(row["path"]), exc)
+        self._set(current=None)
+        #----- the wait is the per-file throttle, and a stop during it ends the folder.
+        return not self.stop_event.wait(self.cfg.audit_interval)

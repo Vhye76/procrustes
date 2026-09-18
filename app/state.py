@@ -177,6 +177,8 @@ CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 ADDED_COLUMNS = (
     ("titles", "candidates_json", "TEXT"),
     ("titles", "pinned_json", "TEXT"),
+    ("titles", "episode_last", "INTEGER"),
+    ("findings", "duration_s", "REAL"),
 )
 
 JSON_COLUMNS = {
@@ -406,6 +408,7 @@ class Store:
             show=None,
             season=None,
             episode=None,
+            episode_last=None,
             tmdb=None,
             imdb=None,
             tvdb=None,
@@ -468,19 +471,39 @@ class Store:
             row = cur.fetchone()
             return (row["size"], row["mtime"]) if row else None
 
-    def audit_record(self, path, kind, size, mtime, checks, measured, summary):
+    def audit_record(self, path, kind, size, mtime, checks, measured, summary, duration_s=None):
         now = time.time()
         with self._lock:
             self._db.execute(
                 "INSERT INTO findings (path, kind, size, mtime, checks_json, measured_json,"
-                " summary, audited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                " summary, duration_s, audited_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, size=excluded.size,"
                 " mtime=excluded.mtime, checks_json=excluded.checks_json,"
                 " measured_json=excluded.measured_json, summary=excluded.summary,"
-                " audited_at=excluded.audited_at",
-                (str(path), kind, size, mtime, _json(checks), _json(measured), summary, now),
+                " duration_s=excluded.duration_s, audited_at=excluded.audited_at",
+                (str(path), kind, size, mtime, _json(checks), _json(measured), summary, duration_s, now),
             )
             self._db.commit()
+
+    def audit_update(self, path, checks, measured, summary, duration_s=None):
+        with self._lock:
+            if duration_s is None:
+                self._db.execute(
+                    "UPDATE findings SET checks_json = ?, measured_json = ?, summary = ? WHERE path = ?",
+                    (_json(checks), _json(measured), summary, str(path)),
+                )
+            else:
+                self._db.execute(
+                    "UPDATE findings SET checks_json = ?, measured_json = ?, summary = ?, duration_s = ?"
+                    " WHERE path = ?",
+                    (_json(checks), _json(measured), summary, duration_s, str(path)),
+                )
+            self._db.commit()
+
+    def audit_rows(self, kind):
+        with self._lock:
+            cur = self._db.execute("SELECT * FROM findings WHERE kind = ? ORDER BY path", (kind,))
+            return [self._finding_to_dict(r) for r in cur.fetchall()]
 
     def audit_forget_all(self):
         with self._lock:

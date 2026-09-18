@@ -479,7 +479,9 @@ EPISODE FORMS, FROM GUESSIT'S GRAMMAR.  Range separators '~', 'to' and 'and' joi
 
 THE OPENSUBTITLES HASH IS RECORDED, NOT LOOKED UP.  'probe.opensubtitles_hash' is the 64-bit sum of the first and last 64 KiB plus the size, on the container summary as 'oshash'.
 
-A title carrying no part marker that matches a marked pair resolves to the FIRST episode of the pair;  range extension relies on this.  Ranges appear as 'e17-18', 'e01-2', 'e16-18', 'e44+45', 'E01E02' and 'e15&16'.  A BARE SECOND NUMBER IS A RANGE END ONLY WHEN IT SITS AGAINST ITS SEPARATOR, since a numeric title after ' - ' otherwise reads as a range end;  'episodes.RANGE_PATTERNS' takes a second number without its own 'e' only with no whitespace on either side.  Assign every file to a distinct episode first, then extend to a range only if the following episode is still unclaimed and shares the same base title.
+A title carrying no part marker that matches a marked pair resolves to the FIRST episode of the pair.  Ranges appear as 'e17-18', 'e01-2', 'e16-18', 'e44+45', 'E01E02' and 'e15&16'.  A BARE SECOND NUMBER IS A RANGE END ONLY WHEN IT SITS AGAINST ITS SEPARATOR, since a numeric title after ' - ' otherwise reads as a range end;  'episodes.RANGE_PATTERNS' takes a second number without its own 'e' only with no whitespace on either side.
+
+A RANGE COMES FROM THE SOURCE NAME AND IS ANCHORED ON THE MATCHED ENTRY.  'episodes.episode_range' reads the span from the name, applies it from the episode the title match settled on, and publishes the range only when the catalogue lists every episode in it;  a missing number publishes the first episode alone with a warning.  The title is the shared base when every entry in the range carries one ('Emissary (1)' and 'Emissary (2)' give 'Emissary'), and the first entry's title otherwise, with a note on the IDENTIFIED record;  the servers read the code, not the text.  The identity carries 'episode_last', the row stores it, 'episode_filename' takes it as 'last', and the EPISODE PART_NUMBER stays the first episode.  A file named as a single episode is never extended.
 
 ## 12.  Matroska metadata
 
@@ -872,7 +874,7 @@ At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice.
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.11.1.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.11.2.
 
 EVERY BUILD INCREMENTS THE VERSION.  A build whose 'VERSION' equals the one before it cannot be told apart from it.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR.  The repository does not use git tags.
 
@@ -965,6 +967,8 @@ a path component breaks a section 9 rule  republish through the pipeline
 segment title differs from the tag TITLE  mkvpropedit
 statistics missing or stale               statistics refresh
 HDR declaration short of the bitstream    mkvpropedit, section 12
+a single-numbered file whose length says  listed with its range name, no repair
+  two episodes
 ```
 
 Resolution, bit depth, codec, letterbox and PAL speed-up are never findings.  They need an encode, which is the loss gate 1 exists to prevent.
@@ -974,6 +978,8 @@ THE NAMING CHECK NEEDS NO PROVIDER.  The audit builds the names the pipeline wou
 - A NAMING ROW NEEDS A COMPLETE TAG BLOCK.  A block missing any field the name needs reports 'tag incomplete' once per row and compares nothing;  the 'tag structure' row already carries that finding.
 - FINDINGS ARE PER FILE.  A wrong show folder is one finding on every episode in it.
 - THE SHOW FOLDER'S YEAR COMES FROM THE FOLDER, since the COLLECTION block carries no year;  'YYYY' when it has none.
+
+THE TWO-EPISODE LISTING PROPOSES AND DOES NOT ACT.  A television file whose on-disk code is a single episode N is listed when no file in its season folder carries N+1 and its video duration is at least 'range_duration_ratio' times the median of the folder's other files, three others at least;  season 0 is exempt, as specials vary in length.  The rule is per folder while the sweep skips unchanged files by stat, so 'findings' keeps 'duration_s' per file and 'Auditor._folder_phase' re-derives the row from stored figures after every complete pass, probing a row recorded without a duration in place;  an N+1 file arriving later clears the row on the next pass.  The row carries the name section 10's form would give the file from its own tag block, 'S01E01-E02' with the part marker dropped, and 'repair' None:  a finding with no repairable row shows no Import button.  A double-length episode the catalogue numbers as one meets both conditions and is on the list with its figures;  the audit has no catalogue to tell it apart.  The threshold is unmeasured.
 
 Repairing a naming finding is the same Import as any other:  rung 1 reads the embedded block, verifies it, and the published names are regenerated from it.  For a folder-only defect that copies every file in the folder through the pipeline;  renaming the folder by hand is the cheaper route and remains the operator's, per section 2.
 

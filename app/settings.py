@@ -5,7 +5,7 @@ import re
 import threading
 import time
 
-from . import compare, config as configmod, encode, episodes, media, provider as providermod, standards
+from . import audit, compare, config as configmod, encode, episodes, media, provider as providermod, standards
 
 log = logging.getLogger("settings")
 
@@ -259,6 +259,9 @@ SETTINGS = (
     Setting("max_range_span", "matching", "Maximum range span",
             "Episodes an 'E01-E03' range may cover;  wider reads as its first episode.",
             "int", episodes.MAX_RANGE_SPAN, minimum=1, maximum=10),
+    Setting("range_duration_ratio", "matching", "Range duration ratio",
+            "A single-numbered library episode this many times its season's median length, with no next episode beside it, is listed as two episodes in one file.",
+            "float", audit.RANGE_DURATION_RATIO, minimum=1.2, maximum=3.0, step=0.1),
     Setting("candidate_limit", "matching", "Candidate limit",
             "Candidates listed per source on an identification hold.",
             "int", providermod.CANDIDATE_LIMIT, minimum=1, maximum=50),

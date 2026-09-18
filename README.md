@@ -117,7 +117,7 @@ Title (Year) [tmdbid-N] [imdbid-ttN]/Title (Year).mkv
 Show Name (Year) [tvdbid-N] [tmdbid-N]/Season NN/Show Name - SNNENN - Episode Title.mkv
 ```
 
-A file covering two episodes takes the range form, 'Show - S05E01-E02 - Kidnapping.mkv', because naming it as only the first makes Jellyfin report the second as missing.  A multi-part episode uses ', Part 1' rather than whichever marker the provider happened to use.
+A file covering two episodes takes the range form, 'Show - S05E01-E02 - Kidnapping.mkv', because naming it as only the first makes Jellyfin report the second as missing;  the range is read from the source name, anchored on the episode the title match settled, and published only when the catalogue lists every episode in it, under the shared base title or, for two unrelated episodes, the first one's.  A multi-part episode uses ', Part 1' rather than whichever marker the provider happened to use.
 
 The longer form that repeats the whole folder name inside the filename is for editions and nothing else:
 
@@ -218,6 +218,7 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Comparison | codec_efficiency | h264 1.0, hevc 1.7, av1 2.2, vc1 0.9, mpeg4 0.7, mpeg2video 0.45 | bitrate weighting per codec |
 | Matching | title_cutoff, contained_score | 0.82, 0.9 | the episode and search matcher's scores |
 | Matching | max_range_span | 3 | widest 'E01-E03' range read as a range |
+| Matching | range_duration_ratio | 1.8 | a single-numbered library episode this many times its season's median, with no next episode beside it, is listed as two episodes in one file |
 | Matching | candidate_limit | 8 | candidates listed per source on an identification hold |
 | Matching | provider_throttle_s, provider_timeout_s | 3.0, 30 | spacing and timeout of provider requests |
 | Access | auth_enabled | on | a login in front of every page and API route;  off opens both to anyone who can reach the port.  Written only from User Settings |
@@ -321,7 +322,7 @@ Cover art is a by-product of the same lookup.  The poster comes off the TMDB pag
 
 ## Library audit
 
-A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.
+A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.
 
 It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 
