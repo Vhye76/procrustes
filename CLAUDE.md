@@ -12,7 +12,7 @@ THE CONTAINER NEVER WRITES TO A MEDIA LIBRARY.  Libraries are mounted read only 
 
 PROMOTION INTO THE LIBRARIES IS MANUAL, ALWAYS.  The pipeline ends at 'complete/'.  No code in this repository moves a finished title into a library, and none should be added.
 
-NOTHING THAT MATTERS IS EVER DELETED.  A failure holds;  a rejected file and a completed source go to quarantine.  Nothing in a library, nothing incoming and nothing in 'complete/' is ever removed.  Two exceptions.  The encode area:  intermediates are removed once their successor exists, and a job directory is wiped after its title retires.  And an empty folder under 'import/':  when a source moves out, 'paths.prune_empty_folders' removes its parent folders upward while each is empty, stopping at 'import/' or at the first folder with anything left in it.  The climb passes the write guard at every step and removes directories only, never a file.
+NOTHING THAT MATTERS IS EVER DELETED.  A failure holds;  a rejected file and a completed source go to quarantine.  Nothing in a library, nothing incoming and nothing in 'complete/' is ever removed.  Three exceptions.  The encode area:  intermediates are removed once their successor exists, and a job directory is wiped after its title retires.  An empty folder under 'import/', 'hold/' or 'complete/':  when a file moves out, 'paths.prune_empty_folders' removes its parent folders upward while each is empty, stopping at the root or at the first folder with anything left in it;  the climb passes the write guard at every step and removes directories only, never a file.  And a file in 'complete/' that a later arrival beat under section 8:  it is moved to '.quarantine' when the winner publishes, never deleted, and its row moves to QUARANTINED naming the title that superseded it.
 
 A PROVIDER ID IS NEVER GUESSED.  If it cannot be resolved, the title holds until an operator forces it.  A forced unidentified title carries no provider ID at all:  it keeps the name it arrived with, its tag block holds TITLE only, and it lands flat in 'complete/' rather than in a provider-named folder, so it cannot be mistaken for finished work.
 
@@ -54,7 +54,7 @@ hold/         needs a decision
 config/       state.db, the instance lock, provider cache, cached posters, logs
 ```
 
-QUARANTINE LIVES UNDER 'complete/', a dotted directory beside finished work.  Nothing in the container ever scans 'complete/', so a dotted sibling costs nothing.
+QUARANTINE LIVES UNDER 'complete/', a dotted directory beside finished work.  The only reads of 'complete/' are the section 8 incumbent lookup, which matches provider-id folders and skips a dotted name, and the per-row file checks of '_close_collected', so a dotted sibling costs nothing.
 
 A MISSING ROOT IS A STARTUP ERROR.  'MEDIA_ENCODE' and 'MEDIA_CONFIG' are validated only when set explicitly;  unset, 'Layout.ensure' creates them under the root.  'config/' has to be persistent wherever it lands:  it holds the SQLite store and the flock that section 19's single-instance guarantee depends on.
 
@@ -143,7 +143,7 @@ DETECTED     size stable across two polls, mtime quiet
 PROBED       one ffprobe pass, classify movie or tv
 SCREENED     minimum standards           fail -> collected, see below
 IDENTIFIED   provider ID resolution      fail -> collected; transient -> retry with backoff
-COMPARED     against library incumbent   loss -> QUARANTINE, ambiguous -> collected
+COMPARED     against complete/ and the library   loss -> QUARANTINE, ambiguous or in-flight sibling -> collected
 ROUTED       encoder chosen, waiting for a slot on its pool
 STAGED       copy into the encode job directory
 REMUXED      container conversion if needed, then language strip, then flag repair
@@ -156,7 +156,11 @@ PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
 CLEANUP      source to quarantine, encode job directory wiped
 ```
 
-ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'max_jobs' assessment workers take a title from DETECTED through ROUTED;  the title is then queued for one of three pools by its decision, 'cpu' with 'cpu_slots' threads, 'gpu' with 'gpu_slots', or 'passthrough' with one, and the pool thread does everything from staging to cleanup.  Resume places a title by its stage:  up to COMPARED goes back to assessment, ROUTED and later go to the pool its stored decision names, and a later stage with no stored decision is re-assessed.
+ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'max_jobs' assessment workers take a title from DETECTED through ROUTED;  the title then belongs to one of three pools by its decision, 'cpu' with 'cpu_slots' threads, 'gpu' with 'gpu_slots', or 'passthrough' with one, and the pool thread does everything from staging to cleanup.
+
+THE STORE IS THE QUEUE, AND THE ORDER IS THE OPERATOR'S.  There is no in-memory queue.  Every row whose stage is neither stopped (HELD, QUARANTINED, FAILED) nor complete (PUBLISHED, CLEANUP) is queued, ordered by 'queue_order', and a worker takes the first unclaimed row that belongs to it:  an assessment worker one in an assessment stage, a pool thread one whose stored decision names its pool.  A claim is an entry in 'orchestrator._claims' under one lock, held from the pick to the end of the worker's run;  in-memory is correct because section 19 guarantees one process.  A later-stage row with no stored decision is re-assessed by the assessment pick.  Resume is the same pick loop on startup, so a title resumes at its stored place;  a PUBLISHED row is not queued and is not re-run, a cleanup failure notwithstanding.
+
+'Store.place' gives a row its place when it enters or re-enters the queue:  detection, reimport, retry, force, identify and an expired backoff all put it at the back;  an episode joins the end of its show's block, and 'place' runs again at IDENTIFIED once the show is known, so a show's queued episodes are always contiguous.  'POST /api/queue' takes the whole unlocked order as '{"id": n}' and '{"show": name}' items, a show item standing for every queued episode of that show in season and episode order, and refuses the batch when it omits a queued row, repeats one, or names a row a pool thread holds.  'queue_view' numbers pool-held rows first in claim order, locked, then the rest by 'queue_order';  '/api/titles' carries 'queue_position', 'locked' and 'slot' on every row and the dashboard's Queue box renders that order, a slot holder one tile each and undraggable, the rest draggable.
 
 THE THREE ASSESSMENT STAGES RUN THROUGH BEFORE ANYTHING HOLDS.  SCREENED, IDENTIFIED and COMPARED are read-only, so a failure in one records its reasons and the next still runs, and the title holds once with everything the three found;  a clear comparison loss quarantines immediately.  STAGED, REMUXED and ENCODING cost hours and disk, so they are not run speculatively, and a title can hold a second time at READY or VERIFIED.
 
@@ -205,13 +209,13 @@ The 40 minute movie floor exists because a bonus featurette can qualify as a dis
 
 THE EXTRAS CHECK IS A VOCABULARY IN TWO STRENGTHS, KEYED ON POSITION.  'standards.EXTRAS_WORDS' (sample, trailer, featurette, deleted scenes, behind the scenes, making of, gag reel, bloopers, outtakes) flag anywhere in the file name as whole tokens.  'EXTRAS_SEGMENT_WORDS' (proof, bonus, extra, extras, interview, short) are ordinary words, so they flag only as a trailing segment after the year or a hyphen, as the whole stem, or as the parent folder's name;  an episode's title portion after the marker is exempt.  The vocabulary is guessit's.
 
-A HOLD MOVES THE FILE.  'orchestrator._hold' is the one route into HELD, for gate failures and transient retries alike.  It moves the source under 'hold/' at its path relative to 'import/', so the folders the identity ladder reads travel with it, reserves the name through the same exclusive-create loop as quarantine, prunes the vacated 'import/' folders, and rewrites 'source_path'.  Retry and Force re-run the title from 'hold/';  the watcher never scans it, and a title that publishes is retired from there to quarantine.  Under DRY_RUN nothing moves.
+A HOLD MOVES THE FILE, AND SO DOES EVERY EXIT FROM HOLD.  'orchestrator._hold' is the one route into HELD, for gate failures and transient retries alike.  It moves the source under 'hold/' at its path relative to 'import/', so the folders the identity ladder reads travel with it, reserves the name through the same exclusive-create loop as quarantine, prunes the vacated 'import/' folders, and rewrites 'source_path'.  'orchestrator.release_from_hold' is the inverse:  Retry, Force, Identify and an expired backoff move the file back under 'import/' at the same relative path, prune the vacated 'hold/' folders and rewrite 'source_path' before the row returns to DETECTED, so the title re-runs from 'import/' and the watcher, which never scans 'hold/', finds the row already claiming the path;  Discard quarantines it.  'hold/' therefore holds exactly the titles awaiting a decision and is empty once every decision is made.  'paths.prune_source_folders' picks the root a departing source is under, 'import/' or 'hold/', so no move out of either leaves its folders behind.  Under DRY_RUN nothing moves.
 
 THE OVERRIDE CLEARS EVERY GATE IT CAN REACH, AND A HELD TITLE STATES EVERY REASON IT WAS HELD.  Every gate evaluates in full and collects its verdicts, and 'overridden' is read at seven gates:
 
 ```
 _screen     standards bypassed
-_compare    comparison bypassed, including a clear LOSS
+_compare    comparison bypassed, including a clear LOSS, and the in-flight sibling hold with it
 _identify   proceeds with no provider ID, section 2
 _ready      proceeds, the readiness problems recorded in the stage history
 _verify     proceeds, the verification problems recorded in the stage history
@@ -228,6 +232,10 @@ The letterbox check is cheap-first:  only a 16:9 or 4:3 display aspect can hide 
 ## 8.  New versus incumbent comparison
 
 Runs after identification and before any encode.  EVERY GATE IS EVALUATED AND THE VOTES ARE TALLIED.  The first difference does not decide.
+
+THE INCUMBENT IS LOOKED FOR IN 'complete/' FIRST, THEN IN THE LIBRARY, AND EVERY ONE FOUND IS COMPARED.  A file in 'complete/' is the operator's next promotion and so the best known copy;  'orchestrator._find_incumbents' scans both roots through the same folder match and records which root and route matched, and '_compare' runs the gates against each in that order.  A loss to either quarantines;  an inconclusive verdict against either holds;  a win against every one proceeds, and a win against a 'complete/' file is recorded in the row's 'supersedes' so '_publish' retires that file to '.quarantine' before taking its name, per section 2.  The library's absence is one route line in the COMPARED detail, not a skipped comparison.
+
+A SAME-IDENTITY ARRIVAL STILL IN THE PIPELINE HOLDS THE LATER ONE.  Before the incumbent lookup, 'Store.sibling_in_flight' looks for another row of the same identity, 'tmdb' for a movie, 'tvdb', season and an overlapping episode range for television, that is neither complete nor quarantined and is either lower in id, or higher in id and already past COMPARED.  Found, the title holds at COMPARED naming the sibling and its stage;  Retry re-runs it once the sibling is in 'complete/', where the rule above applies.  The two-sided test means that of a pair assessed at once exactly one proceeds whatever the interleaving;  the residual, both crossing COMPARED in the same instant, still lands on the PUBLISHED collision hold.  Edition is not part of the key.  Skipped, like the comparison, when the title is overridden.
 
 ```
 1  HDR or Dolby Vision present    losing it is never an upgrade, asymmetric, see below
@@ -336,7 +344,9 @@ Title (Year) [tmdbid-N] [imdbid-ttN]/Title (Year).mkv
 
 Editions, and ONLY editions, repeat the exact folder name plus ' - Label', in the form README shows, because Jellyfin does not support Plex's {edition-Name} syntax.  Do not generalise the long form to single-version films.
 
-AN EDITION IS READ FROM THE ARRIVAL NAME, NEVER INFERRED FROM THE FILE.  'titles.EDITIONS' is the vocabulary, guessit's edition list plus the library's own 'Assembly Cut' and 'Final Cut':  Director's Cut, Director's Definitive Cut, Extended, Theatrical, Unrated, Uncut, Uncensored, Remastered, Restored, Criterion, IMAX, Collector, Limited, Deluxe, Ultimate, Special Edition, Alternative Cut, Fan Edit, Festival.  'titles.edition_from_name' looks only after the last year in the name, or at the end of the stem when the name carries no year, so 'The Extended Family (2010)' is a title and 'Alien 3 (1992) Assembly Cut' is an edition.  'provider.identify_movie' reads it from the file name, the parent folder and a repair copy's origin name, and the identity carries 'edition';  '_publish' builds the long form and the MOVIE tag block is unchanged.  Runtime is never consulted.
+AN EDITION IS A DIFFERENT CUT, READ FROM THE ARRIVAL NAME AND CHECKED AGAINST THE FILE IT WOULD SIT BESIDE.  'titles.EDITIONS' is the cut vocabulary:  Director's Cut, Director's Definitive Cut, Final Cut, Assembly Cut, Alternative Cut, Extended, Theatrical, Unrated, Uncut, Uncensored, Special Edition, Fan Edit, Festival.  'titles.EDITION_NOISE' is the rest of guessit's list, Remastered, Restored, Criterion, IMAX, Collector, Limited, Deluxe, Ultimate:  transfer and packaging words that 'strip_edition' removes from a search name and that never become a label, because a release name is unreliable and a transfer word is not a cut.  'titles.edition_from_name' looks only after the last year in the name, or at the end of the stem when the name carries no year, so 'The Extended Family (2010)' is a title and 'Alien 3 (1992) Assembly Cut' is an edition.  'provider.identify_movie' reads it from the file name, the parent folder and a repair copy's origin name, and the identity carries 'edition';  '_publish' builds the long form and the MOVIE tag block is unchanged.
+
+A CLAIMED EDITION IS CORROBORATED BY RUNTIME.  When the matched folder holds no file of that edition, its plain file is the candidate and 'compare.same_cut' checks the pair:  frame counts within one, or video durations within 'edition_runtime_tolerance_s', a Comparison setting, mean one cut, so the label is dropped, recorded in the COMPARED detail, and the pair compared as plain.  A different runtime keeps the label and the folder counts as no incumbent.  With no incumbent anywhere the claim stands on the name alone, which is why the vocabulary is cut words only.  The tolerance is unmeasured.
 
 ### Television
 
@@ -417,13 +427,13 @@ THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'qid', the i
 
 TVDB'S 'allseasons' PAGE OMITS SEASON 0;  'episodes_for_order' reads '/seasons/official/0' as well when the order carries no specials.  A special TVDB does not list falls back to source numbering, with the warning.
 
-### Finding the incumbent in the library
+### Finding the incumbent, in complete/ and in the library
 
-A MOVIE INCUMBENT IS THE SAME CUT, OR THERE IS NONE.  'orchestrator._movie_file' picks the file inside a matched folder by the identity's edition;  a folder holding only the other kind returns no incumbent with the reason in the COMPARED detail.
+A MOVIE INCUMBENT IS THE SAME CUT, OR THE PLAIN FILE A CLAIMED EDITION IS CHECKED AGAINST.  'orchestrator._movie_file' picks the file inside a matched folder by the identity's edition;  an edition with no matching file gets the folder's plain file flagged as the other cut, and section 10's runtime check decides whether the pair is compared.  A plain arrival against a folder holding only editions returns no incumbent with the reason in the COMPARED detail:  only a claimed label is the unreliable input.
 
 THE LOOKUP KEYS ON THE PROVIDER ID, NOT ON THE TITLE.  Section 10 puts '[tmdbid-N]', '[imdbid-ttN]' and '[tvdbid-N]' into every library folder name, so an ID match is exact and survives any drift between a stored folder name and the current transform.  The transformed-name prefix match is the fallback, and the route that matched is recorded in the stage detail.
 
-A MISS AND A GENUINELY NEW TITLE MUST NOT LOG THE SAME SENTENCE.  The COMPARED detail separates four outcomes:  no library mounted, a folder count scanned with nothing matched, a match by provider ID, and a match by folder name.
+A MISS AND A GENUINELY NEW TITLE MUST NOT LOG THE SAME SENTENCE.  The COMPARED detail separates the outcomes per root, 'complete' and 'library':  not mounted, a folder count scanned with nothing matched, a match by provider ID, and a match by folder name.
 
 ### Scraped text carries HTML entities
 
@@ -785,7 +795,7 @@ Detection is from the v:0 side data list, reading dv_profile and rpu_present_fla
 
 ## 19.  Single instance, locking and concurrency
 
-ONE INSTANCE AT A TIME, ENFORCED.  The supervisor takes an exclusive 'flock' on 'MEDIA_CONFIG/procrustes.lock' before doing anything else.  A second instance pointed at the same mounts WAITS for the first to exit.  Every other guard in the process is 'threading.Semaphore' or 'threading.RLock', which are process local;  two supervisors sharing the mounts would sweep each other's encode area and could publish the same title twice.
+ONE INSTANCE AT A TIME, ENFORCED.  The supervisor takes an exclusive 'flock' on 'MEDIA_CONFIG/procrustes.lock' before doing anything else.  A second instance pointed at the same mounts WAITS for the first to exit.  Every other guard in the process is 'threading.Semaphore', 'threading.RLock' or the claims dict of section 6, all process local;  two supervisors sharing the mounts would sweep each other's encode area, claim the same rows and could publish the same title twice.
 
 flock rather than a PID file, because the kernel releases it when the holder dies.
 
@@ -805,7 +815,7 @@ CPU encode threads   1     x265 preset slow and svt-av1 preset 4 both saturate t
 passthrough threads  1     fixed;  the I/O-only path, bounded by the disk rather than a core
 ```
 
-Each pool has exactly as many threads as the device has slots and pulls from its own queue.  'max_jobs' is the assessment pool and has nothing to do with encoding capacity.  All three resize live per section 5.
+Each pool has exactly as many threads as the device has slots and takes the first unclaimed row in queue order whose decision names it, per section 6.  'max_jobs' is the assessment pool and has nothing to do with encoding capacity.  All three resize live per section 5.
 
 TWO CPU ENCODERS GAIN LITTLE, AND ONLY AT LOW RESOLUTION.  x265's wavefront parallelism is bounded by CTU rows, about 11 at 720p and 17 at 1080p, so two four-thread encodes recover idle threads on SD and 720p, near zero at 1080p and above, at doubled per-title latency and doubled staged copies.
 
@@ -874,7 +884,7 @@ At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice.
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.11.2.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.13.0.
 
 EVERY BUILD INCREMENTS THE VERSION.  A build whose 'VERSION' equals the one before it cannot be told apart from it.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR.  The repository does not use git tags.
 
@@ -989,7 +999,7 @@ THE SKIP KEYS ON SIZE AND MTIME ONLY, SO A RULE CHANGE NEEDS A WIPE.  'Rescan en
 
 REPAIR IS BY RUNNING THE FILE THROUGH THE PIPELINE.  Each finding carries a copy action, 'POST /api/audit/<id>/import', which copies the library file into 'import/', a read of the library and a write under the writable root.  The copy lands as '<name>.part' and is renamed, because the watcher ignores '.part';  it refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, per section 6.  The loop still ends by hand.
 
-A COPIED TITLE MUST NOT COMPARE AGAINST ITSELF.  It resolves to the same provider ID as the file it came from, so section 8 would hold it as a no-vote pair.  The finding records the import path, the watcher stores 'origin_path' on the row, and '_find_incumbent' skips that one realpath.  Only the comparison is skipped;  screening and readiness still apply.  This does not use 'overridden', which section 7 makes far broader than this needs.
+A COPIED TITLE MUST NOT COMPARE AGAINST ITSELF.  It resolves to the same provider ID as the file it came from, so section 8 would hold it as a no-vote pair.  The finding records the import path, the watcher stores 'origin_path' on the row, and '_find_incumbents' skips that one realpath in either root.  Only the comparison is skipped;  screening and readiness still apply.  This does not use 'overridden', which section 7 makes far broader than this needs.
 
 A header repair through the pipeline moves a whole file to correct a few hundred bytes of Colour header;  what that buys is a file verified by the same 'readiness' check as any other title.
 

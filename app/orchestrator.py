@@ -1,6 +1,5 @@
 import logging
 import os
-import queue
 import shutil
 import threading
 import time
@@ -57,7 +56,6 @@ ASSESS = "assess"
 #----- Queues, live targets and the thread registry;  a worker runs while its index is below its pool's target.
 class Pools:
     def __init__(self, settings):
-        self.queues = {name: queue.Queue() for name in POOLS}
         self.active = {name: 0 for name in POOLS}
         self.target = {}
         self.threads = {name: {} for name in POOLS + (ASSESS,)}
@@ -111,10 +109,6 @@ class Pools:
                 "assess_threads": live[ASSESS],
             }
 
-    def depths(self):
-        return {name: q.qsize() for name, q in self.queues.items()}
-
-
 #----- Stage outcomes
 class HoldError(RuntimeError):
     def __init__(self, reasons, stage=None):
@@ -145,7 +139,8 @@ class Orchestrator:
         self.gpu = gpu_status
         self.provider = provider
         self.pools = Pools(settings)
-        self.queue = queue.Queue()
+        self._claims = {}
+        self._claims_lock = threading.Lock()
         self.workers = []
         self._workers_lock = threading.Lock()
         self._grain_lock = threading.Semaphore(1)
@@ -171,11 +166,11 @@ class Orchestrator:
                 "encode job %s is owned by live pid %s and was NOT swept",
                 name, (owner or {}).get("pid"),
             )
+        self.requeue_resumable()
         self._ensure_workers()
         t = threading.Thread(target=self._watch, name="watcher", daemon=True)
         t.start()
         self.workers.append(t)
-        self.requeue_resumable()
         self.auditor.start()
 
     def stop(self):
@@ -274,16 +269,21 @@ class Orchestrator:
                 "title %s retrying %s (attempt %d)",
                 row["id"], row["source_path"], (row["attempts"] or 0) + 1,
             )
+            self.release_from_hold(row["id"])
             self.store.advance(row["id"], state.DETECTED, "retry due")
-            self.queue.put(row["id"])
+            self.store.place(row["id"])
 
     def requeue_resumable(self):
-        for row in self.store.resumable():
+        unplaced = []
+        for row in self.store.queue_rows():
             log.info(
                 "title %s resuming %s from stage %s",
                 row["id"], row["source_path"], row["stage"],
             )
-            self._enqueue(row)
+            if row.get("queue_order") is None:
+                unplaced.append(row["id"])
+        for title_id in sorted(unplaced):
+            self.store.place(title_id)
 
     def _pool_for(self, decision):
         if not decision or not decision.get("action"):
@@ -295,15 +295,100 @@ class Orchestrator:
             return None
         return decision.get("device") or encode.CPU
 
-    def _enqueue(self, row):
-        pool = None if row["stage"] in state.ASSESSMENT else self._pool_for(row.get("decision"))
-        if pool is None:
-            if row["stage"] not in state.ASSESSMENT:
-                log.info("title %s has no routing decision, re-assessing", row["id"])
-                self.store.advance(row["id"], state.DETECTED, "re-assessed, no routing decision stored")
-            self.queue.put(row["id"])
-            return
-        self.pools.queues[pool].put(row["id"])
+    #----- Claiming, the store as the queue
+    def _claim(self, pool):
+        #----- a claim is in memory only;  section 19's single instance is what makes that sufficient.
+        with self._claims_lock:
+            for row in self.store.queue_rows():
+                if row["id"] in self._claims:
+                    continue
+                if row["stage"] in state.ASSESSMENT:
+                    wanted = ASSESS
+                else:
+                    wanted = self._pool_for(row.get("decision"))
+                    if wanted is None:
+                        if pool != ASSESS:
+                            continue
+                        log.info("title %s has no routing decision, re-assessing", row["id"])
+                        self.store.advance(
+                            row["id"], state.DETECTED, "re-assessed, no routing decision stored"
+                        )
+                        wanted = ASSESS
+                if wanted != pool:
+                    continue
+                self._claims[row["id"]] = (pool, time.time())
+                return row["id"]
+        return None
+
+    def _release(self, title_id):
+        with self._claims_lock:
+            self._claims.pop(title_id, None)
+
+    def queue_view(self):
+        #----- pool-held rows come first in claim order;  an assessment claim is in progress but movable.
+        with self._claims_lock:
+            claims = dict(self._claims)
+        locked = sorted(
+            ((claimed_at, title_id) for title_id, (pool, claimed_at) in claims.items() if pool != ASSESS),
+        )
+        view = {}
+        position = 0
+        for _at, title_id in locked:
+            position += 1
+            view[title_id] = {"position": position, "locked": True, "slot": claims[title_id][0]}
+        for row in self.store.queue_rows():
+            if row["id"] in view:
+                continue
+            position += 1
+            view[row["id"]] = {"position": position, "locked": False, "slot": None}
+        return view
+
+    def reorder(self, units):
+        #----- all or nothing:  the whole unlocked queue, each row once, nothing a pool thread holds.
+        if not isinstance(units, list):
+            raise ValueError("order must be a list")
+        view = self.queue_view()
+        rows = {r["id"]: r for r in self.store.queue_rows()}
+        unlocked = {i for i, v in view.items() if not v["locked"] and i in rows}
+        by_show = {}
+        for title_id in sorted(unlocked):
+            r = rows[title_id]
+            if r.get("kind") == "tv" and r.get("show"):
+                by_show.setdefault(r["show"], []).append(r)
+        ordered = []
+        seen = set()
+        for unit in units:
+            if not isinstance(unit, dict):
+                raise ValueError("each item must be an object with id or show")
+            if unit.get("id") is not None:
+                try:
+                    title_id = int(unit["id"])
+                except (TypeError, ValueError):
+                    raise ValueError("bad title id %r" % (unit["id"],))
+                if title_id in view and view[title_id]["locked"]:
+                    raise ValueError("title %s is being worked and cannot be moved" % title_id)
+                if title_id not in unlocked:
+                    raise ValueError("title %s is not in the queue" % title_id)
+                members = [title_id]
+            elif unit.get("show"):
+                episodes = by_show.get(str(unit["show"]))
+                if not episodes:
+                    raise ValueError("no queued episodes of %r" % unit["show"])
+                episodes.sort(key=lambda r: (r.get("season") or 0, r.get("episode") or 0, r["id"]))
+                members = [r["id"] for r in episodes]
+            else:
+                raise ValueError("each item must carry an id or a show")
+            for title_id in members:
+                if title_id in seen:
+                    raise ValueError("title %s appears twice" % title_id)
+                seen.add(title_id)
+                ordered.append(title_id)
+        missing = sorted(unlocked - seen)
+        if missing:
+            raise ValueError("the order omits queued title(s) %s" % ", ".join(str(i) for i in missing))
+        self.store.renumber(ordered)
+        log.info("operator reordered the queue: %s", ", ".join(str(i) for i in ordered))
+        return ordered
 
     def _watch(self):
         while not self.stop_event.is_set():
@@ -345,7 +430,6 @@ class Orchestrator:
                         )
                         self.store.reset_for_reimport(existing["id"])
                         self.store.link_import(existing["id"], path)
-                        self.queue.put(existing["id"])
                     elif state.is_complete(existing["stage"]):
                         #----- once per path, not once per poll.
                         if path not in self._blocked_paths:
@@ -363,7 +447,6 @@ class Orchestrator:
                 title_id = self.store.upsert_source(path)
                 log.info("title %s detected %s", title_id, path)
                 self.store.link_import(title_id, path)
-                self.queue.put(title_id)
 
     #----- Rows whose files have left the pipeline's own areas
     def _close_collected(self):
@@ -418,29 +501,28 @@ class Orchestrator:
     def _assess_worker(self, index=0):
         #----- the target is checked between titles, so a shrink never interrupts one.
         while not self.stop_event.is_set() and self.pools.wanted(ASSESS, index):
-            try:
-                title_id = self.queue.get(timeout=1)
-            except queue.Empty:
+            title_id = self._claim(ASSESS)
+            if title_id is None:
+                self.stop_event.wait(1)
                 continue
             try:
                 self._run(title_id, self._assess)
             finally:
-                self.queue.task_done()
+                self._release(title_id)
         log.debug("assessment worker %d exiting", index)
 
     def _work_worker(self, pool, index=0):
-        q = self.pools.queues[pool]
         while not self.stop_event.is_set() and self.pools.wanted(pool, index):
-            try:
-                title_id = q.get(timeout=1)
-            except queue.Empty:
+            title_id = self._claim(pool)
+            if title_id is None:
+                self.stop_event.wait(1)
                 continue
             self.pools.enter(pool)
             try:
                 self._run(title_id, self._work)
             finally:
                 self.pools.leave(pool)
-                q.task_done()
+                self._release(title_id)
         log.debug("%s worker %d exiting", pool, index)
 
     def _run(self, title_id, half):
@@ -465,8 +547,7 @@ class Orchestrator:
             reasons += self._compare(title_id, container, identity, kind, source)
             if reasons:
                 raise HoldError(reasons)
-            pool = self._route(title_id, container, kind, source)
-            self.pools.queues[pool].put(title_id)
+            self._route(title_id, container, kind, source)
         except HoldError as exc:
             log.warning("held: %s: %s", source, exc)
             self._hold(title_id, source, exc.reasons)
@@ -542,6 +623,22 @@ class Orchestrator:
         self.store.update(title_id, source_path=destination)
         self.store.record(title_id, state.HELD, "moved to %s" % destination)
         log.info("title %s moved %s to hold", title_id, os.path.basename(source))
+        return destination
+
+    def release_from_hold(self, title_id):
+        #----- runs while the row is still HELD, so no worker can claim it against a path in motion.
+        row = self.store.get(title_id) or {}
+        source = row.get("source_path")
+        if not source or self.cfg.dry_run or not os.path.exists(source):
+            return None
+        destination = self.layout.release_path(source)
+        if destination is None:
+            return None
+        self.layout.move_file(source, destination)
+        self.layout.prune_source_folders(source)
+        self.store.update(title_id, source_path=destination)
+        self.store.record(title_id, state.HELD, "moved back to %s" % destination)
+        log.info("title %s moved %s back to import", title_id, os.path.basename(source))
         return destination
 
     #----- Stages, in chain order
@@ -649,6 +746,8 @@ class Orchestrator:
             poster_url=self._poster_url(kind, identity),
             identity=identity,
         )
+        if kind == "tv" and identity.get("show"):
+            self.store.place(title_id)
         return identity, []
 
     def _store_candidates(self, title_id, kind):
@@ -702,49 +801,100 @@ class Orchestrator:
         if identity is None:
             self.store.record(title_id, state.COMPARED, "skipped, no identity resolved")
             return []
-        if not self.layout.libraries:
-            self.store.advance(
-                title_id, state.COMPARED, "no library mounted, comparison skipped"
+        #----- a same-identity title already in the pipeline holds this one before any lookup.
+        sibling = self.store.sibling_in_flight(row)
+        if sibling is not None:
+            detail = (
+                "title %s (%s) carries the same identity and is at %s; retry once it has "
+                "published or been discarded"
+                % (sibling["id"], os.path.basename(sibling.get("source_path") or ""), sibling.get("stage"))
             )
+            log.info("title %s %s", title_id, detail)
+            self.store.record(title_id, state.COMPARED, detail)
+            return [_reason(state.COMPARED, detail)]
+        incumbents, misses = self._find_incumbents(identity, kind, skip=row.get("origin_path"))
+        if not incumbents:
+            detail = "no incumbent, treated as new: %s" % "; ".join(misses)
+            log.info("title %s %s", title_id, detail)
+            self.store.advance(title_id, state.COMPARED, detail)
             return []
-        incumbent_path, route = self._find_incumbent(identity, kind, skip=row.get("origin_path"))
-        if incumbent_path is None:
-            log.info("title %s has no incumbent, treated as new: %s", title_id, route)
-            self.store.advance(
-                title_id, state.COMPARED, "no incumbent, treated as new: %s" % route
+        keep_langs = self.settings.get("keep_langs")
+        tolerance = self.settings.get("edition_runtime_tolerance_s")
+        #----- the incoming is measured once;  only the three crop keys differ per pair.
+        incoming = compare.measure(source)
+        crops = {}
+        verdicts = list(misses)
+        supersedes = []
+        result = None
+        for incumbent_path, route, root_name, other_cut in incumbents:
+            where = "%s, %s" % (root_name, route)
+            log.info(
+                "title %s comparing against incumbent %s in %s",
+                title_id, os.path.basename(incumbent_path), where,
             )
-            return []
-        log.info(
-            "title %s comparing against incumbent %s, %s",
-            title_id, os.path.basename(incumbent_path), route,
-        )
-        try:
-            incumbent = probemod.probe(incumbent_path, keep_langs=self.settings.get("keep_langs")).container
-        except probemod.ProbeError as exc:
-            self.store.advance(title_id, state.COMPARED, "incumbent unreadable: %s" % exc)
-            return []
-        crops = self._crop_both(title_id, container, incumbent, source, incumbent_path)
-        result = compare.compare(
-            compare.measure(source, crop=crops[0]),
-            compare.measure(incumbent_path, crop=crops[1]),
-            profile=self.settings.profile(kind),
-        )
-        self.store.update(title_id, comparison=result.as_dict())
-        if result.is_loss:
-            raise QuarantineError("not better than the incumbent: %s" % result.reason)
-        if result.verdict == compare.AMBIGUOUS:
-            detail = self._ambiguous_detail(identity, incumbent_path, result)
-            log.info("title %s comparison inconclusive: %s", title_id, detail)
-            self.store.record(title_id, state.COMPARED, "inconclusive: %s" % detail)
-            return [_reason(state.COMPARED, "comparison against the incumbent was inconclusive: %s" % detail)]
-        self.store.advance(
-            title_id, state.COMPARED, "%s (incumbent %s)" % (result.reason, route)
-        )
+            try:
+                incumbent_container = probemod.probe(incumbent_path, keep_langs=keep_langs).container
+            except probemod.ProbeError as exc:
+                verdicts.append("incumbent in %s unreadable: %s" % (where, exc))
+                continue
+            new_crop, old_crop = self._crop_pair(
+                title_id, (source, container), (incumbent_path, incumbent_container), crops
+            )
+            incumbent = compare.measure(incumbent_path, crop=old_crop)
+            incoming_attrs = compare.with_crop(incoming, new_crop)
+            #----- a claimed edition is checked against the folder's plain file before it can skip the comparison.
+            if other_cut and identity.get("edition"):
+                same = compare.same_cut(incoming_attrs, incumbent, tolerance)
+                figures = "runtime %s s against %s s" % (
+                    incoming_attrs.get("duration_s"), incumbent.get("duration_s"))
+                if same:
+                    note = (
+                        "edition %r read from the name is not a different cut, %s in %s; "
+                        "label dropped, compared as the plain title"
+                        % (identity["edition"], figures, where)
+                    )
+                    identity["edition"] = None
+                    self.store.update(title_id, identity=identity)
+                    log.info("title %s %s", title_id, note)
+                    self.store.record(title_id, state.COMPARED, note)
+                    verdicts.append(note)
+                elif same is None:
+                    verdicts.append(
+                        "edition %r could not be checked against %s in %s, runtime unmeasurable; "
+                        "the label stands" % (identity["edition"], os.path.basename(incumbent_path), where)
+                    )
+                    continue
+                else:
+                    verdicts.append(
+                        "folder in %s holds no %r edition; %s, a different cut"
+                        % (where, identity["edition"], figures)
+                    )
+                    continue
+            result = compare.compare(incoming_attrs, incumbent, profile=self.settings.profile(kind))
+            self.store.update(title_id, comparison=result.as_dict())
+            if result.is_loss:
+                raise QuarantineError(
+                    "not better than the incumbent %s in %s: %s"
+                    % (os.path.basename(incumbent_path), root_name, result.reason)
+                )
+            if result.verdict == compare.AMBIGUOUS:
+                detail = self._ambiguous_detail(identity, incumbent_path, result)
+                log.info("title %s comparison inconclusive in %s: %s", title_id, root_name, detail)
+                self.store.record(title_id, state.COMPARED, "inconclusive in %s: %s" % (root_name, detail))
+                return [_reason(
+                    state.COMPARED,
+                    "comparison against the incumbent in %s was inconclusive: %s" % (root_name, detail),
+                )]
+            verdicts.append("%s (incumbent in %s)" % (result.reason, where))
+            if root_name == "complete":
+                supersedes.append(incumbent_path)
+        self.store.update(title_id, supersedes=supersedes)
+        self.store.advance(title_id, state.COMPARED, "; ".join(verdicts))
         return []
 
-    def _crop_both(self, title_id, incoming, incumbent, incoming_path, incumbent_path):
-        new_video = incoming.get("video") or {}
-        old_video = incumbent.get("video") or {}
+    def _crop_pair(self, title_id, incoming, incumbent, cache):
+        new_video = incoming[1].get("video") or {}
+        old_video = incumbent[1].get("video") or {}
         if not (
             standards.is_letterbox_candidate(new_video)
             or standards.is_letterbox_candidate(old_video)
@@ -752,23 +902,25 @@ class Orchestrator:
             log.debug("neither side is a letterbox candidate, gate 3 cropdetect not run")
             return None, None
         log.info("title %s running cropdetect on both sides for the letterbox gate", title_id)
-        pairs = []
-        for path, video, container in (
-            (incoming_path, new_video, incoming),
-            (incumbent_path, old_video, incumbent),
-        ):
+        pair = []
+        for path, ctr in (incoming, incumbent):
+            if path in cache:
+                pair.append(cache[path])
+                continue
+            video = ctr.get("video") or {}
             try:
-                found = self._detect_crop(path, video, container)
+                found = self._detect_crop(path, video, ctr)
                 if found is None:
                     found = {
                         "bars_px": 0,
                         "picture_pixels": int(video.get("display_pixels") or 0) or None,
                     }
-                pairs.append(found)
             except Exception as exc:
                 log.warning("cropdetect failed on %s: %s", os.path.basename(str(path)), exc)
-                pairs.append(None)
-        return pairs[0], pairs[1]
+                found = None
+            cache[path] = found
+            pair.append(found)
+        return pair[0], pair[1]
 
     @staticmethod
     def _ambiguous_detail(identity, incumbent_path, result):
@@ -785,18 +937,29 @@ class Orchestrator:
             )
         return "against %r, %s" % (name, result.reason)
 
-    def _find_incumbent(self, identity, kind, skip=None):
-        root = self.layout.libraries.get(kind)
-        if not root or not os.path.isdir(root):
-            return None, "no %s library mounted" % kind
-        if kind == "movie":
-            found, route = self._find_movie_incumbent(root, identity)
-        else:
-            found, route = self._find_tv_incumbent(root, identity)
-        if found and skip and os.path.realpath(found) == os.path.realpath(skip):
-            log.info("incumbent is the file this title was imported from, comparison skipped")
-            return None, "the incumbent %s is this title's own origin, imported for repair" % route
-        return found, route
+    def _find_incumbents(self, identity, kind, skip=None):
+        #----- complete/ first:  what is waiting to be promoted is the best copy known.
+        found = []
+        misses = []
+        roots = [("complete", self.layout.completed), ("library", self.layout.libraries.get(kind))]
+        for root_name, root in roots:
+            if not root or not os.path.isdir(root):
+                misses.append("no %s %s mounted" % (kind, root_name))
+                continue
+            if kind == "movie":
+                path, route, other_cut = self._find_movie_incumbent(root, identity)
+            else:
+                path, route = self._find_tv_incumbent(root, identity)
+                other_cut = False
+            if path and skip and os.path.realpath(path) == os.path.realpath(skip):
+                log.info("incumbent in %s is the file this title was imported from, comparison skipped", root_name)
+                misses.append("the incumbent in %s, %s, is this title's own origin, imported for repair" % (root_name, route))
+                continue
+            if path:
+                found.append((path, route, root_name, other_cut))
+            else:
+                misses.append("%s: %s" % (root_name, route))
+        return found, misses
 
     @staticmethod
     def _folder_ids(name):
@@ -822,7 +985,7 @@ class Orchestrator:
         return None
 
     @staticmethod
-    #----- the same cut or nothing:  an edition matches its long-form name, a plain arrival the plain one.
+    #----- the same cut, or the folder's plain file as the candidate a claimed edition is checked against.
     def _movie_file(folder, identity):
         edition = identity.get("edition")
         wanted = None
@@ -835,20 +998,21 @@ class Orchestrator:
             wanted = None
         entries = sorted(e for e in os.listdir(folder) if e.lower().endswith(".mkv"))
         if wanted and wanted in entries:
-            return os.path.join(folder, wanted), None
+            return os.path.join(folder, wanted), None, False
         folder_name = os.path.basename(folder)
         plain = [e for e in entries if not e.startswith(folder_name + " - ")]
         editions = [e for e in entries if e.startswith(folder_name + " - ")]
         if edition:
-            if entries:
-                return None, "holds no '%s' edition, only %s; a different cut is not compared" % (
-                    edition, ", ".join(entries))
-            return None, "holds no mkv"
+            candidate = plain[0] if plain else (entries[0] if entries else None)
+            if candidate:
+                return os.path.join(folder, candidate), "holds no '%s' edition, checked against %s" % (
+                    edition, candidate), True
+            return None, "holds no mkv", False
         if plain:
-            return os.path.join(folder, plain[0]), None
+            return os.path.join(folder, plain[0]), None, False
         if editions:
-            return None, "holds only editions (%s); a different cut is not compared" % ", ".join(editions)
-        return None, "holds no mkv"
+            return None, "holds only editions (%s); a different cut is not compared" % ", ".join(editions), False
+        return None, "holds no mkv", False
 
     def _find_movie_incumbent(self, root, identity):
         prefix = "%s (%s)" % (titles.to_filename(identity["title"]), identity.get("year"))
@@ -856,23 +1020,24 @@ class Orchestrator:
         scanned = 0
         for name in sorted(os.listdir(root)):
             folder = os.path.join(root, name)
-            if not os.path.isdir(folder):
+            if name.startswith(".") or not os.path.isdir(folder):
                 continue
             scanned += 1
             matched = self._id_match(identity, name, ("tmdb", "imdb"))
             if matched:
-                found, why = self._movie_file(folder, identity)
+                found, why, other_cut = self._movie_file(folder, identity)
                 if found:
-                    return found, "matched on %s" % matched
-                return None, "folder matched on %s but %s" % (matched, why)
+                    return found, "matched on %s%s" % (matched, ", " + why if why else ""), other_cut
+                return None, "folder matched on %s but %s" % (matched, why), False
             if by_name is None and name.startswith(prefix):
                 by_name = folder
         if by_name is not None:
-            found, why = self._movie_file(by_name, identity)
+            found, why, other_cut = self._movie_file(by_name, identity)
             if found:
-                return found, "matched on folder name, no provider id match"
-            return None, "folder matched on name but %s" % why
-        return None, "scanned %d library folder(s), none matched" % scanned
+                return found, "matched on folder name, no provider id match%s" % (
+                    ", " + why if why else ""), other_cut
+            return None, "folder matched on name but %s" % why, False
+        return None, "scanned %d folder(s), none matched" % scanned, False
 
     def _find_tv_incumbent(self, root, identity):
         show = titles.to_filename(identity.get("show") or "")
@@ -886,7 +1051,7 @@ class Orchestrator:
         scanned = 0
         for name in sorted(os.listdir(root)):
             folder = os.path.join(root, name)
-            if not os.path.isdir(folder):
+            if name.startswith(".") or not os.path.isdir(folder):
                 continue
             scanned += 1
             matched = self._id_match(identity, name, ("tvdb", "tmdb"))
@@ -894,14 +1059,14 @@ class Orchestrator:
                 found, code = self._episode_file(folder, season, codes)
                 if found:
                     return found, "matched on %s as %s" % (matched, code)
-                return None, "show matched on %s, %s not in the library" % (matched, codes[0])
+                return None, "show matched on %s, %s not present" % (matched, codes[0])
             if by_name is None and name.startswith(show + " ("):
                 by_name = folder
         if by_name is not None:
             found, code = self._episode_file(by_name, season, codes)
             if found:
                 return found, "matched on folder name as %s, no provider id match" % code
-        return None, "scanned %d library folder(s), none matched" % scanned
+        return None, "scanned %d folder(s), none matched" % scanned
 
     @staticmethod
     def _episode_file(folder, season, codes):
@@ -1330,15 +1495,19 @@ class Orchestrator:
             )
 
         destination = os.path.join(outdir, filename)
-        forced = bool((self.store.get(title_id) or {}).get("overridden"))
+        row = self.store.get(title_id) or {}
+        forced = bool(row.get("overridden"))
 
         if self.cfg.dry_run:
+            for beaten in row.get("supersedes") or []:
+                log.info("title %s DRY RUN would retire the beaten %s to quarantine", title_id, beaten)
             if os.path.exists(destination) and not forced:
                 raise HoldError("destination already exists: %s" % destination, stage=state.PUBLISHED)
             log.info("title %s DRY RUN would publish -> %s", title_id, destination)
             self.store.advance(title_id, state.PUBLISHED, "dry run", output_path=destination)
             return
 
+        self._retire_beaten(title_id, row.get("supersedes") or [])
         detail = "published to completed"
         try:
             self.layout.publish_file(work, destination)
@@ -1351,6 +1520,36 @@ class Orchestrator:
             log.warning("title %s %s", title_id, detail)
         self.store.advance(title_id, state.PUBLISHED, detail, output_path=destination)
 
+    #----- A beaten complete/ file makes way for the winner
+    def _retire_beaten(self, title_id, beaten):
+        for path in beaten:
+            if not os.path.exists(path):
+                detail = "superseded %s had already left complete/" % os.path.basename(path)
+                log.info("title %s %s", title_id, detail)
+                self.store.record(title_id, state.PUBLISHED, detail)
+                continue
+            try:
+                destination = self.layout.quarantine_path(path)
+                self.layout.move_file(path, destination)
+                self.layout.prune_empty_folders(path, self.layout.completed)
+            except Exception as exc:
+                raise HoldError(
+                    "could not retire the beaten %s to quarantine: %s" % (path, exc),
+                    stage=state.PUBLISHED,
+                )
+            detail = "beaten %s retired to quarantine as %s" % (
+                os.path.basename(path), os.path.basename(destination))
+            log.info("title %s %s", title_id, detail)
+            self.store.record(title_id, state.PUBLISHED, detail)
+            #----- the superseded row keeps its files visible until the operator clears both from quarantine.
+            other = self.store.by_output_path(path)
+            if other is not None:
+                reason = "superseded by title %s" % title_id
+                self.store.advance(
+                    other["id"], state.QUARANTINED, reason, reason=reason, output_path=destination
+                )
+                log.info("title %s %s, its output is now %s", other["id"], reason, destination)
+
     #----- Housekeeping after publication
     def _retire(self, title_id, source, job_id):
         if self.cfg.dry_run:
@@ -1358,7 +1557,7 @@ class Orchestrator:
             return
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
-        self.layout.prune_empty_folders(source, self.layout.imports)
+        self.layout.prune_source_folders(source)
         log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
         self.layout.wipe_job_dir(job_id)
         self.store.advance(
@@ -1379,7 +1578,7 @@ class Orchestrator:
             return "quarantined"
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
-        self.layout.prune_empty_folders(source, self.layout.imports)
+        self.layout.prune_source_folders(source)
         self.store.advance(
             title_id, state.QUARANTINED, reason, reason=reason, quarantine_path=destination
         )
@@ -1464,13 +1663,29 @@ class Orchestrator:
         }
 
     #----- Reporting
+    def _depths(self):
+        with self._claims_lock:
+            claimed = set(self._claims)
+        depths = {ASSESS: 0, encode.CPU: 0, encode.GPU: 0, encode.PASSTHROUGH: 0}
+        for row in self.store.queue_rows():
+            if row["id"] in claimed:
+                continue
+            if row["stage"] in state.ASSESSMENT:
+                depths[ASSESS] += 1
+            else:
+                pool = self._pool_for(row.get("decision")) or ASSESS
+                depths[pool] += 1
+        return depths
+
     def status(self):
+        depths = self._depths()
         return {
             "version": VERSION,
             "started_at": self.started_at,
             "uptime_s": int(time.time() - self.started_at),
-            "queue_depth": self.queue.qsize(),
-            "queues": dict({"assess": self.queue.qsize()}, **self.pools.depths()),
+            "queue_depth": depths[ASSESS],
+            "queues": {"assess": depths[ASSESS], "cpu": depths[encode.CPU],
+                       "gpu": depths[encode.GPU], "passthrough": depths[encode.PASSTHROUGH]},
             "slots": self.pools.snapshot(),
             "progress": dict(self._progress),
             "stages": self.store.counts_by_stage(),

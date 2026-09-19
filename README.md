@@ -13,7 +13,7 @@ import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
          ->  tag  ->  readiness  ->  encode  ->  verify  ->  complete/
 ```
 
-Assessment runs ahead of encoding.  The assessment workers, three by default, take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles from their queues in order.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
+Assessment runs ahead of encoding.  The assessment workers, three by default, take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles in queue order, and the queue order is yours to drag on the dashboard.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
 
 Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.  A folder under 'import/' that is left empty by that move is removed, so a title dropped in as a whole folder does not leave its shell behind.
 
@@ -23,12 +23,12 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 
 | Stage | Shown as | Meaning |
 | --- | --- | --- |
-| DETECTED | queued | Seen in 'import/', size stable across two polls and untouched for the quiet window, 30 seconds by default.  Waiting for a free worker.  A title returns here when you press Retry or Force through, and when a retry backoff expires. |
+| DETECTED | queued | Seen in 'import/', size stable across two polls and untouched for the quiet window, 30 seconds by default.  Waiting for a free worker, at the back of the queue.  A title returns here, again at the back and with its file back under 'import/', when you press Retry or Force through, and when a retry backoff expires. |
 | PROBED | probed | One ffprobe pass done.  Classified as a movie or as television. |
 | SCREENED | screened | Passed the minimum standards gate. |
 | IDENTIFIED | identified | Provider IDs resolved and verified.  The canonical name is settled from here on. |
-| COMPARED | compared | Checked against whatever the library already holds.  Also the value recorded when no library is mounted, when there is no incumbent, and when the incumbent could not be read. |
-| ROUTED | waiting for encoder | The encoder is chosen and the title is queued for its pool:  CPU, GPU or passthrough.  Assessment is done;  everything from here runs on the pool's thread when one is free. |
+| COMPARED | compared | Checked against whatever 'complete/' and the library already hold, in that order.  Also the value recorded when there is no incumbent in either, and when the incumbent could not be read.  A second arrival of a title still in the pipeline holds here naming the first. |
+| ROUTED | waiting for encoder | The encoder is chosen and the title waits for its pool, CPU, GPU or passthrough, which takes titles in queue order.  Assessment is done;  everything from here runs on the pool's thread when one is free. |
 | STAGED | copying | Copying the source into the encode work area.  A multi-gigabyte title sits here for minutes. |
 | REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
 | TAGGED | tagged | Matroska tag block and segment title written. |
@@ -43,8 +43,8 @@ Three further values sit outside the pipeline.
 
 | Stage | Shown as | Meaning |
 | --- | --- | --- |
-| HELD | needs a decision | A gate failed and the title is waiting for you;  its file has moved to 'hold/', at the same path it had under 'import/'.  Every reason is listed, not only the first:  the standards, identification and comparison checks all run before a title holds, so one Force through is an informed decision rather than a guess repeated until the title moves.  The decision queue offers Retry, Force through and Discard. |
-| QUARANTINED | rejected | Refused, or beaten by the library incumbent.  The file is in 'complete/.quarantine'.  Remove it from there and the record closes on the next poll. |
+| HELD | needs a decision | A gate failed and the title is waiting for you;  its file has moved to 'hold/', at the same path it had under 'import/', and moves back to 'import/' on Retry, Force through or Identify, or to quarantine on Discard, so 'hold/' is empty once every decision is made.  Every reason is listed, not only the first:  the standards, identification and comparison checks all run before a title holds, so one Force through is an informed decision rather than a guess repeated until the title moves.  The decision queue offers Retry, Force through and Discard. |
+| QUARANTINED | rejected | Refused, beaten by the incumbent, or superseded in 'complete/' by a later arrival that beat it.  The file is in 'complete/.quarantine'.  Remove it from there and the record closes on the next poll. |
 | FAILED | failed | A mechanical failure:  an unreadable probe, a remux or encoder that exited non-zero, or a publish that could not write.  Nothing was moved or deleted, and no output exists, so Force through cannot apply and is not offered;  Retry and Discard are. |
 
 A row marked "files gone" refers to a title whose files you have since removed by hand.  The watcher closes such a record on its next poll;  the Forget button does the same at once.  Forget only removes a database row;  it never deletes a file.
@@ -57,7 +57,7 @@ app/            the pipeline: one module per concern
   config.py       the environment interface
   paths.py        mount contract, write guards, atomic publish
   locks.py        single-instance lock and encode job ownership
-  orchestrator.py the state machine, the assessment workers and the encoder pools
+  orchestrator.py the state machine, the assessment workers, the encoder pools and the queue order
   encode.py       the encoder router and command builders
   gpu.py          the runtime GPU probe
   media.py        remux, language strip, flag repair, cropdetect, grain probe
@@ -68,7 +68,7 @@ app/            the pipeline: one module per concern
   titles.py       the filename transform and naming rules
   episodes.py     episode matching, ranges, part markers
   provider.py     Wikidata, TMDB and TVDB lookups
-  state.py        SQLite store, one row per title
+  state.py        SQLite store, one row per title, carrying the queue order
   webui.py        JSON API, the session gate and the pages
   auth.py         passwords, TOTP, sessions, the lockout and the account rules
   settings.py     the settings registry
@@ -125,7 +125,7 @@ The longer form that repeats the whole folder name inside the filename is for ed
 Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644]/Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644] - Assembly Cut.mkv
 ```
 
-The edition is read from the arrival's name (Director's Cut, Extended, Theatrical, Unrated, IMAX, Criterion and the rest), only after the year or at the end of the name, and never inferred from the file.  An edition is compared only against the same edition in the library;  a folder holding a different cut counts as no incumbent.
+The edition is read from the arrival's name, only after the year or at the end of the name, and only from the words that name a cut:  Director's Cut, Director's Definitive Cut, Final Cut, Assembly Cut, Alternative Cut, Extended, Theatrical, Unrated, Uncut, Uncensored, Special Edition, Fan Edit and Festival.  Remastered, Restored, Criterion, IMAX, Collector, Limited, Deluxe and Ultimate describe a transfer or a box, not a cut, and are stripped without becoming a label.  A claimed edition is then checked against the folder's plain file:  the same frame count, or a runtime within 'edition_runtime_tolerance_s', means the same cut, so the label is dropped and the pair compared as one title;  a different runtime keeps the label and the folder counts as no incumbent.  Only a claimed edition is checked this way;  a plain arrival is never compared against an edition.
 
 The transform runs one way.  A filename can always be derived from a tag;  a tag can never be derived from a filename, because the information needed has already been discarded.  Where a tag and a filename differ by unsafe characters alone, that is expected and is not a defect.
 
@@ -216,6 +216,7 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Standards | keep_langs | eng, en, und | audio and subtitle languages kept at ingest |
 | Comparison | pixel_tolerance, bitrate_tolerance | 0.05, 0.25 | below these differences gates 2, 3 and 6 cast no vote |
 | Comparison | codec_efficiency | h264 1.0, hevc 1.7, av1 2.2, vc1 0.9, mpeg4 0.7, mpeg2video 0.45 | bitrate weighting per codec |
+| Comparison | edition_runtime_tolerance_s | 30 | runtime difference under which a name-claimed edition is the same cut |
 | Matching | title_cutoff, contained_score | 0.82, 0.9 | the episode and search matcher's scores |
 | Matching | max_range_span | 3 | widest 'E01-E03' range read as a range |
 | Matching | range_duration_ratio | 1.8 | a single-numbered library episode this many times its season's median, with no next episode beside it, is listed as two episodes in one file |
@@ -268,7 +269,7 @@ Every encoder-bound title is also classified as progressive, interlaced or telec
 
 ## Comparison gates
 
-Before any encode, an arrival is compared against whatever the library already holds.  Seven gates, in order:
+Before any encode, an arrival is compared against whatever 'complete/' and the library already hold, 'complete/' first because what is waiting to be promoted is the best copy known.  Every incumbent found is compared, and the arrival must win against each.  Seven gates, in order:
 
 ```
 1  HDR or Dolby Vision present    losing it is never an upgrade
@@ -294,7 +295,9 @@ Gates 2, 3 and 6 need both sides to be measurable.  Where one side is missing, t
 
 The table behind the Compare button carries every attribute the pipeline measured, not only the seven it gates on.  A row that differs with no gate against it is marked as such, and that is the row worth looking at:  it is where the pipeline saw a difference and had no rule for it.
 
-The incumbent is read, compared against and left alone.  Nothing in the container writes to a library.
+A library incumbent is read, compared against and left alone.  Nothing in the container writes to a library.  An incumbent in 'complete/' that loses is retired to 'complete/.quarantine' when the winner publishes, its record marked as superseded by the winner, so one folder never holds two copies of one cut.
+
+Two arrivals of one title in the same batch never both encode.  The later one holds at COMPARED naming the earlier and its stage;  Retry once the earlier has published, and the comparison runs against it in 'complete/'.
 
 HDR is compared on presence at gate 1, and on declaration in the table.  A Matroska file states its mastering display and content light level twice, in the bitstream as SEI and in the container's Colour element, and the two can disagree:  eight HDR titles in one library all carried the metadata in the bitstream while three declared none of it in the container.  The pipeline probes both surfaces, repairs a container that under-declares its own bitstream with a header edit on the way through, and holds any title whose output declares less than its source carried.  A content light level of zero and zero, an encoder's way of saying not indicated, is written like any other and read back through mkvmerge, because ffprobe reports a Matroska content light element only when both values are non-zero.  The declaration rows appear in the Compare table without a gate number, so a difference there is one of the marked rows worth looking at rather than a vote.
 
@@ -365,7 +368,10 @@ GET  /api/status                  version, config, GPU state, encode space, stag
                                   threads per pool, uptime, audit status, whether authentication is
                                   on and who is signed in, and for every running encode its frame,
                                   total_frames, fps and eta_s
-GET  /api/titles                  every title
+GET  /api/titles                  every title, each with its queue_position, locked and slot
+POST /api/queue                   {"order": [{"id": n} | {"show": name}, ...]}, the whole unlocked queue in the
+                                  order wanted;  400 when it omits a queued title, repeats one, or names
+                                  one a pool thread is working
 GET  /api/titles/<id>             one title with its stage history and comparison table
 GET  /api/held                    the decision queue, held and failed titles together
 GET  /api/poster/<hash>           cached cover art by the 'poster' hash on a title, 404 when there is none
@@ -383,6 +389,8 @@ A menu at the top right, behind a hamburger, carries the output codec per kind, 
 User Settings opens with the Access group:  the authentication switch, which asks for the current password or a fresh code before it turns off, and the session lifetime.  Below it, for the signed-in account:  the login mode as three options with any option the account cannot satisfy yet greyed out and the reason beside it, a password change, the authenticator with Enrol (a QR code and the secret as text, confirmed by the first code) or Remove, and the user list with Add and Remove.
 
 The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters in the lower right:  library findings, with a scanning line beneath it while a pass runs, then quarantined files and failed jobs.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
+
+The Queue reads in processing order, left to right then down.  A title a pool thread is already working sits first, locked, labelled with its stage in the corner of its art and carrying the encode's progress;  with two encoder slots that is the first two tiles.  Every other tile carries its position number, a show's tile the range its episodes occupy, and can be dragged into a new place;  the order is saved when the tile is dropped and every worker takes its next title from it.  A show moves as a block and its queued episodes stay together.  A new arrival, and a title returning through Retry or Force through, joins the back.
 
 Clicking any tile opens its detail:  stage, provider ids, every reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard;  a failed title's carries Retry and Discard, with a line saying why Force cannot apply.  The three counters are clickable and list what is in them:  library findings, quarantined files and failed jobs, the first with a Details table per file, an Import action per row, and Sweep now and Rescan entire library in its header.
 
@@ -438,7 +446,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.11.1, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.13.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

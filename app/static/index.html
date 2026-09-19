@@ -102,6 +102,17 @@
   .bar > i { display: block; height: 100%; background: var(--accent); }
   .empty { color: var(--dim); font-style: italic; font-size: 12px; }
 
+  /*----- Queue order */
+  .art .pos { position: absolute; top: 4px; left: 4px; z-index: 1; padding: 1px 6px;
+              border-radius: 4px; background: rgba(12, 14, 18, .82); color: var(--ink);
+              font-size: 11px; font-weight: 600; letter-spacing: .02em;
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tile.locked .art .pos { color: var(--accent); }
+  .tile.locked { cursor: default; border-color: #2c313c; }
+  .tile.locked:hover { border-color: #2c313c; }
+  .tile[draggable="true"] { cursor: grab; }
+  .tile.dragging { opacity: .35; }
+
   /*----- Corner counters */
   .counter { font-size: 13px; color: var(--dim); cursor: pointer;
              font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -313,6 +324,7 @@ const READY_STAGES = ["PUBLISHED", "CLEANUP"];
 let TITLES = {};
 let ALL = [];
 const SIG = {};
+let DRAGGING = null;
 
 function pill(el, text, cls) {
   el.textContent = text;
@@ -359,13 +371,14 @@ function episodeCode(t) {
 function label(t) { return t.title || t.show || base(t.source_path); }
 
 //----- Artwork, with a text placeholder on the same footprint
-function art(t, phText) {
+function art(t, phText, badge) {
   const ph = `<div class="ph">${esc(phText || base(t.source_path))}</div>`;
   const img = t.poster
     ? `<img src="/api/poster/${t.poster}" alt="" loading="lazy"
             onerror="this.style.display='none'">`
     : "";
-  return `<div class="art">${ph}${img}</div>`;
+  const pos = badge ? `<div class="pos">${esc(badge)}</div>` : "";
+  return `<div class="art">${pos}${ph}${img}</div>`;
 }
 
 //----- Television collapses to one tile per show, movies never group
@@ -407,6 +420,108 @@ document.addEventListener("click", (ev) => {
   else if (el.dataset.id !== undefined) showDetail(Number(el.dataset.id));
 });
 
+//----- The queue in processing order:  slot holders first and locked, then the numbered order
+function encodeSub(t, prog) {
+  const p = prog[t.id];
+  const bits = [t.encoder || t.display_stage || ""];
+  if (p && p.eta_s != null) bits.push("eta " + fmtEta(p.eta_s));
+  const line = esc(bits.filter(Boolean).join("   "));
+  if (!p || p.frame == null) return `<div class="s">${line}</div>`;
+  if (!p.total_frames) return `<div class="s">${line}</div><div class="s">${num(p.frame)} frames</div>`;
+  const w = Math.max(0, Math.min(100, 100 * p.frame / p.total_frames));
+  return `<div class="s">${line}</div>
+    <div class="bar"><i style="width:${w}%"></i></div>
+    <div class="s">${num(p.frame)} / ${num(p.total_frames)} frames</div>`;
+}
+
+function queueSub(t) {
+  return `<div class="s">${esc(t.display_stage || t.stage)}${
+    t.stage === "ROUTED" && t.encoder ? " - " + esc(t.encoder) : ""}</div>`;
+}
+
+function queueUnits(list) {
+  const units = [], shows = new Map();
+  for (const t of list) {
+    if (t.locked) { units.push({ items: [t], locked: true }); continue; }
+    if (t.kind === "tv" && t.show) {
+      let g = shows.get(t.show);
+      if (!g) { g = { show: t.show, items: [] }; shows.set(t.show, g); units.push(g); }
+      g.items.push(t);
+    } else {
+      units.push({ items: [t] });
+    }
+  }
+  return units;
+}
+
+function queueTile(u, prog) {
+  const head = u.items[0];
+  const many = u.items.length > 1;
+  const name = many ? u.show : label(head);
+  const positions = u.items.map(t => t.queue_position).filter(n => n != null);
+  const lo = Math.min(...positions), hi = Math.max(...positions);
+  const badge = u.locked ? (head.display_stage || head.stage)
+    : positions.length === 0 ? "" : lo === hi ? String(lo) : lo + "-" + hi;
+  const second = many
+    ? `<div class="s">${esc(u.items.length)} episodes</div>`
+    : u.locked ? encodeSub(head, prog) : queueSub(head);
+  const target = many ? `data-show="${esc(u.show)}"` : `data-id="${esc(head.id)}"`;
+  const drag = u.locked ? "" : `draggable="true"`;
+  return `<div class="tile${u.locked ? " locked" : ""}" ${target} ${drag}>
+      ${art(head, many ? u.show : null, badge)}
+      <div class="tt"><div class="n">${esc(name)}</div>${second}</div>
+    </div>`;
+}
+
+function paintQueue(list, prog) {
+  $("n-queue").textContent = list.length;
+  //----- the periodic refresh must not rebuild the grid under the pointer mid-drag.
+  if (DRAGGING) return;
+  const units = queueUnits(list);
+  const html = units.length === 0
+    ? `<div class="empty">Nothing waiting.</div>`
+    : units.map(u => queueTile(u, prog)).join("");
+  if (SIG["t-queue"] !== html) { SIG["t-queue"] = html; $("t-queue").innerHTML = html; }
+}
+
+//----- Drag to reorder;  the DOM order after the drop is the order posted
+const QBOX = $("t-queue");
+QBOX.addEventListener("dragstart", (ev) => {
+  const el = ev.target.closest ? ev.target.closest(".tile[draggable='true']") : null;
+  if (!el) { ev.preventDefault(); return; }
+  DRAGGING = el;
+  el.classList.add("dragging");
+  ev.dataTransfer.effectAllowed = "move";
+  try { ev.dataTransfer.setData("text/plain", el.dataset.id || el.dataset.show || ""); } catch (e) {}
+});
+QBOX.addEventListener("dragover", (ev) => {
+  if (!DRAGGING) return;
+  const over = ev.target.closest ? ev.target.closest(".tile[draggable='true']") : null;
+  if (!over || over === DRAGGING) { if (over) ev.preventDefault(); return; }
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "move";
+  const r = over.getBoundingClientRect();
+  //----- the tile grid reads left to right, so the pointer's half of the tile decides before or after.
+  const before = (ev.clientX - r.left) < r.width / 2;
+  if (before) over.before(DRAGGING); else over.after(DRAGGING);
+});
+QBOX.addEventListener("drop", (ev) => { ev.preventDefault(); });
+QBOX.addEventListener("dragend", async () => {
+  const el = DRAGGING;
+  if (!el) return;
+  el.classList.remove("dragging");
+  const order = [...QBOX.querySelectorAll(".tile[draggable='true']")].map(t =>
+    t.dataset.show !== undefined ? { show: t.dataset.show } : { id: Number(t.dataset.id) });
+  DRAGGING = null;
+  SIG["t-queue"] = null;
+  try {
+    const r = await api("/api/queue", { method: "POST", headers: {"Content-Type": "application/json"},
+                                        body: JSON.stringify({ order }) });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); console.warn("reorder refused:", e.error); }
+  } catch (e) {}
+  refresh();
+});
+
 function paint(boxId, countId, list, sub, emptyText) {
   const groups = group(list);
   const html = groups.length === 0
@@ -444,23 +559,12 @@ async function refresh() {
 
   const inStage = (set) => titles.filter(t => set.includes(t.stage));
 
-  paint("t-queue", "n-queue", inStage(QUEUE_STAGES),
-        (t) => `<div class="s">${esc(t.display_stage || t.stage)}${
-          t.stage === "ROUTED" && t.encoder ? " - " + esc(t.encoder) : ""}</div>`,
-        "Nothing waiting.");
+  const queued = inStage(QUEUE_STAGES.concat(ENC_STAGES))
+    .filter(t => t.queue_position != null)
+    .sort((a, b) => a.queue_position - b.queue_position);
+  paintQueue(queued, prog);
 
-  paint("t-enc", "n-enc", inStage(ENC_STAGES), (t) => {
-    const p = prog[t.id];
-    const bits = [t.encoder || t.display_stage || ""];
-    if (p && p.eta_s != null) bits.push("eta " + fmtEta(p.eta_s));
-    const line = esc(bits.filter(Boolean).join("   "));
-    if (!p || p.frame == null) return `<div class="s">${line}</div>`;
-    if (!p.total_frames) return `<div class="s">${line}</div><div class="s">${num(p.frame)} frames</div>`;
-    const w = Math.max(0, Math.min(100, 100 * p.frame / p.total_frames));
-    return `<div class="s">${line}</div>
-      <div class="bar"><i style="width:${w}%"></i></div>
-      <div class="s">${num(p.frame)} / ${num(p.total_frames)} frames</div>`;
-  }, "Nothing encoding.");
+  paint("t-enc", "n-enc", inStage(ENC_STAGES), (t) => encodeSub(t, prog), "Nothing encoding.");
 
   paint("t-held", "n-held", titles.filter(t => t.stage === "HELD"),
         (t) => `<div class="s warn">${esc((t.reasons && t.reasons.length > 1)

@@ -178,6 +178,8 @@ ADDED_COLUMNS = (
     ("titles", "candidates_json", "TEXT"),
     ("titles", "pinned_json", "TEXT"),
     ("titles", "episode_last", "INTEGER"),
+    ("titles", "supersedes_json", "TEXT"),
+    ("titles", "queue_order", "INTEGER"),
     ("findings", "duration_s", "REAL"),
 )
 
@@ -190,6 +192,7 @@ JSON_COLUMNS = {
     "reasons": "reasons_json",
     "candidates": "candidates_json",
     "pinned": "pinned_json",
+    "supersedes": "supersedes_json",
 }
 
 
@@ -263,6 +266,7 @@ class Store:
         d["reasons"] = _unjson(d.pop("reasons_json", None)) or []
         d["candidates"] = _unjson(d.pop("candidates_json", None))
         d["pinned"] = _unjson(d.pop("pinned_json", None))
+        d["supersedes"] = _unjson(d.pop("supersedes_json", None)) or []
         d["overridden"] = bool(d.get("overridden"))
         return d
 
@@ -283,12 +287,51 @@ class Store:
             self._db.commit()
             title_id = cur.lastrowid
         self.record(title_id, DETECTED, "detected in import")
+        self.place(title_id)
         return title_id
 
     #----- Queries
     def get(self, title_id):
         with self._lock:
             cur = self._db.execute("SELECT * FROM titles WHERE id = ?", (title_id,))
+            return self._row_to_dict(cur.fetchone())
+
+    def by_output_path(self, output_path):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT * FROM titles WHERE output_path = ?", (str(output_path),)
+            )
+            return self._row_to_dict(cur.fetchone())
+
+    def sibling_in_flight(self, row):
+        #----- two-sided:  a lower id, or a higher id already past COMPARED, so one of a concurrent pair holds.
+        kind = row.get("kind")
+        excluded = COMPLETE + (QUARANTINED,)
+        placeholders = ",".join("?" for _ in excluded)
+        past_compared = PIPELINE[PIPELINE.index(COMPARED) + 1:]
+        past_placeholders = ",".join("?" for _ in past_compared)
+        where = "kind = ? AND id != ? AND stage NOT IN (%s) AND (id < ? OR stage IN (%s))" % (
+            placeholders, past_placeholders)
+        params = [kind, row["id"]] + list(excluded) + [row["id"]] + list(past_compared)
+        if kind == "movie":
+            if row.get("tmdb"):
+                where += " AND tmdb = ?"
+                params.append(str(row["tmdb"]))
+            elif row.get("imdb"):
+                where += " AND imdb = ?"
+                params.append(str(row["imdb"]))
+            else:
+                return None
+        else:
+            if not (row.get("tvdb") and row.get("season") is not None and row.get("episode") is not None):
+                return None
+            first = int(row["episode"])
+            last = int(row.get("episode_last") or first)
+            where += (" AND tvdb = ? AND season = ? AND episode IS NOT NULL"
+                      " AND episode <= ? AND COALESCE(episode_last, episode) >= ?")
+            params += [str(row["tvdb"]), int(row["season"]), last, first]
+        with self._lock:
+            cur = self._db.execute("SELECT * FROM titles WHERE %s ORDER BY id LIMIT 1" % where, params)
             return self._row_to_dict(cur.fetchone())
 
     def by_source(self, source_path):
@@ -321,6 +364,42 @@ class Store:
 
     def held(self):
         return self.all(stage=HELD)
+
+    #----- The queue
+    def queue_rows(self):
+        #----- everything neither stopped nor complete;  a PUBLISHED row is never picked up again.
+        excluded = STOPPED + COMPLETE
+        placeholders = ",".join("?" for _ in excluded)
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT * FROM titles WHERE stage NOT IN (%s)"
+                " ORDER BY queue_order IS NULL, queue_order, id" % placeholders,
+                excluded,
+            )
+            return [self._row_to_dict(r) for r in cur.fetchall()]
+
+    def place(self, title_id):
+        #----- the back of the queue, or the end of the show's block so a show stays contiguous.
+        row = self.get(title_id)
+        if row is None:
+            return
+        others = [r for r in self.queue_rows() if r["id"] != title_id]
+        ordered = [r["id"] for r in others]
+        index = len(ordered)
+        if row.get("kind") == "tv" and row.get("show"):
+            for i, r in enumerate(others):
+                if r.get("kind") == "tv" and r.get("show") == row["show"]:
+                    index = i + 1
+        ordered.insert(index, title_id)
+        self.renumber(ordered)
+
+    def renumber(self, ordered_ids):
+        with self._lock:
+            self._db.executemany(
+                "UPDATE titles SET queue_order = ? WHERE id = ?",
+                [(n, i) for n, i in enumerate(ordered_ids, 1)],
+            )
+            self._db.commit()
 
     def needs_decision(self):
         rows = self.all(stage=HELD) + self.all(stage=FAILED)
@@ -432,7 +511,9 @@ class Store:
             quarantine_path=None,
             origin_path=None,
             poster_url=None,
+            supersedes=None,
         )
+        self.place(title_id)
 
     def forget(self, title_id):
         with self._lock:

@@ -226,6 +226,12 @@ class Layout:
             log.info("removed empty folder %s", parent)
             parent = os.path.dirname(parent)
 
+    def prune_source_folders(self, source):
+        for root in (self.imports, self.held):
+            if _under(_norm(source), root):
+                self.prune_empty_folders(source, root)
+                return
+
     def _discard_reservation(self, path):
         try:
             os.remove(path)
@@ -262,6 +268,16 @@ class Layout:
         relative = os.path.relpath(source, self.imports)
         return self.unique_path(
             os.path.join(self.held, os.path.dirname(relative)), os.path.basename(relative)
+        )
+
+    def release_path(self, source):
+        #----- the inverse of hold_path:  the same path relative to hold/, back under import/.
+        source = _norm(source)
+        if source == self.held or not _under(source, self.held):
+            return None
+        relative = os.path.relpath(source, self.held)
+        return self.unique_path(
+            os.path.join(self.imports, os.path.dirname(relative)), os.path.basename(relative)
         )
 
     def quarantine_path(self, src):

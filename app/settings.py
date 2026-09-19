@@ -249,6 +249,9 @@ SETTINGS = (
     Setting("codec_efficiency", "comparison", "Codec efficiency",
             "Bitrate weighting per codec relative to h264 at 1.0;  an unlisted codec weighs 1.0.",
             "table", dict(compare.CODEC_EFFICIENCY)),
+    Setting("edition_runtime_tolerance_s", "comparison", "Edition runtime tolerance",
+            "Video runtime difference in seconds at or below which an edition read from the arrival name is the same cut as the folder's file;  the label is dropped and the pair compared.",
+            "int", compare.EDITION_RUNTIME_TOLERANCE_S, minimum=0, maximum=3600),
 
     Setting("title_cutoff", "matching", "Title cutoff",
             "Fuzzy score at or above which an episode title or a full-text search hit matches.",

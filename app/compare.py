@@ -11,6 +11,7 @@ AMBIGUOUS = "ambiguous"
 
 PIXEL_TOLERANCE = 0.05
 BITRATE_TOLERANCE = 0.25
+EDITION_RUNTIME_TOLERANCE_S = 30
 
 CODEC_EFFICIENCY = {
     "h264": 1.0,
@@ -179,6 +180,14 @@ def attributes(container, path=None, crop=None, tag_structure=None, statistics_r
     }
 
 
+def with_crop(attrs, crop):
+    out = dict(attrs)
+    out["picture_pixels"] = (crop or {}).get("picture_pixels")
+    out["letterbox_px"] = (crop or {}).get("bars_px")
+    out["variable_aspect"] = _variable_aspect((crop or {}).get("secondary"))
+    return out
+
+
 def _variable_aspect(secondary):
     if not secondary:
         return None
@@ -206,6 +215,20 @@ def measure(path, crop=None):
     except Exception as exc:
         log.debug("byte-sum ratio unreadable on %s: %s", path, exc)
     return attributes(container, path, crop=crop, tag_structure=structure, statistics_ratio=ratio)
+
+
+#----- Same cut, or not
+def same_cut(incoming, incumbent, tolerance_s=EDITION_RUNTIME_TOLERANCE_S):
+    #----- frame counts first, since a PAL speed-up of one cut runs 4 percent shorter with every frame present.
+    new_frames = incoming.get("frame_count")
+    old_frames = incumbent.get("frame_count")
+    if new_frames and old_frames:
+        return abs(int(new_frames) - int(old_frames)) <= 1
+    new_duration = incoming.get("duration_s")
+    old_duration = incumbent.get("duration_s")
+    if new_duration and old_duration:
+        return abs(float(new_duration) - float(old_duration)) <= float(tolerance_s)
+    return None
 
 
 #----- Frame rate across the pair

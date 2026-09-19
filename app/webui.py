@@ -158,7 +158,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 return self._json(200, self.app.status(user))
             if path == "/api/titles":
-                return self._json(200, [self.app.annotate(r) for r in self.app.store.all()])
+                queue = self.app.orchestrator.queue_view()
+                return self._json(200, [self.app.annotate(r, queue) for r in self.app.store.all()])
             if path == "/api/held":
                 return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
@@ -220,6 +221,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {"error": str(exc)})
         if path == "/api/audit":
             return self._json(200, self.app.sweep(bool(body.get("rescan"))))
+        if path == "/api/queue":
+            try:
+                ordered = self.app.orchestrator.reorder(body.get("order"))
+            except ValueError as exc:
+                return self._json(400, {"error": str(exc)})
+            return self._json(200, {"ok": True, "order": ordered})
         if len(m) == 5 and m[1] == "api" and m[2] == "audit" and m[4] == "import":
             try:
                 finding_id = int(m[3])
@@ -445,9 +452,15 @@ class WebUI:
             return "".join(fh.readlines()[-lines:])
 
     #----- Operator decisions
-    def annotate(self, row):
+    def annotate(self, row, queue=None):
         if not row:
             return row
+        if queue is None:
+            queue = self.orchestrator.queue_view()
+        place = queue.get(row["id"]) or {}
+        row["queue_position"] = place.get("position")
+        row["locked"] = bool(place.get("locked"))
+        row["slot"] = place.get("slot")
         row["display_stage"] = state.display_name(row.get("stage"))
         if row.get("stage") == state.ROUTED and (row.get("decision") or {}).get("action") == "passthrough":
             row["display_stage"] = "waiting for passthrough"
@@ -515,8 +528,9 @@ class WebUI:
 
         if action in ("keep", "retry"):
             self.orchestrator.refresh_lookup(title_id)
+            self.orchestrator.release_from_hold(title_id)
             self.store.advance(title_id, state.DETECTED, "operator asked for a retry")
-            self.orchestrator.queue.put(title_id)
+            self.store.place(title_id)
             return {"ok": True, "action": "requeued"}
         if action == "override":
             if row["stage"] != state.HELD:
@@ -525,8 +539,9 @@ class WebUI:
                     "so there is nothing to carry forward; retry instead"
                 )
             self.store.update(title_id, overridden=1)
+            self.orchestrator.release_from_hold(title_id)
             self.store.advance(title_id, state.DETECTED, "operator overrode the gates")
-            self.orchestrator.queue.put(title_id)
+            self.store.place(title_id)
             return {"ok": True, "action": "overridden and requeued"}
         if action == "discard":
             outcome = self.orchestrator._quarantine(
@@ -544,10 +559,11 @@ class WebUI:
             summary = " ".join("%s=%s" % (k, v) for k, v in chosen.items() if v)
             for target in rows:
                 self.store.update(target["id"], pinned=chosen)
+                self.orchestrator.release_from_hold(target["id"])
                 self.store.advance(
                     target["id"], state.DETECTED, "operator identified the title as %s" % summary
                 )
-                self.orchestrator.queue.put(target["id"])
+                self.store.place(target["id"])
             log.info("operator identified %d title(s) as %s", len(rows), summary)
             return {"ok": True, "action": "identified and requeued", "titles": [r["id"] for r in rows]}
         raise ValueError("action must be one of keep, retry, override, discard, forget, identify")

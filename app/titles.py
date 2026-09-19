@@ -114,6 +114,12 @@ EDITIONS = (
     (r"unrated(?:_(?:cut|edition|version))?", "Unrated"),
     (r"uncut(?:_(?:edition|version))?", "Uncut"),
     (r"uncensored(?:_(?:edition|version))?", "Uncensored"),
+    (r"special_edition", "Special Edition"),
+    (r"fan_edit", "Fan Edit"),
+    (r"festival(?:_(?:cut|edition|version))?", "Festival"),
+)
+#----- Transfer and packaging words:  stripped from a search name, never a label.
+EDITION_NOISE = (
     (r"remastered(?:_(?:edition|version))?", "Remastered"),
     (r"restored(?:_(?:edition|version))?", "Restored"),
     (r"criterion(?:_(?:collection|edition))?", "Criterion"),
@@ -122,15 +128,19 @@ EDITIONS = (
     (r"limited(?:_edition)?", "Limited"),
     (r"deluxe(?:_edition)?", "Deluxe"),
     (r"ultimate(?:_edition)?", "Ultimate"),
-    (r"special_edition", "Special Edition"),
-    (r"fan_edit", "Fan Edit"),
-    (r"festival(?:_(?:cut|edition|version))?", "Festival"),
 )
 _SEP = r"[\s._-]+"
-_EDITION_PATTERNS = tuple(
-    (re.compile(r"(?:^|[\s._\-(\[])(%s)(?=$|[\s._\-)\]])" % pattern.replace("_", _SEP), re.I), label)
-    for pattern, label in EDITIONS
-)
+
+
+def _compile_editions(table):
+    return tuple(
+        (re.compile(r"(?:^|[\s._\-(\[])(%s)(?=$|[\s._\-)\]])" % pattern.replace("_", _SEP), re.I), label)
+        for pattern, label in table
+    )
+
+
+_EDITION_PATTERNS = _compile_editions(EDITIONS)
+_NOISE_PATTERNS = _compile_editions(EDITION_NOISE)
 #----- the trailing delimiter is a lookahead so two adjacent years both match.
 _LAST_YEAR = re.compile(r"(?:^|[.\s(\[_-])(?:19|20)\d{2}(?=[)\].\s_-]|$)")
 EPISODE_MARK = re.compile(r"(?:^|[^a-z0-9])s\d{1,2}[\s._-]*e\d{1,3}", re.I)
@@ -172,30 +182,36 @@ def strip_release_tag(text):
         text = text[: m.start()].rstrip(" ._-")
 
 
-def edition_from_name(name):
+def _edition_match(name, patterns):
     text = os.path.splitext(str(name))[0] if re.search(r"\.[A-Za-z0-9]{2,4}$", str(name)) else str(name)
     years = list(_LAST_YEAR.finditer(text))
     #----- after the year an edition may sit anywhere;  without one it must end the stem, so a title word is never taken.
     if years:
         region = text[years[-1].end():]
-        for pattern, label in _EDITION_PATTERNS:
+        for pattern, label in patterns:
             m = pattern.search(region)
             if m:
                 return label, m.group(1)
         return None, None
     tail = strip_release_tag(text)
-    for pattern, label in _EDITION_PATTERNS:
+    for pattern, label in patterns:
         m = pattern.search(tail)
         if m and not tail[m.end():].strip(" ._-)]"):
             return label, m.group(1)
     return None, None
 
 
+def edition_from_name(name):
+    return _edition_match(name, _EDITION_PATTERNS)
+
+
 def strip_edition(name):
-    label, matched = edition_from_name(name)
-    if not matched:
-        return str(name)
-    return re.sub(r"[\s._\-(\[]*%s[)\]]?" % re.escape(matched), " ", str(name), count=1, flags=re.I)
+    text = str(name)
+    for patterns in (_EDITION_PATTERNS, _NOISE_PATTERNS):
+        _label, matched = _edition_match(text, patterns)
+        if matched:
+            text = re.sub(r"[\s._\-(\[]*%s[)\]]?" % re.escape(matched), " ", text, count=1, flags=re.I)
+    return text
 
 
 #----- Reading ids back out of a name
