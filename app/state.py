@@ -179,6 +179,7 @@ ADDED_COLUMNS = (
     ("titles", "pinned_json", "TEXT"),
     ("titles", "episode_last", "INTEGER"),
     ("titles", "supersedes_json", "TEXT"),
+    ("titles", "sibling_compare_json", "TEXT"),
     ("titles", "queue_order", "INTEGER"),
     ("findings", "duration_s", "REAL"),
 )
@@ -193,6 +194,7 @@ JSON_COLUMNS = {
     "candidates": "candidates_json",
     "pinned": "pinned_json",
     "supersedes": "supersedes_json",
+    "sibling_comparison": "sibling_compare_json",
 }
 
 
@@ -267,6 +269,7 @@ class Store:
         d["candidates"] = _unjson(d.pop("candidates_json", None))
         d["pinned"] = _unjson(d.pop("pinned_json", None))
         d["supersedes"] = _unjson(d.pop("supersedes_json", None)) or []
+        d["sibling_comparison"] = _unjson(d.pop("sibling_compare_json", None))
         d["overridden"] = bool(d.get("overridden"))
         return d
 
@@ -512,6 +515,7 @@ class Store:
             origin_path=None,
             poster_url=None,
             supersedes=None,
+            sibling_comparison=None,
         )
         self.place(title_id)
 

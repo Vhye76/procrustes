@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 
-from . import VERSION, audit, compare, encode, media, probe as probemod, provider as providermod
+from . import VERSION, audit, compare, encode, media, paths, probe as probemod, provider as providermod
 from . import standards, state, tags, titles
 from .settings import POOL_KEYS
 
@@ -801,31 +801,20 @@ class Orchestrator:
         if identity is None:
             self.store.record(title_id, state.COMPARED, "skipped, no identity resolved")
             return []
-        #----- a same-identity title already in the pipeline holds this one before any lookup.
-        sibling = self.store.sibling_in_flight(row)
-        if sibling is not None:
-            detail = (
-                "title %s (%s) carries the same identity and is at %s; retry once it has "
-                "published or been discarded"
-                % (sibling["id"], os.path.basename(sibling.get("source_path") or ""), sibling.get("stage"))
-            )
-            log.info("title %s %s", title_id, detail)
-            self.store.record(title_id, state.COMPARED, detail)
-            return [_reason(state.COMPARED, detail)]
         incumbents, misses = self._find_incumbents(identity, kind, skip=row.get("origin_path"))
-        if not incumbents:
-            detail = "no incumbent, treated as new: %s" % "; ".join(misses)
-            log.info("title %s %s", title_id, detail)
-            self.store.advance(title_id, state.COMPARED, detail)
-            return []
         keep_langs = self.settings.get("keep_langs")
         tolerance = self.settings.get("edition_runtime_tolerance_s")
-        #----- the incoming is measured once;  only the three crop keys differ per pair.
-        incoming = compare.measure(source)
+        incoming = None
         crops = {}
-        verdicts = list(misses)
+        verdicts = []
         supersedes = []
-        result = None
+        reasons = []
+        if not incumbents:
+            verdicts.append("no incumbent, treated as new: %s" % "; ".join(misses))
+            log.info("title %s %s", title_id, verdicts[0])
+        else:
+            verdicts.extend(misses)
+            incoming = compare.measure(source)
         for incumbent_path, route, root_name, other_cut in incumbents:
             where = "%s, %s" % (root_name, route)
             log.info(
@@ -881,16 +870,57 @@ class Orchestrator:
                 detail = self._ambiguous_detail(identity, incumbent_path, result)
                 log.info("title %s comparison inconclusive in %s: %s", title_id, root_name, detail)
                 self.store.record(title_id, state.COMPARED, "inconclusive in %s: %s" % (root_name, detail))
-                return [_reason(
+                reasons.append(_reason(
                     state.COMPARED,
                     "comparison against the incumbent in %s was inconclusive: %s" % (root_name, detail),
-                )]
+                ))
+                break
             verdicts.append("%s (incumbent in %s)" % (result.reason, where))
             if root_name == "complete":
                 supersedes.append(incumbent_path)
         self.store.update(title_id, supersedes=supersedes)
+        #----- the sibling check runs last, so a sibling arrival still carries its incumbent verdict.
+        sibling = self.store.sibling_in_flight(row)
+        if sibling is not None:
+            if incoming is None:
+                incoming = compare.measure(source)
+            pair = self._compare_sibling(title_id, source, container, incoming, crops, sibling, kind)
+            detail = (
+                "title %s (%s) carries the same identity and is at %s; %s; retry once it has "
+                "published or been discarded"
+                % (sibling["id"], os.path.basename(sibling.get("source_path") or ""),
+                   sibling.get("stage"), pair)
+            )
+            log.info("title %s %s", title_id, detail)
+            self.store.record(title_id, state.COMPARED, detail)
+            reasons.append(_reason(state.COMPARED, detail))
+        if reasons:
+            return reasons
         self.store.advance(title_id, state.COMPARED, "; ".join(verdicts))
         return []
+
+    def _compare_sibling(self, title_id, source, container, incoming, crops, sibling, kind):
+        path = sibling.get("source_path")
+        if not path or not os.path.exists(path):
+            return "the pair could not be measured, the sibling's source is not on disk"
+        try:
+            sibling_container = probemod.probe(path, keep_langs=self.settings.get("keep_langs")).container
+        except probemod.ProbeError as exc:
+            return "the pair could not be measured: %s" % exc
+        new_crop, old_crop = self._crop_pair(title_id, (source, container), (path, sibling_container), crops)
+        result = compare.compare(
+            compare.with_crop(incoming, new_crop),
+            compare.measure(path, crop=old_crop),
+            profile=self.settings.profile(kind),
+        )
+        #----- informational only:  a pair verdict never quarantines, the operator settles the pair.
+        self.store.update(title_id, sibling_comparison=result.as_dict())
+        reason = (result.reason or "").replace("incumbent", "sibling").replace("incoming", "this arrival")
+        if result.verdict == compare.WIN:
+            return "against it this arrival wins, %s" % reason
+        if result.verdict == compare.LOSS:
+            return "against it this arrival loses, %s" % reason
+        return "against it the gates split, %s" % reason
 
     def _crop_pair(self, title_id, incoming, incumbent, cache):
         new_video = incoming[1].get("video") or {}
@@ -1194,10 +1224,10 @@ class Orchestrator:
         ok, need = self.layout.has_headroom(size, profile["encode_headroom"])
         while not ok and not self.stop_event.is_set():
             log.info(
-                "title %s waiting for encode space: need %d bytes, have %d",
+                "title %s waiting for encode space: need %s, have %s",
                 title_id,
-                need,
-                self.layout.encode_free_bytes(),
+                paths.gb(need),
+                paths.gb(self.layout.encode_free_bytes()),
             )
             self.stop_event.wait(30)
             ok, need = self.layout.has_headroom(size, self.settings.get("encode_headroom"))

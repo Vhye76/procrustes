@@ -8,6 +8,11 @@ from . import locks
 log = logging.getLogger("paths")
 
 
+#----- Every size a person reads is GB to two decimals;  the API and the store keep bytes.
+def gb(n):
+    return "%.2f GB" % (float(n or 0) / 1e9)
+
+
 class WriteGuardError(PermissionError):
     pass
 
@@ -135,11 +140,11 @@ class Layout:
         need = int(source_bytes * float(headroom))
         free = self.encode_free_bytes()
         log.debug(
-            "admission check: need %d bytes at headroom %s, %d free on %s",
-            need, headroom, free, self.encode,
+            "admission check: need %s at headroom %s, %s free on %s",
+            gb(need), headroom, gb(free), self.encode,
         )
         if free < need:
-            log.info("admission deferred, encode area has %d bytes free, needs %d", free, need)
+            log.info("admission deferred, encode area has %s free, needs %s", gb(free), gb(need))
         return free >= need, need
 
     def job_dir(self, job_id):
@@ -293,7 +298,7 @@ class Layout:
         if free < size:
             raise OSError(
                 errno.ENOSPC,
-                "import area has %d bytes free, the copy needs %d" % (free, size),
+                "import area has %s free, the copy needs %s" % (gb(free), gb(size)),
             )
         destination = os.path.join(self.imports, os.path.basename(source))
         if os.path.exists(destination):

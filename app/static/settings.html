@@ -175,7 +175,7 @@ let SCHEMA = {};
 let ORIGINAL = {};
 let RESETS = new Set();
 
-function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+function gb(n) { return (Number(n || 0) / 1e9).toFixed(2) + " GB"; }
 function fmt(v) {
   if (Array.isArray(v)) return v.join(", ");
   if (v && typeof v === "object") return Object.entries(v).map(([k, f]) => `${k} ${f}`).join(", ");

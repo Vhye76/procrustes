@@ -27,7 +27,7 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | PROBED | probed | One ffprobe pass done.  Classified as a movie or as television. |
 | SCREENED | screened | Passed the minimum standards gate. |
 | IDENTIFIED | identified | Provider IDs resolved and verified.  The canonical name is settled from here on. |
-| COMPARED | compared | Checked against whatever 'complete/' and the library already hold, in that order.  Also the value recorded when there is no incumbent in either, and when the incumbent could not be read.  A second arrival of a title still in the pipeline holds here naming the first. |
+| COMPARED | compared | Checked against whatever 'complete/' and the library already hold, in that order.  Also the value recorded when there is no incumbent in either, and when the incumbent could not be read.  A second arrival of a title still in the pipeline holds here naming the first, with its own table against the incumbent and a second against the first arrival. |
 | ROUTED | waiting for encoder | The encoder is chosen and the title waits for its pool, CPU, GPU or passthrough, which takes titles in queue order.  Assessment is done;  everything from here runs on the pool's thread when one is free. |
 | STAGED | copying | Copying the source into the encode work area.  A multi-gigabyte title sits here for minutes. |
 | REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
@@ -297,7 +297,7 @@ The table behind the Compare button carries every attribute the pipeline measure
 
 A library incumbent is read, compared against and left alone.  Nothing in the container writes to a library.  An incumbent in 'complete/' that loses is retired to 'complete/.quarantine' when the winner publishes, its record marked as superseded by the winner, so one folder never holds two copies of one cut.
 
-Two arrivals of one title in the same batch never both encode.  The later one holds at COMPARED naming the earlier and its stage;  Retry once the earlier has published, and the comparison runs against it in 'complete/'.
+Two arrivals of one title in the same batch never both encode.  The later one still compares against the incumbent, then against the earlier arrival's own file, and holds at COMPARED naming the earlier, its stage and the pair verdict;  its detail carries Compare for the incumbent table and Compare sibling for the pair.  The pair verdict decides nothing on its own.  Discard one, Retry the other, and the survivor runs against the incumbent alone, or against the other's published output in 'complete/' if it went through.
 
 HDR is compared on presence at gate 1, and on declaration in the table.  A Matroska file states its mastering display and content light level twice, in the bitstream as SEI and in the container's Colour element, and the two can disagree:  eight HDR titles in one library all carried the metadata in the bitstream while three declared none of it in the container.  The pipeline probes both surfaces, repairs a container that under-declares its own bitstream with a header edit on the way through, and holds any title whose output declares less than its source carried.  A content light level of zero and zero, an encoder's way of saying not indicated, is written like any other and read back through mkvmerge, because ffprobe reports a Matroska content light element only when both values are non-zero.  The declaration rows appear in the Compare table without a gate number, so a difference there is one of the marked rows worth looking at rather than a vote.
 
@@ -329,7 +329,7 @@ A background sweep over the mounted libraries, looking for every deviation the p
 
 It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 
-Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with bytes copied of the total under the finding's buttons, and once it is in 'import/' the button reads In Pipeline, clickable through to the title once the watcher has picked it up, until the repaired file is in the library and the next audit pass clears the finding.
+Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with GB copied of the total under the finding's buttons, and once it is in 'import/' the button reads In Pipeline, clickable through to the title once the watcher has picked it up, until the repaired file is in the library and the next audit pass clears the finding.
 
 ## One instance at a time
 
@@ -396,7 +396,7 @@ Clicking any tile opens its detail:  stage, provider ids, every reason it stoppe
 
 A television tile opens the episode list instead.  Every row carries the same decisions as a tile, and the header carries them for the whole season at once, so clearing a held season is one action rather than one per episode.  A season action closes the list, because there is nothing left in it to show.
 
-Where a title was compared against a library incumbent, the detail shows a Compare button.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, every row whose gate cast a vote is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
+Where a title was compared against an incumbent, the detail shows a Compare button, and where it was held behind an earlier arrival of the same title a Compare sibling button beside it, the same table with the other arrival in the second column.  It opens a table of every attribute the pipeline measured on both files, side by side, with the published output as a third column once it exists.  Rows that a comparison gate acted on carry their gate number, every row whose gate cast a vote is marked, and a row that differs without any gate acting on it is marked too:  that is the case worth looking at, because the pipeline saw a difference and had no rule for it.
 
 ## Build and validate
 
@@ -446,7 +446,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.13.0, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+Current version 0.13.2, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

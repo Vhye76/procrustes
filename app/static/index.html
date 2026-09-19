@@ -353,7 +353,7 @@ function closeMenu() {
 }
 document.addEventListener("click", (ev) => { if (!ev.target.closest("#menu")) closeMenu(); });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeMenu(); });
-function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+function gb(n) { return (Number(n || 0) / 1e9).toFixed(2) + " GB"; }
 function num(n) { return Number(n).toLocaleString("en-US"); }
 function fmtEta(s) {
   if (s < 60) return Math.round(s) + "s";
@@ -626,6 +626,7 @@ async function showDetail(id) {
 
   const acts = [];
   if (t.comparison) acts.push(`<button onclick="showCompare(${t.id})">Compare</button>`);
+  if (t.sibling_comparison) acts.push(`<button onclick="showCompare(${t.id},'sibling_comparison')">Compare sibling</button>`);
   if (t.stage === "HELD" || t.stage === "FAILED") {
     acts.push(`<button onclick="act(${t.id},'retry')">Retry</button>`);
     if (t.forceable) acts.push(`<button onclick="act(${t.id},'override')">Force through</button>`);
@@ -681,6 +682,7 @@ function showList(kind, show) {
         <div class="btns">
           <button onclick="$('lst').close();showDetail(${t.id})">Details</button>
           ${t.comparison ? `<button onclick="$('lst').close();showCompare(${t.id})">Compare</button>` : ""}
+          ${t.sibling_comparison ? `<button onclick="$('lst').close();showCompare(${t.id},'sibling_comparison')">Compare sibling</button>` : ""}
           ${actionable(t) ? `
           <button onclick="actRow(${t.id},'retry')">Retry</button>
           ${t.forceable ? `<button onclick="actRow(${t.id},'override')">Force through</button>` : ""}
@@ -819,31 +821,37 @@ async function identify() {
 }
 
 //----- Comparison table
-function cell(v) {
+function cell(v, attribute) {
   if (v === null || v === undefined || v === "") return '<td class="val">-</td>';
   if (v === true) return '<td class="val">yes</td>';
   if (v === false) return '<td class="val">no</td>';
+  //----- the one byte-valued attribute in the measured set reads as GB like every other size.
+  if (attribute === "size_bytes") return `<td class="val">${esc(gb(v))}</td>`;
   return `<td class="val">${esc(v)}</td>`;
 }
 
-async function showCompare(id) {
+async function showCompare(id, key) {
   let t = TITLES[id];
   try { t = await (await api(`/api/titles/${id}`)).json(); } catch (e) {}
-  const c = t.comparison || {};
-  const out = t.output_probe || null;
+  //----- the gate text names the incumbent;  on the pair table that seat is the sibling.
+  const pair = key === "sibling_comparison";
+  const c = t[key || "comparison"] || {};
+  const out = pair ? null : (t.output_probe || null);
   const rows = c.table || [];
+  const other = pair ? "sibling" : "incumbent";
 
-  $("cmp-title").textContent = "Comparison - " + label(t);
+  $("cmp-title").textContent = (pair ? "Against the sibling - " : "Comparison - ") + label(t);
+  const seat = (text) => pair ? String(text || "").replace(/incumbent/g, "sibling") : (text || "");
   $("cmp-notes").innerHTML = (c.notes || [])
-    .map(n => `<div class="note">${esc(n)}</div>`).join("");
+    .map(n => `<div class="note">${esc(seat(n))}</div>`).join("");
   $("cmp-paths").innerHTML = [
     ["incoming", c.incoming_path],
-    ["incumbent", c.incumbent_path],
-    ["published", t.output_path],
+    [other, c.incumbent_path],
+    ["published", pair ? null : t.output_path],
   ].filter(([, p]) => p).map(([k, p]) =>
     `<div><strong>${esc(k)}</strong> ${esc(p)}</div>`).join("");
 
-  const head = `<tr><th>Attribute</th><th>Gate</th><th>Incoming</th><th>Incumbent</th>${
+  const head = `<tr><th>Attribute</th><th>Gate</th><th>Incoming</th><th>${pair ? "Sibling" : "Incumbent"}</th>${
     out ? "<th>Published</th>" : ""}</tr>`;
   $("cmp-body").innerHTML = `<table>${head}` + rows.map(r => {
     const tags = [];
@@ -853,13 +861,15 @@ async function showCompare(id) {
     return `<tr class="${r.decided ? "decided" : (r.differs ? "differs" : "")}">
       <td>${esc(r.label || r.attribute)}${tags.join("")}</td>
       <td class="gate">${r.gate ? "gate " + r.gate : ""}</td>
-      ${cell(r.incoming)}${cell(r.incumbent)}${out ? cell(out[r.attribute]) : ""}
+      ${cell(r.incoming, r.attribute)}${cell(r.incumbent, r.attribute)}${
+        out ? cell(out[r.attribute], r.attribute) : ""}
     </tr>`;
   }).join("") + `</table>`;
 
   const v = c.verdict || "";
   const gates = (c.gates && c.gates.length) ? " at gate " + c.gates.join(", ") : "";
-  pill($("cmp-verdict"), `${v}${gates}${c.reason ? " - " + c.reason : ""}`,
+  const reason = seat(c.reason);
+  pill($("cmp-verdict"), `${v}${gates}${reason ? " - " + reason : ""}`,
        v === "win" ? "ok" : (v === "loss" ? "bad" : "warn"));
   $("cmp").showModal();
 }

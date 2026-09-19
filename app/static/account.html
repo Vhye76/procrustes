@@ -163,7 +163,7 @@ function authPill(s) {
   $("authoff").style.display = off ? "" : "none";
   $("signout").style.display = off ? "none" : "";
 }
-function gb(n) { return (n / 1e9).toFixed(1) + " GB"; }
+function gb(n) { return (Number(n || 0) / 1e9).toFixed(2) + " GB"; }
 
 //----- The menu opens on its button and closes on a click elsewhere or Escape
 $("menu-btn").addEventListener("click", (ev) => {
