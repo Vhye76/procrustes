@@ -687,18 +687,30 @@ class Orchestrator:
                 raise RetryLater("provider lookup failed: %s" % exc)
             problem = "provider ID could not be resolved and must never be guessed"
             self._fresh_lookups.discard(title_id)
-            if identity and identity.get("tied"):
-                names = ", ".join(
-                    "%s (%s)" % (t.get("qid"), t.get("year") or "no date") for t in identity["tied"]
-                )
-                if len({t.get("reading") for t in identity["tied"]}) > 1:
-                    cause = "the year in the name reads as either the release year or a title word"
+            if identity and identity.get("disagree"):
+                entries = identity["disagree"]
+                rungs = []
+                for e in entries:
+                    if e["rung"] not in rungs:
+                        rungs.append(e["rung"])
+                if len(rungs) == 1:
+                    names = ", ".join(
+                        "%s (%s)" % (e.get("qid"), e.get("year") or "no date") for e in entries
+                    )
+                    if len({e.get("reading") for e in entries}) > 1:
+                        cause = "the year in the name reads as either the release year or a title word"
+                    else:
+                        cause = "the file name carries no year to separate them"
+                    problem = (
+                        "the %s resolves to %d entities with equal score, %s; %s; an ID is never "
+                        "guessed" % (rungs[0], len(entries), names, cause)
+                    )
                 else:
-                    cause = "the file name carries no year to separate them"
-                problem = (
-                    "the name resolves to %d entities with equal score, %s; %s; an ID is never "
-                    "guessed" % (len(identity["tied"]), names, cause)
-                )
+                    problem = "the rungs disagree: %s; an ID is never guessed" % "; ".join(
+                        "%s resolves to %s (%s, %s)" % (
+                            e["rung"], e.get("label"), e.get("qid"), e.get("year") or "no date")
+                        for e in entries
+                    )
                 identity = None
             elif identity and identity.get("missing"):
                 anchor = "tmdb %s" % identity.get("tmdb") if kind == "movie" else "tvdb %s" % identity.get("tvdb")

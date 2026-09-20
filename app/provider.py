@@ -588,6 +588,7 @@ class Provider:
                     " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
                 )
                 return resolved
+        results = []
         for rung, ids, readings in rungs:
             pinned = {
                 field: (ids or {}).get(field)
@@ -599,8 +600,7 @@ class Provider:
                 name, year = (readings[0][0], readings[0][1]) if readings else ("", None)
                 resolved = self._resolve_by_ids(pinned, name, year, kind)
             elif readings:
-                if self._local.searched is None:
-                    self._local.searched = _searched_record(rung, readings)
+                self._local.searched = _searched_record(self._local.searched, rung, readings)
                 resolved = self._search_readings(readings, kind)
             else:
                 resolved = None
@@ -609,14 +609,83 @@ class Provider:
                 continue
             resolved["identified_from"] = rung
             resolved["missing"] = _missing(kind, resolved)
+            if resolved["missing"]:
+                log.debug("rung %s resolved %s lacking %s, no vote", rung,
+                          resolved.get("qid"), ", ".join(resolved["missing"]))
+            elif resolved.get("tied"):
+                log.debug("rung %s tied between %s", rung,
+                          ", ".join(t.get("qid") or "?" for t in resolved["tied"]))
+            else:
+                log.debug("rung %s resolved %s", rung, resolved.get("qid"))
+            results.append((rung, resolved))
+
+        votes = []
+        for rung, resolved in results:
+            if resolved["missing"]:
+                continue
+            if resolved.get("tied"):
+                votes.extend((rung, t["qid"], t, resolved) for t in resolved["tied"])
+            else:
+                votes.append((rung, resolved.get("qid"), None, resolved))
+        distinct = []
+        for _rung, qid, _entry, _resolved in votes:
+            if qid not in distinct:
+                distinct.append(qid)
+
+        if not distinct:
+            for rung, resolved in results:
+                log.info(
+                    "identified from %s: %s (%s) %s, lacking %s",
+                    rung, resolved.get("title") or resolved.get("show"),
+                    resolved.get("year") or resolved.get("show_year"),
+                    " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
+                    ", ".join(resolved["missing"]),
+                )
+                return resolved
+            return None
+
+        if len(distinct) == 1:
+            rungs_agreeing = []
+            for rung, _qid, _entry, _resolved in votes:
+                if rung not in rungs_agreeing:
+                    rungs_agreeing.append(rung)
+            resolved = votes[0][3]
+            resolved["identified_from"] = ", ".join(rungs_agreeing)
             log.info(
                 "identified from %s: %s (%s) %s",
-                rung, resolved.get("title") or resolved.get("show"),
+                resolved["identified_from"], resolved.get("title") or resolved.get("show"),
                 resolved.get("year") or resolved.get("show_year"),
                 " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
             )
             return resolved
-        return None
+
+        disagree = []
+        for rung, qid, entry, resolved in votes:
+            if entry is None:
+                entry = {
+                    "qid": qid,
+                    "label": resolved.get("title") or resolved.get("show"),
+                    "year": resolved.get("year") or resolved.get("show_year"),
+                    "ids": {f: resolved.get(f) for f, _p in ID_PROPERTIES[kind]},
+                }
+            disagree.append(dict(entry, rung=rung))
+        for candidate in getattr(self._local, "scored", None) or []:
+            for entry in disagree:
+                if candidate["id"] == entry["qid"] and (candidate.get("outcome") or "").startswith("accepted"):
+                    candidate["outcome"] = "resolved from %s, disagrees with %s" % (
+                        entry["rung"],
+                        ", ".join(e["qid"] for e in disagree if e["qid"] != entry["qid"]),
+                    )
+                    break
+        log.info(
+            "the rungs disagree: %s",
+            "; ".join("%s resolves to %s (%s, %s)" % (e["rung"], e["label"], e["qid"], e["year"] or "no date")
+                      for e in disagree),
+        )
+        resolved = dict(votes[0][3])
+        resolved.pop("tied", None)
+        resolved["disagree"] = disagree
+        return resolved
 
     def _search_readings(self, readings, kind):
         results = []
@@ -1274,13 +1343,18 @@ def _readings_tie(best, other, kind):
     return best[1].get("qid") != other[1].get("qid")
 
 
-def _searched_record(rung, readings):
-    return {
-        "rung": rung,
-        "name": readings[0][0],
-        "year": readings[0][1],
-        "readings": [{"name": n, "year": y, "label": l} for n, y, l in readings],
-    }
+def _searched_record(record, rung, readings):
+    entries = [{"name": n, "year": y, "label": l, "rung": rung} for n, y, l in readings]
+    if record is None:
+        return {
+            "rung": rung,
+            "name": readings[0][0],
+            "year": readings[0][1],
+            "readings": entries,
+        }
+    record = dict(record)
+    record["readings"] = list(record.get("readings") or []) + entries
+    return record
 
 
 def _single(name, year):

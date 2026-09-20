@@ -376,13 +376,13 @@ Searching a bare franchise name returns the franchise entity.  Search 'Title (YY
 
 'wbsearchentities' IS A PREFIX MATCH THAT STOPS AT PUNCTUATION, so a filename with the colon removed finds nothing for an entity whose labels all carry it.  'provider._resolve_by_search' runs the two prefix searches, then a FULL-TEXT FALLBACK through 'action=query&list=search', with the hits' labels and aliases fetched in one 'wbgetentities' call.  EVERY CANDIDATE IS SCORED THE WAY SECTION 9 SAYS TO COMPARE:  'titles.to_filename' on the label against the name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Full-text hits must clear 'title_cutoff', the one setting the episode matcher and the search share, 0.82 by default;  prefix hits are ordered by score but not cut.  A CANDIDATE WHOSE RELEASE YEAR IS MORE THAN A YEAR FROM THE NAME'S IS SKIPPED.
 
-A TIE AT THE TOP SCORE IS A HOLD, NOT A PICK.  '_resolve_from' on a name search collects every top-scored candidate that verifies complete;  two or more come back as an identity carrying 'tied', each outcome reading 'tied at 1.00 with Q…', and the orchestrator holds with both named.  A year in the name settles it first;  the id rungs keep first-that-verifies.
+A TIE AT THE TOP SCORE IS A HOLD, NOT A PICK.  '_resolve_from' on a name search collects every top-scored candidate that verifies complete;  two or more come back as an identity carrying 'tied', each outcome reading 'tied at 1.00 with Q…', and the ladder holds with both named under the disagreement rule below.  A year in the name settles it first;  an id rung takes the first entity carrying the id that verifies.
 
 A YEAR INSIDE A TITLE IS NOT THE RELEASE YEAR:  'Blade Runner 2049 (2017)'.  Take the LAST match, with a lookahead rather than a consumed delimiter, since in 'Blade.Runner.2049.2017.1080p' one dot serves both.
 
 ### The identity ladder
 
-A FILENAME IS THE LAST RESORT, NOT THE FIRST.  'provider.movie_candidates' and 'provider.show_candidates' build the rungs and 'provider._identify_from' walks them;  the first rung that yields a verified identity wins.
+EVERY RUNG RUNS, AND A COMPLETE IDENTITY IS A VOTE.  'provider.movie_candidates' and 'provider.show_candidates' build the rungs and 'provider._identify_from' walks all of them.  A rung's identity votes only when it is complete;  one vote wins, and 'identified_from' names every rung that agreed.  Votes for different entities are a disagreement:  the identity carries 'disagree', one entry per rung and entity, and the orchestrator holds naming each, every entity on the operator's list with none preselected.  A tie inside one rung is votes for different entities and holds the same way.  An incomplete identity never votes and never blocks a vote from another rung;  it holds only when no rung produced a complete identity, on the first rung that produced one.
 
 ```
 MOVIES
@@ -884,7 +884,7 @@ At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice.
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.13.2.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.13.3.
 
 EVERY BUILD INCREMENTS THE VERSION.  A build whose 'VERSION' equals the one before it cannot be told apart from it.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR.  The repository does not use git tags.
 
