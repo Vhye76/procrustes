@@ -1,23 +1,16 @@
 # procrustes
 
-An automatic media import pipeline in a container.  Drop a title into 'import/', collect it from 'complete/'.
+In Greek mythology, Procrustes was a mad smith and bandit on the road to Athens who offered every traveller a bed for the night, then stretched or cut off their limbs until they fit it exactly.  Much like the mad smith, Procrustes standardises your video library:  every title that arrives is stretched, trimmed and re-tagged until it fits the one shape the library expects.  It identifies each title against a provider, screens it against a minimum standard, compares it with what the library already holds, remuxes to Matroska, strips non-English tracks, writes the Matroska tag hierarchy, encodes to HEVC or AV1, verifies the result, and audits the existing library for anything that has drifted, all from a web dashboard over HTTPS.
 
-It identifies the title against a provider, checks it against a minimum standard, compares it against whatever the library already holds, remuxes to Matroska, strips non-English tracks, writes the Matroska tag hierarchy, encodes, verifies the result, and puts the finished file where you can pick it up.
-
-It never writes to a media library.  Moving finished titles in stays a manual step, on purpose.
+Most simply:  Drop a title into 'import/', collect it from 'complete/'.  As of today, it isn't designed to write directly to your media library; the promotion of titles is a manual step, on purpose.
 
 ## The chain
 
 ```
-import/  ->  probe  ->  standards  ->  identify  ->  compare  ->  remux
-         ->  tag  ->  readiness  ->  encode  ->  verify  ->  complete/
+import/ -> probe -> standards -> identify ->  compare -> remux -> tag -> readiness -> encode -> verify -> complete/
 ```
 
-Assessment runs ahead of encoding.  The assessment workers, three by default, take every title through probe, standards, identification, comparison and routing within minutes of a drop, so every gate failure is in the held queue long before the first encode finishes;  one thread per encoder, plus one for passthrough, then takes titles in queue order, and the queue order is yours to drag on the dashboard.  Anything that fails a gate goes to 'hold/' with a written reason and waits for a decision in the web UI.  A transient failure, such as a provider lookup that could not reach the network, holds with an exponential backoff and retries on its own:  five retries at 120, 240, 480, 960 and 1920 seconds, roughly 62 minutes in all, before it stops and waits for a person.
-
 Nothing is ever deleted.  Sources are retired to 'complete/.quarantine' after the title completes.  A folder under 'import/' that is left empty by that move is removed, so a title dropped in as a whole folder does not leave its shell behind.
-
-## Stages
 
 Every title carries a stage, shown in the Stage column of the dashboard.  These are the values you will see there and what each one means.
 
@@ -49,7 +42,7 @@ Three further values sit outside the pipeline.
 
 A row marked "files gone" refers to a title whose files you have since removed by hand.  The watcher closes such a record on its next poll;  the Forget button does the same at once.  Forget only removes a database row;  it never deletes a file.
 
-## Layout
+## Application Layout
 
 ```
 app/            the pipeline: one module per concern
@@ -108,21 +101,21 @@ The Matroska tag carries the provider's title verbatim, character for character,
 /   \   :   *   ?   "   <   >   |
 ```
 
-Nothing is re-worded, abbreviated, reordered or truncated.  Those nine are what SMB forbids, and the libraries are served over SMB, so SMB is the binding constraint rather than the filesystem.
+Nothing is re-worded, abbreviated, reordered or truncated.  Those nine are what SMB forbids, and the libraries are often served over SMB, so SMB is the binding constraint.
 
-A colon is REMOVED rather than turned into a dash, so 'Avengers: Endgame' is filed as 'Avengers Endgame'.  An em dash or en dash becomes ' - ', and a forward slash inside a title becomes '-'.  Everything else is kept, including parentheses, brackets, commas, apostrophes, ampersands and accented letters.  The parentheses and brackets are structural:  '(Year)' appears in every movie name, and '[tmdbid-N]', '[imdbid-ttN]' and '[tvdbid-N]' are what the incumbent lookup keys on.
+A colon is removed, rather than turned into a dash.  An em dash or en dash becomes ' - ', and a forward slash inside a title becomes '-'.  Everything else is kept, including parentheses, brackets, commas, apostrophes, ampersands and accented letters.  The parentheses and brackets are structural:  '(Year)' appears in every movie name, and '[tmdbid-N]', '[imdbid-ttN]' and '[tvdbid-N]' are what the incumbent lookup keys on.
 
 ```
 Title (Year) [tmdbid-N] [imdbid-ttN]/Title (Year).mkv
 Show Name (Year) [tvdbid-N] [tmdbid-N]/Season NN/Show Name - SNNENN - Episode Title.mkv
 ```
 
-A file covering two episodes takes the range form, 'Show - S05E01-E02 - Kidnapping.mkv', because naming it as only the first makes Jellyfin report the second as missing;  the range is read from the source name, anchored on the episode the title match settled, and published only when the catalogue lists every episode in it, under the shared base title or, for two unrelated episodes, the first one's.  A multi-part episode uses ', Part 1' rather than whichever marker the provider happened to use.
+A file covering two episodes takes the range form, 'Show Name - S05E01-E02 - Episode Title.mkv', because naming it as only the first makes Jellyfin report the second as missing;  the range is read from the source name, anchored on the episode the title match settled, and published only when the catalogue lists every episode in it, under the shared base title or, for two unrelated episodes, the first one's.  A multi-part episode uses ', Part 1' rather than whichever marker the provider happened to use.
 
 The longer form that repeats the whole folder name inside the filename is for editions and nothing else:
 
 ```
-Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644]/Alien 3 (1992) [tmdbid-8077] [imdbid-tt0103644] - Assembly Cut.mkv
+Title (Year) [tmdbid-N] [imdbid-ttN]/Title (Year) [tmdbid-N] [imdbid-ttN] - Edition.mkv
 ```
 
 The edition is read from the arrival's name, only after the year or at the end of the name, and only from the words that name a cut:  Director's Cut, Director's Definitive Cut, Final Cut, Assembly Cut, Alternative Cut, Extended, Theatrical, Unrated, Uncut, Uncensored, Special Edition, Fan Edit and Festival.  Remastered, Restored, Criterion, IMAX, Collector, Limited, Deluxe and Ultimate describe a transfer or a box, not a cut, and are stripped without becoming a label.  A claimed edition is then checked against the folder's plain file:  the same frame count, or a runtime within 'edition_runtime_tolerance_s', means the same cut, so the label is dropped and the pair compared as one title;  a different runtime keeps the label and the folder counts as no incumbent.  Only a claimed edition is checked this way;  a plain arrival is never compared against an edition.
@@ -253,7 +246,7 @@ Gate 5 is the one that can produce an encoder the table does not name.  At start
 
 SD is decided on display height, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions.
 
-PASSTHROUGH MEANS NO VIDEO RE-ENCODE.  It does not mean no processing.  A passthrough title is still remuxed to Matroska, language stripped, flag corrected, tagged and given track statistics.  An SD AVI rip arriving in 'complete/' still as an .avi would be a bug.
+Passthrough means no video re-encode.  It does not mean no processing.  A passthrough title is still remuxed to Matroska, language stripped, flag corrected, tagged and given track statistics.  An SD AVI rip arriving in 'complete/' still as an .avi would be a bug.
 
 Grain is detected automatically, by encoding a 20 second sample twice, once clean and once through a light denoise, and comparing the two sizes.  The ratio is logged for every title so a bad threshold is visible rather than silent.  An 'encode.job' sidecar overrides it.  It is read from the directory holding the source rather than from a per-title path, so one file governs every source alongside it:  convenient for a season, surprising for a mixed drop.
 
@@ -281,9 +274,9 @@ Before any encode, an arrival is compared against whatever 'complete/' and the l
 7  source pedigree                remux > encode > web, tiebreak only
 ```
 
-EVERY GATE IS EVALUATED AND THE VOTES ARE TALLIED.  The first difference does not decide.  Every vote a win and the title proceeds to the encode.  Every vote a loss and it goes to quarantine with no encode spent on it.  Votes in both directions go to hold, behind the Compare button, and so does a pair on which no gate voted at all.  Nothing resolves a split verdict automatically, because there is no correct automatic answer for a file that is better in one respect and worse in another.  The two exits from that hold are Force through and Discard, and both are yours.
+Every gate is evaluated and the votes are tallied.  The first difference does not decide.  Every vote a win and the title proceeds to the encode.  Every vote a loss and it goes to quarantine with no encode spent on it.  Votes in both directions go to hold, behind the Compare button, and so does a pair on which no gate voted at all.  Nothing resolves a split verdict automatically, because there is no correct automatic answer for a file that is better in one respect and worse in another.  The two exits from that hold are Force through and Discard, and both are yours.
 
-Gate 1 is asymmetric and is the only short circuit.  An arrival that LACKS HDR or Dolby Vision the incumbent carries is an immediate loss and no further gate runs.  An arrival that GAINS it casts an ordinary win vote and can be contradicted into review.
+Gate 1 is asymmetric and is the only short circuit.  An arrival that lacks HDR or Dolby Vision the incumbent carries is an immediate loss and no further gate runs.  An arrival that gains it casts an ordinary win vote and can be contradicted into review.
 
 Gate 2 defers to gate 3 whenever either side carries baked-in bars, because display pixel count counts black as picture.  A correctly cropped 1920x800 arrival and an incumbent stored 1920x1080 with 280 px of bars hold identical real picture, and gate 2 on its own would decide that on a margin that is entirely black.
 
@@ -291,7 +284,7 @@ Gate 6 is comparative only.  There is no minimum bitrate anywhere in this pipeli
 
 Gate 7 is a tiebreak rather than a vote.  Pedigree is inferred from release naming, which is exactly the kind of signal the rest of this pipeline distrusts, so it is consulted only when no measurable gate voted and it is marked as a weak signal when it decides.
 
-Gates 2, 3 and 6 need both sides to be measurable.  Where one side is missing, the gate casts no vote and the skip is recorded rather than counted as a tie.  The tolerances are 5 percent on pixel count and 25 percent on bitrate;  the bitrate figure is a starting point and has not been calibrated against this library.
+Gates 2, 3 and 6 need both sides to be measurable.  Where one side is missing, the gate casts no vote and the skip is recorded rather than counted as a tie.  The tolerances are 5 percent on pixel count and 25 percent on bitrate;  the bitrate figure is a starting point and has not been calibrated.
 
 The table behind the Compare button carries every attribute the pipeline measured, not only the seven it gates on.  A row that differs with no gate against it is marked as such, and that is the row worth looking at:  it is where the pipeline saw a difference and had no rule for it.
 
@@ -299,25 +292,25 @@ A library incumbent is read, compared against and left alone.  Nothing in the co
 
 Two arrivals of one title in the same batch never both encode.  The later one still compares against the incumbent, then against the earlier arrival's own file, and holds at COMPARED naming the earlier, its stage and the pair verdict;  its detail carries Compare for the incumbent table and Compare sibling for the pair.  The pair verdict decides nothing on its own.  Discard one, Retry the other, and the survivor runs against the incumbent alone, or against the other's published output in 'complete/' if it went through.
 
-HDR is compared on presence at gate 1, and on declaration in the table.  A Matroska file states its mastering display and content light level twice, in the bitstream as SEI and in the container's Colour element, and the two can disagree:  eight HDR titles in one library all carried the metadata in the bitstream while three declared none of it in the container.  The pipeline probes both surfaces, repairs a container that under-declares its own bitstream with a header edit on the way through, and holds any title whose output declares less than its source carried.  A content light level of zero and zero, an encoder's way of saying not indicated, is written like any other and read back through mkvmerge, because ffprobe reports a Matroska content light element only when both values are non-zero.  The declaration rows appear in the Compare table without a gate number, so a difference there is one of the marked rows worth looking at rather than a vote.
+HDR is compared on presence at gate 1, and on declaration in the table.  A Matroska file states its mastering display and content light level twice, in the bitstream as SEI and in the container's Colour element, and the two can disagree:  an HDR title commonly carries the metadata in the bitstream while declaring none of it in the container.  The pipeline probes both surfaces, repairs a container that under-declares its own bitstream with a header edit on the way through, and holds any title whose output declares less than its source carried.  A content light level of zero and zero, an encoder's way of saying not indicated, is written like any other and read back through mkvmerge, because ffprobe reports a Matroska content light element only when both values are non-zero.  The declaration rows appear in the Compare table without a gate number, so a difference there is one of the marked rows worth looking at rather than a vote.
 
 ## Identification and the internet
 
 A provider ID is never guessed.  Resolution goes through Wikidata and then verifies against the TMDB or TVDB page before an ID is written anywhere, because Wikidata's provider IDs can be flat wrong.  Movies use tmdbid and imdbid;  television uses tvdbid and tmdbid, since TVDB governs episode titles and numbering.  Requests are spaced about three seconds apart, and every answer is cached on disk under 'config/cache', which is consulted before any request is made.
 
-A name with no year that resolves to two verified entities at the same score ('Space Battleship Yamato', 1977 and 2010) holds with both listed rather than taking the first;  a year in the name settles it.  Every probed file also records its OpenSubtitles hash, for a lookup by hand;  the pipeline does not query the service.
+A name with no year that resolves to two verified entities at the same score, an original and a remake sharing one title, holds with both listed rather than taking the first;  a year in the name settles it.  Every probed file also records its OpenSubtitles hash, for a lookup by hand;  the pipeline does not query the service.
 
 A file that has already been through this pipeline, or that came back out of a library, states what it is:  embedded tags, ids in the filename, ids in the folder, ids in the library folder a repair copy came from, the segment title and the cleaned filename are every one consulted.  Television runs the same ladder in the same shape, with the COLLECTION block, the show folder and the origin folder beside the show name.  A fresh disc rip has none of those, so for that case the filename is all there is.  Every source that resolves to a complete identity casts a vote:  one vote is enough, agreement is recorded, and sources that name different films hold the title with each one listed for the operator to pick from.  A source that resolves to an entity with no provider ids, a segment title a release group filled with its own name for instance, is listed but never outvotes a source that resolved properly.
 
 An id found on any of those rungs is a pointer, not an identity.  It is looked up on Wikidata, and the entity supplies the title, the year and the other id;  the TMDB or TVDB page is then checked by its own title and year against the entity's label and aliases.  Nothing on disk becomes a tag:  a folder written before the naming rules changed, or a tag block written by an earlier tool in filename form, is corrected to the provider's title on the way through.  An identity that is still missing a field holds with the field named rather than publishing a folder with 'None' in it.
 
-A filename has already lost the provider's punctuation, and Wikidata's prefix search stops at a colon, so a search is matched under the naming rules rather than by string:  every candidate's label is put through the same transform the filename went through, a full-text search covers the entities the prefix search cannot reach, and a candidate whose release year is more than a year from the name's is skipped.  'Star Wars Episode IV A New Hope' and 'Futurama Bender's Game' both resolve from their filename form.
+A filename has already lost the provider's punctuation, and Wikidata's prefix search stops at a colon, so a search is matched under the naming rules rather than by string:  every candidate's label is put through the same transform the filename went through, a full-text search covers the entities the prefix search cannot reach, and a candidate whose release year is more than a year from the name's is skipped.  A title whose provider form carries a colon resolves from its filename form.
 
-Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  The release tag and group suffix are stripped first ('Terra Nova (1080p x265 10bit Joy)' matches 'Terra Nova'), a bare 'Part 2' lands on its own half of a two-parter, a catalogue title that starts the file's title matches by containment, the segment title is tried when the file name fails, and a fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, taking the episode title from the provider's entry for that number rather than from the file name, and a title that cannot be identified at all holds.
+Episodes are matched by title against the provider's list and the SNNENN is derived from the match, never read out of the source filename.  Release groups renumber when they collapse a two-part episode into one file, and everything after it silently shifts.  The release tag and group suffix are stripped first, so a title followed by a bracketed resolution, codec and group name still matches, a bare 'Part 2' lands on its own half of a two-parter, a catalogue title that starts the file's title matches by containment, the segment title is tried when the file name fails, and a fuzzy fallback covers the typos scene filenames carry.  A file matching neither exactly nor fuzzily falls back to source numbering with a warning, taking the episode title from the provider's entry for that number rather than from the file name, and a title that cannot be identified at all holds.
 
 Every answer is cached without expiry, an empty search result included, so a title held for an unresolvable name would hold again identically on any requeue.  Retry on a held title therefore asks the providers again, bypassing the cache for that one identification;  Force through does not, and carries the title on without an ID.
 
-THERE IS NO OFFLINE MODE, and this is the one that reads as a hang.  A container with no outbound access cannot identify anything, so every title holds on the backoff described above and then waits for a person.  That is the intended behaviour rather than a fault, but it is worth knowing before pointing this at an isolated network.
+There is no offline mode, and this is the one that reads as a hang.  A container with no outbound access cannot identify anything, so every title holds with an exponential backoff, 'retry_base_delay' seconds doubling on each of 'retry_max_attempts' tries, and then waits for a person.  That is the intended behaviour rather than a fault, but it is worth knowing before pointing this at an isolated network.
 
 A title that cannot be identified holds, and Force through carries it on without an ID rather than guessing one.  A forced unidentified title keeps the name it arrived with, extension changed to '.mkv', carries a tag block holding TITLE only, and lands flat in 'complete/' instead of in a provider-named folder, so it is visibly unlike finished work.
 
@@ -430,7 +423,7 @@ docker run --rm -e PUID=1000 -e PGID=1000 -e DRY_RUN=1 \
   -p 443:443 procrustes:local
 ```
 
-ONE ROOT MOUNT, DELIBERATELY.  'import', 'complete', 'complete/.quarantine' and 'hold' are created underneath it at startup, and a move between two of them is then a rename rather than a copy.  Mounting them individually turns every one of those moves into a copy at best;  at worst 'rename' refuses outright with EXDEV, because Linux will not rename across two mount points even when both sides are the same device.
+One root mount, deliberately.  'import', 'complete', 'complete/.quarantine' and 'hold' are created underneath it at startup, and a move between two of them is then a rename rather than a copy.  Mounting them individually turns every one of those moves into a copy at best;  at worst 'rename' refuses outright with EXDEV, because Linux will not rename across two mount points even when both sides are the same device.
 
 DRY_RUN logs every intended move, encode and quarantine and performs none of them.
 
@@ -446,7 +439,7 @@ CI does not build on push.  The workflow is manual only, started from the Action
 
 ## Version
 
-Current version 0.13.2, defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+The version is defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
 
 'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
 

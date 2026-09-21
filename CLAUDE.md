@@ -884,7 +884,7 @@ At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice.
 
 ## 23.  Versioning and release tags
 
-'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 0.13.3.
+'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 'VERSION' in 'app/__init__.py'.
 
 EVERY BUILD INCREMENTS THE VERSION.  A build whose 'VERSION' equals the one before it cannot be told apart from it.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR.  The repository does not use git tags.
 
