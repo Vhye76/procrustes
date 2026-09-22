@@ -385,7 +385,7 @@ A YEAR INSIDE A TITLE IS NOT THE RELEASE YEAR:  'Blade Runner 2049 (2017)'.  Tak
 
 ### The identity ladder
 
-EVERY RUNG RUNS, AND A COMPLETE IDENTITY IS A VOTE.  'provider.movie_candidates' and 'provider.show_candidates' build the rungs and 'provider._identify_from' walks all of them.  A rung's identity votes only when it is complete;  one vote wins, and 'identified_from' names every rung that agreed.  Votes for different entities are a disagreement:  the identity carries 'disagree', one entry per rung and entity, and the orchestrator holds naming each, every entity on the operator's list with none preselected.  A tie inside one rung is votes for different entities and holds the same way.  An incomplete identity never votes and never blocks a vote from another rung;  it holds only when no rung produced a complete identity, on the first rung that produced one.
+EVERY RUNG RUNS, AND A COMPLETE IDENTITY IS A VOTE.  'provider.movie_candidates' and 'provider.show_candidates' build the rungs and 'provider._identify_from' walks all of them.  A rung's identity votes only when it is complete;  one vote wins, and 'identified_from' names every rung that agreed.  Votes for different entities are a disagreement:  the identity carries 'disagree', one entry per rung and entity, and the orchestrator holds naming each, every entity on the operator's list.  A tie inside one rung is votes for different entities and holds the same way.  An incomplete identity never votes and never blocks a vote from another rung;  it holds only when no rung produced a complete identity, on the first rung that produced one.
 
 ```
 MOVIES

@@ -574,8 +574,14 @@ class Provider:
 
     #----- The walk, shared by both kinds
     def _identify_from(self, rungs, kind, pinned=None):
+        resolved = self._identify_walk(rungs, kind, pinned)
+        self._local.resolved_qid = (resolved or {}).get("qid")
+        return resolved
+
+    def _identify_walk(self, rungs, kind, pinned=None):
         self._local.scored = []
         self._local.searched = None
+        self._local.resolved_qid = None
         if pinned:
             resolved = self._resolve_operator(pinned, kind)
             if resolved is not None:
@@ -985,6 +991,7 @@ class Provider:
     def hold_candidates(self, kind):
         scored = list(getattr(self._local, "scored", None) or [])
         searched = getattr(self._local, "searched", None) or {}
+        resolved_qid = getattr(self._local, "resolved_qid", None)
         entities, seen = [], set()
         for c in sorted(scored, key=lambda c: -(c.get("score") or 0.0)):
             if c["id"] in seen:
@@ -1002,6 +1009,7 @@ class Provider:
                 "outcome": c.get("outcome") or "not evaluated",
                 "term": c.get("term"),
                 "reading": c.get("reading"),
+                "resolved": bool(resolved_qid) and c["id"] == resolved_qid,
             })
         entities = entities[:self.candidate_limit()]
         out = {"searched": searched, "wikidata": entities}

@@ -733,7 +733,7 @@ function identifyPanel(t) {
   if (t.stage !== "HELD" || !c || !SOURCES[t.kind]) return "";
   IDN = {id: t.id, kind: t.kind, candidates: c};
   const ent = c.wikidata || [];
-  const pick = ent.find(e => /^accepted/.test(e.outcome || "")) || ent[0] || null;
+  const pick = ent.find(e => e.resolved) || null;
   const searched = c.searched || {};
   const idsOf = e => [e.tvdb ? "tvdb " + e.tvdb : "", e.tmdb ? "tmdb " + e.tmdb : "",
                       e.imdb ? "imdb " + e.imdb : ""].filter(Boolean).join("  ");
