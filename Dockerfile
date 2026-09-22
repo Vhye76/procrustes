@@ -33,7 +33,7 @@ RUN set -eux; \
 #----- Build gate:  the image must not ship claiming encoders it lacks
 RUN set -eux; \
     missing=""; \
-    for enc in libx265 libsvtav1 av1_qsv; do \
+    for enc in libx265 libsvtav1 av1_qsv hevc_qsv; do \
         ffmpeg -hide_banner -encoders 2>/dev/null | grep -q "[[:space:]]${enc}[[:space:]]" \
             || missing="${missing} ${enc}"; \
     done; \
@@ -45,7 +45,7 @@ RUN set -eux; \
         echo "  2. ffmpeg from the alpine edge community repository, pinned" >&2; \
         exit 1; \
     fi; \
-    ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx265|libsvtav1|av1_qsv|av1_vaapi"; \
+    ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx265|libsvtav1|av1_qsv|hevc_qsv|av1_vaapi"; \
     if ! ffmpeg -hide_banner -h encoder=libx265 2>/dev/null | grep -q "^  -dolbyvision"; then \
         echo "BUILD GATE FAILED: this ffmpeg's libx265 wrapper has no -dolbyvision option," >&2; \
         echo "so a Dolby Vision RPU cannot be carried through an encode. Needs ffmpeg 7.1 or later." >&2; \

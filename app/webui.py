@@ -462,8 +462,16 @@ class WebUI:
         row["locked"] = bool(place.get("locked"))
         row["slot"] = place.get("slot")
         row["display_stage"] = state.display_name(row.get("stage"))
-        if row.get("stage") == state.ROUTED and (row.get("decision") or {}).get("action") == "passthrough":
+        decision = row.get("decision") or {}
+        if row.get("stage") == state.ROUTED and decision.get("action") == "passthrough":
             row["display_stage"] = "waiting for passthrough"
+        by_device = decision.get("encoder_by_device") or {}
+        if not decision.get("device") and len(by_device) > 1:
+            row["encoder_label"] = " or ".join(
+                "%s on %s" % (by_device[d], d) for d in decision.get("devices") or by_device
+            )
+        else:
+            row["encoder_label"] = row.get("encoder")
         row["complete"] = state.is_complete(row.get("stage"))
         row["poster"] = poster_key(row["poster_url"]) if row.get("poster_url") else None
         row["forceable"] = row.get("stage") == state.HELD

@@ -28,6 +28,7 @@ X265_PRESETS = (
 X265_TUNES = ("none", "grain", "animation", "psnr", "ssim", "fastdecode", "zerolatency")
 PIX_FMTS = ("yuv420p", "yuv420p10le")
 QSV_PRESETS = ("veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow")
+HEVC_DEVICES = ("cpu", "gpu", "both")
 #----- PARAMS admits an x265 or svt-av1 params string and nothing shell-like;  the value is one argv entry, never a shell word.
 DEBLOCK = r"^-?\d+,-?\d+$"
 PARAMS = r"^[A-Za-z0-9_=:.,\-]*$"
@@ -93,7 +94,7 @@ SETTINGS = (
             "Threads taking a title through probe, standards, identification, comparison and routing.",
             "int", 3, minimum=1, maximum=64),
     Setting("gpu_slots", "pipeline", "GPU encode slots",
-            "Encode threads on the GPU pool;  the bound on GPU-side staged copies.",
+            "Encode threads on the GPU pool, av1_qsv and hevc_qsv;  the bound on GPU-side staged copies.",
             "int", 1, minimum=0, maximum=16),
     Setting("cpu_slots", "pipeline", "CPU encode slots",
             "Encode threads on the CPU pool, each at the encoder thread count divided by this.",
@@ -180,6 +181,15 @@ SETTINGS = (
     Setting("qsv_global_quality", "encoding", "QSV global quality",
             "Quality target for av1_qsv;  lower is higher quality.",
             "int", _kinds(encode.QSV_GLOBAL_QUALITY), per_kind=True, minimum=1, maximum=63),
+    Setting("hevc_devices", "encoding", "HEVC devices",
+            "Pools an HEVC encode may run on;  both lets whichever is free take the next title.",
+            "choice", _kinds(encode.HEVC_DEVICES), per_kind=True, choices=HEVC_DEVICES),
+    Setting("hevc_qsv_preset", "encoding", "HEVC QSV preset",
+            "Speed against compression for hevc_qsv.",
+            "choice", _kinds(encode.HEVC_QSV_PRESET), per_kind=True, choices=QSV_PRESETS),
+    Setting("hevc_qsv_global_quality", "encoding", "HEVC QSV global quality",
+            "Quality target for hevc_qsv;  lower is higher quality, and the scale is not x265's CRF.",
+            "int", _kinds(encode.HEVC_QSV_GLOBAL_QUALITY), per_kind=True, minimum=1, maximum=51),
 
     Setting("grain_threshold", "probes", "Grain threshold",
             "Denoise delta above which a source counts as grainy.",

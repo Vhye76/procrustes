@@ -175,7 +175,7 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Group | Setting | Default | Meaning |
 |---|---|---|---|
 | Pipeline | max_jobs | 3 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
-| Pipeline | gpu_slots | 1 | GPU encode threads |
+| Pipeline | gpu_slots | 1 | GPU encode threads, av1_qsv and hevc_qsv |
 | Pipeline | cpu_slots | 1 | CPU encode threads, each at the encoder thread count divided by this;  two gain little except on SD |
 | Pipeline | encode_headroom | 3.0 | multiple of source size required to admit a job |
 | Pipeline | encode_threads | 0 | 0 autodetects from the cgroup CPU quota |
@@ -195,6 +195,8 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Encoding | x265_dv_vbv_kbps | 40000 | VBV pair on a Dolby Vision encode |
 | Encoding | svtav1_preset, svtav1_crf, svtav1_params, svtav1_pix_fmt | 4, 24, tune=0:film-grain=8, yuv420p10le | libsvtav1 |
 | Encoding | qsv_preset, qsv_global_quality | veryslow, 26 | av1_qsv |
+| Encoding | hevc_devices | cpu | per kind;  cpu, gpu or both:  the pools an HEVC encode may run on |
+| Encoding | hevc_qsv_preset, hevc_qsv_global_quality | veryslow, 22 | hevc_qsv;  the quality figure is not x265's CRF scale |
 | Probes | grain_threshold | 0.18 / 0.18 | denoise delta above which a source counts as grainy |
 | Probes | grain_sample_seconds, grain_sample_position | 20, 0.45 | the sample the grain and field probes decode |
 | Probes | grain_probe_crf, grain_probe_preset | 20, ultrafast | the two sample encodes the grain probe compares |
@@ -232,9 +234,11 @@ Evaluated in order, first match wins.
 3  Dolby Vision RPU present                libx265    on any setting
 4  output_codec av1 and grainy             libsvtav1  CPU
 5  output_codec av1                        av1_qsv    GPU
-6  grainy                                  libx265 aq-mode=4:tune=grain
-7  otherwise                               libx265 aq-mode=3
+6  grainy                                  libx265 aq-mode=4:tune=grain, or hevc_qsv per hevc_devices
+7  otherwise                               libx265 aq-mode=3, or hevc_qsv per hevc_devices
 ```
+
+Gates 6 and 7 route to a pool rather than to one encoder.  'hevc_devices', per kind, is 'cpu' (libx265, the default), 'gpu' (hevc_qsv on the media engine) or 'both':  a 'both' title is eligible for either pool, whichever thread is free first claims it, and that pool's encoder is bound at the claim, so a CPU and a GPU encode of HEVC run side by side and the queue drains at the sum of their rates.  The title's tile reads 'libx265 on cpu or hevc_qsv on gpu' until it is claimed and the encoder that ran afterwards.  A Dolby Vision title is eligible for the CPU alone.  The GPU output is the same HEVC Main 10 stream at the same geometry;  it is larger for the same picture, because the fixed-function encoder searches less per block than x265 does, and 'hevc_qsv_global_quality' is the setting that prices that trade.
 
 x265 is the default because no Apple TV decodes AV1 in hardware.  AV1 is fully built and selectable per kind on the settings page, but the calibration batch has not been run, so the AV1 rate control values are starting points rather than settled ones.
 
@@ -242,7 +246,7 @@ Gate 3 exists because an AV1 re-encode discards the Dolby Vision RPU.  Those tit
 
 An HDR source that reaches an encoder carries its colour, mastering display and content light level into the x265 params, and a Dolby Vision source carries its RPU through with ffmpeg's native '-dolbyvision' and a VBV pair, no extraction tool involved.  In practice neither happens:  HDR and Dolby Vision material is HEVC, and gate 1 passes it through untouched.
 
-Gate 5 is the one that can produce an encoder the table does not name.  At startup 'vainfo' must report VAProfileAV1Profile0 with the encode entrypoint;  a failed probe does not crash the container, it marks the GPU degraded, and gate 5 then routes to libsvtav1 on the CPU instead of av1_qsv.  At the hevc default a degraded GPU changes nothing at all, which is the point:  the GPU cannot break the pipeline.  Every encode logs which encoder actually ran, so a GPU that has quietly stopped being used is visible rather than silent.
+Gate 5 is the one that can produce an encoder the table does not name.  At startup 'vainfo' must report VAProfileAV1Profile0 with the encode entrypoint, and records VAProfileHEVCMain10 beside it;  a failed probe does not crash the container, it marks the GPU degraded, gate 5 then routes to libsvtav1 on the CPU instead of av1_qsv, and gates 6 and 7 fall back to the CPU when the HEVC profile is missing.  At the hevc default a degraded GPU changes nothing at all, which is the point:  the GPU cannot break the pipeline.  Every encode logs which encoder actually ran, so a GPU that has quietly stopped being used is visible rather than silent.
 
 SD is decided on display height, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions.
 
@@ -410,7 +414,7 @@ That is the whole of local validation.  The second needs 'argon2-cffi' and 'qrco
 docker build -t procrustes:local .
 ```
 
-The image build fails if ffmpeg lacks libx265, libsvtav1 or av1_qsv, if its libx265 wrapper has no '-dolbyvision' option, or if 'argon2' or 'qrcode' does not import.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
+The image build fails if ffmpeg lacks libx265, libsvtav1, av1_qsv or hevc_qsv, if its libx265 wrapper has no '-dolbyvision' option, or if 'argon2' or 'qrcode' does not import.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
 
 The image is Alpine 3.24, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  Every build increments the version in 'app/__init__.py', and the image is tagged with it.
 

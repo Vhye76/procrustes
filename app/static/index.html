@@ -423,7 +423,7 @@ document.addEventListener("click", (ev) => {
 //----- The queue in processing order:  slot holders first and locked, then the numbered order
 function encodeSub(t, prog) {
   const p = prog[t.id];
-  const bits = [t.encoder || t.display_stage || ""];
+  const bits = [t.encoder_label || t.encoder || t.display_stage || ""];
   if (p && p.eta_s != null) bits.push("eta " + fmtEta(p.eta_s));
   const line = esc(bits.filter(Boolean).join("   "));
   if (!p || p.frame == null) return `<div class="s">${line}</div>`;
@@ -436,7 +436,7 @@ function encodeSub(t, prog) {
 
 function queueSub(t) {
   return `<div class="s">${esc(t.display_stage || t.stage)}${
-    t.stage === "ROUTED" && t.encoder ? " - " + esc(t.encoder) : ""}</div>`;
+    t.stage === "ROUTED" && (t.encoder_label || t.encoder) ? " - " + esc(t.encoder_label || t.encoder) : ""}</div>`;
 }
 
 function queueUnits(list) {
@@ -605,7 +605,7 @@ async function showDetail(id) {
       <div class="big">${esc(label(t))}${t.year ? " (" + esc(t.year) + ")" : ""}</div>
       ${ids ? `<div class="row">${esc(ids)}</div>` : ""}
       <div class="row">${esc(t.display_stage || t.stage)}${
-        t.encoder ? "   " + esc(t.encoder) : ""}   ${esc(files)}</div>
+        (t.encoder_label || t.encoder) ? "   " + esc(t.encoder_label || t.encoder) : ""}   ${esc(files)}</div>
       ${(t.reasons && t.reasons.length > 1)
         ? `<div class="row warn">Held for ${t.reasons.length} reasons:</div>` +
           t.reasons.map(r => `<div class="row warn">&bull; ${r.stage ? esc(r.stage.toLowerCase()) + ": " : ""}${esc(r.text)}</div>`).join("")

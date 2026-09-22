@@ -285,15 +285,15 @@ class Orchestrator:
         for title_id in sorted(unplaced):
             self.store.place(title_id)
 
-    def _pool_for(self, decision):
+    def _pools_for(self, decision):
         if not decision or not decision.get("action"):
             return None
         if decision.get("action") == encode.PASSTHROUGH:
-            return encode.PASSTHROUGH
+            return [encode.PASSTHROUGH]
         #----- an encode decision with no stored parameters predates the snapshot and is re-assessed.
         if not decision.get("params"):
             return None
-        return decision.get("device") or encode.CPU
+        return list(decision.get("devices") or [decision.get("device") or encode.CPU])
 
     #----- Claiming, the store as the queue
     def _claim(self, pool):
@@ -303,9 +303,9 @@ class Orchestrator:
                 if row["id"] in self._claims:
                     continue
                 if row["stage"] in state.ASSESSMENT:
-                    wanted = ASSESS
+                    wanted = [ASSESS]
                 else:
-                    wanted = self._pool_for(row.get("decision"))
+                    wanted = self._pools_for(row.get("decision"))
                     if wanted is None:
                         if pool != ASSESS:
                             continue
@@ -313,8 +313,9 @@ class Orchestrator:
                         self.store.advance(
                             row["id"], state.DETECTED, "re-assessed, no routing decision stored"
                         )
-                        wanted = ASSESS
-                if wanted != pool:
+                        wanted = [ASSESS]
+                #----- membership, not equality:  a two-pool decision goes to whichever thread asks first.
+                if pool not in wanted:
                     continue
                 self._claims[row["id"]] = (pool, time.time())
                 return row["id"]
@@ -1130,6 +1131,7 @@ class Orchestrator:
         decision = encode.select(
             video, kind, profile, grain=None,
             gpu_available=self.gpu.available, override=override,
+            hevc_gpu_available=self.gpu.hevc_available,
         )
         if not decision.is_passthrough and "film" not in override:
             result = self._grain(title_id, source, video, container, profile)
@@ -1137,6 +1139,7 @@ class Orchestrator:
             decision = encode.select(
                 video, kind, profile, grain=result["grain"],
                 gpu_available=self.gpu.available, override=override,
+                hevc_gpu_available=self.gpu.hevc_available,
             )
             log.info(
                 "title %s grain probe %s: %s",
@@ -1158,7 +1161,7 @@ class Orchestrator:
         log.info("title %s router %s", title_id, encode.describe(decision))
         for note in decision.notes:
             log.info("title %s router note: %s", title_id, note)
-        pool = self._pool_for(decision.as_dict())
+        pools = self._pools_for(decision.as_dict())
         detail = encode.describe(decision)
         if decision.params:
             detail = "%s; %s" % (detail, self._params_summary(decision))
@@ -1166,25 +1169,38 @@ class Orchestrator:
             title_id, state.ROUTED, detail,
             decision=decision.as_dict(), encoder=decision.encoder,
         )
-        return pool
+        return pools
+
+    @classmethod
+    def _params_summary(cls, decision):
+        #----- the ROUTED history line, so the detail dialog shows what the encode will run with.
+        encoders = [decision.encoder] if decision.is_bound else [
+            decision.encoder_by_device[d] for d in decision.devices
+        ]
+        return "; ".join(
+            text for text in (cls._encoder_summary(e, decision) for e in encoders) if text
+        )
 
     @staticmethod
-    def _params_summary(decision):
-        #----- the ROUTED history line, so the detail dialog shows what the encode will run with.
+    def _encoder_summary(encoder, decision):
         p = decision.params or {}
-        if decision.encoder == encode.LIBX265:
+        if encoder == encode.LIBX265:
             return "x265 preset %s crf %s aq %s%s, %d threads" % (
                 p.get("x265_preset"), p.get("x265_crf"),
                 p.get("x265_aq_mode_film") if decision.grain else p.get("x265_aq_mode"),
                 " tune %s" % p.get("x265_tune_film") if decision.grain and p.get("x265_tune_film") != "none" else "",
                 int(p.get("threads_per_job") or 0),
             )
-        if decision.encoder == encode.LIBSVTAV1:
+        if encoder == encode.LIBSVTAV1:
             return "svt-av1 preset %s crf %s, %d threads" % (
                 p.get("svtav1_preset"), p.get("svtav1_crf"), int(p.get("threads_per_job") or 0),
             )
-        if decision.encoder == encode.AV1_QSV:
+        if encoder == encode.AV1_QSV:
             return "qsv preset %s quality %s" % (p.get("qsv_preset"), p.get("qsv_global_quality"))
+        if encoder == encode.HEVC_QSV:
+            return "hevc_qsv preset %s quality %s" % (
+                p.get("hevc_qsv_preset"), p.get("hevc_qsv_global_quality"),
+            )
         return ""
 
     def _grain(self, title_id, source, video, container, profile):
@@ -1373,6 +1389,9 @@ class Orchestrator:
             notes=stored.get("notes"),
             fields=stored.get("fields"),
             params=stored.get("params"),
+            devices=stored.get("devices"),
+            encoder_by_device=stored.get("encoder_by_device"),
+            device=stored.get("device"),
         )
 
         if decision.is_passthrough:
@@ -1380,6 +1399,18 @@ class Orchestrator:
                 title_id, state.ENCODED, "passthrough: %s" % decision.reason
             )
             return work
+
+        #----- the pool that claimed the title binds the encoder;  the row records it before ENCODING.
+        with self._claims_lock:
+            pool = (self._claims.get(title_id) or (None,))[0]
+        if pool in decision.encoder_by_device:
+            decision.bind(pool)
+        elif not decision.is_bound:
+            raise HoldError(
+                "decision eligible for %s claimed by the %s pool" % (", ".join(decision.devices), pool),
+                stage=state.ENCODING,
+            )
+        self.store.update(title_id, decision=decision.as_dict(), encoder=decision.encoder)
 
         crop = None
         if override.get("crop"):
@@ -1722,8 +1753,8 @@ class Orchestrator:
             if row["stage"] in state.ASSESSMENT:
                 depths[ASSESS] += 1
             else:
-                pool = self._pool_for(row.get("decision")) or ASSESS
-                depths[pool] += 1
+                for pool in self._pools_for(row.get("decision")) or [ASSESS]:
+                    depths[pool] += 1
         return depths
 
     def status(self):

@@ -8,15 +8,17 @@ RENDER_NODE = os.environ.get("RENDER_NODE", "/dev/dri/renderD128")
 VAINFO = os.environ.get("VAINFO", "vainfo")
 
 REQUIRED_PROFILE = "VAProfileAV1Profile0"
+HEVC_PROFILE = "VAProfileHEVCMain10"
 REQUIRED_ENTRYPOINT = "VAEntrypointEncSlice"
 
 
 class GpuStatus:
-    def __init__(self, available, reason, render_node=None, profiles=None):
+    def __init__(self, available, reason, render_node=None, profiles=None, hevc_available=False):
         self.available = available
         self.reason = reason
         self.render_node = render_node
         self.profiles = profiles or []
+        self.hevc_available = hevc_available
 
     @property
     def degraded(self):
@@ -25,14 +27,18 @@ class GpuStatus:
     def as_dict(self):
         return {
             "available": self.available,
+            "hevc_available": self.hevc_available,
             "degraded": self.degraded,
             "reason": self.reason,
             "render_node": self.render_node,
-            "av1_encode_profiles": self.profiles,
+            "av1_encode_profiles": [p for p in self.profiles if REQUIRED_PROFILE in p],
+            "hevc_encode_profiles": [p for p in self.profiles if HEVC_PROFILE in p],
         }
 
     def __repr__(self):
-        return "<GpuStatus available=%s reason=%r>" % (self.available, self.reason)
+        return "<GpuStatus available=%s hevc_available=%s reason=%r>" % (
+            self.available, self.hevc_available, self.reason,
+        )
 
 
 #----- vainfo
@@ -50,7 +56,8 @@ def parse_vainfo(text):
     profiles = []
     for line in (text or "").splitlines():
         line = line.strip()
-        if REQUIRED_PROFILE in line and REQUIRED_ENTRYPOINT in line:
+        #----- AV1 decides 'available';  the HEVC Main 10 line is recorded beside it for gates 6 and 7.
+        if REQUIRED_ENTRYPOINT in line and (REQUIRED_PROFILE in line or HEVC_PROFILE in line):
             profiles.append(" ".join(line.split()))
     return profiles
 
@@ -102,12 +109,19 @@ def _probe(cfg=None, render_node=None):
               len(combined.splitlines()), len(profiles))
     for line in profiles:
         log.debug("profile %s", line)
-    if not profiles:
+    av1 = any(REQUIRED_PROFILE in p for p in profiles)
+    hevc = any(HEVC_PROFILE in p for p in profiles)
+    if not av1:
         return GpuStatus(
             False,
-            "%s with %s not reported by the driver, AV1 hardware encode is unavailable"
-            % (REQUIRED_PROFILE, REQUIRED_ENTRYPOINT),
-            node,
+            "%s with %s not reported by the driver, AV1 hardware encode is unavailable%s"
+            % (REQUIRED_PROFILE, REQUIRED_ENTRYPOINT,
+               "; HEVC hardware encode available" if hevc else ""),
+            node, profiles, hevc_available=hevc,
         )
 
-    return GpuStatus(True, "AV1 hardware encode available", node, profiles)
+    return GpuStatus(
+        True,
+        "AV1 hardware encode available%s" % (", HEVC hardware encode available" if hevc else ""),
+        node, profiles, hevc_available=hevc,
+    )

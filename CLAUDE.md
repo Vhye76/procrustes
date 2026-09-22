@@ -156,9 +156,9 @@ PUBLISHED    move to complete/, TERMINAL as far as a user is concerned
 CLEANUP      source to quarantine, encode job directory wiped
 ```
 
-ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'max_jobs' assessment workers take a title from DETECTED through ROUTED;  the title then belongs to one of three pools by its decision, 'cpu' with 'cpu_slots' threads, 'gpu' with 'gpu_slots', or 'passthrough' with one, and the pool thread does everything from staging to cleanup.
+ASSESSMENT AND ENCODING ARE TWO HALVES ON SEPARATE THREADS.  'max_jobs' assessment workers take a title from DETECTED through ROUTED;  the title is then eligible for one or more of three pools by its decision, 'cpu' with 'cpu_slots' threads, 'gpu' with 'gpu_slots', or 'passthrough' with one, and the pool thread that claims it does everything from staging to cleanup.
 
-THE STORE IS THE QUEUE, AND THE ORDER IS THE OPERATOR'S.  There is no in-memory queue.  Every row whose stage is neither stopped (HELD, QUARANTINED, FAILED) nor complete (PUBLISHED, CLEANUP) is queued, ordered by 'queue_order', and a worker takes the first unclaimed row that belongs to it:  an assessment worker one in an assessment stage, a pool thread one whose stored decision names its pool.  A claim is an entry in 'orchestrator._claims' under one lock, held from the pick to the end of the worker's run;  in-memory is correct because section 19 guarantees one process.  A later-stage row with no stored decision is re-assessed by the assessment pick.  Resume is the same pick loop on startup, so a title resumes at its stored place;  a PUBLISHED row is not queued and is not re-run, a cleanup failure notwithstanding.
+THE STORE IS THE QUEUE, AND THE ORDER IS THE OPERATOR'S.  There is no in-memory queue.  Every row whose stage is neither stopped (HELD, QUARANTINED, FAILED) nor complete (PUBLISHED, CLEANUP) is queued, ordered by 'queue_order', and a worker takes the first unclaimed row that belongs to it:  an assessment worker one in an assessment stage, a pool thread one whose stored decision lists its pool, and an HEVC decision under section 14's 'both' lists two.  A claim is an entry in 'orchestrator._claims' under one lock, held from the pick to the end of the worker's run;  in-memory is correct because section 19 guarantees one process.  A later-stage row with no stored decision is re-assessed by the assessment pick.  Resume is the same pick loop on startup, so a title resumes at its stored place;  a PUBLISHED row is not queued and is not re-run, a cleanup failure notwithstanding.
 
 'Store.place' gives a row its place when it enters or re-enters the queue:  detection, reimport, retry, force, identify and an expired backoff all put it at the back;  an episode joins the end of its show's block, and 'place' runs again at IDENTIFIED once the show is known, so a show's queued episodes are always contiguous.  'POST /api/queue' takes the whole unlocked order as '{"id": n}' and '{"show": name}' items, a show item standing for every queued episode of that show in season and episode order, and refuses the batch when it omits a queued row, repeats one, or names a row a pool thread holds.  'queue_view' numbers pool-held rows first in claim order, locked, then the rest by 'queue_order';  '/api/titles' carries 'queue_position', 'locked' and 'slot' on every row and the dashboard's Queue box renders that order, a slot holder one tile each and undraggable, the rest draggable.
 
@@ -593,9 +593,11 @@ Evaluated in order, first match wins.  'encode.select' is a pure function of the
 3  Dolby Vision RPU present             libx265    on any setting
 4  output_codec av1 and grainy          libsvtav1  CPU
 5  output_codec av1                     av1_qsv    GPU
-6  grainy                               libx265 aq-mode=4:tune=grain
-7  otherwise                            libx265 aq-mode=3
+6  grainy                               libx265 aq-mode=4:tune=grain, or hevc_qsv per hevc_devices
+7  otherwise                            libx265 aq-mode=3, or hevc_qsv per hevc_devices
 ```
+
+GATES 6 AND 7 NAME POOLS, NOT ONE ENCODER.  'hevc_devices', per kind, is 'cpu', 'gpu' or 'both';  the decision carries the eligible pools and an encoder per pool, libx265 on the CPU and hevc_qsv on the GPU, and the pool thread that claims the title binds the encoder in '_encode' before ENCODING, rewriting the row's decision and encoder.  The router is a pure function of the title and a free slot is known only in the pick loop, which is why the split between the two pools is made at the claim rather than at routing.  A 'both' title is counted in both pools' queue depth.  Dolby Vision lists the CPU alone.  'gpu' or 'both' without the HEVC encode profile on the render node falls to 'cpu' with a router note, the shape of gate 5's fallback.
 
 GATE ORDER IS LOAD BEARING AND BREAKS SILENTLY IF DISTURBED.  A misrouted title produces a valid file with the wrong tradeoff, so after touching this function exercise one title per gate and read the resolved gate back from '/api/titles/<id>', corroborated against the output file's codec.
 
@@ -628,6 +630,14 @@ THE THREADING FIGURE IS NOT PART OF THAT TUNING.  'pools=' is appended to '-x265
 USE tune=grain ON FILM SOURCES.  x265 reads film grain as detail worth preserving and pays for it frame by frame;  a grain-heavy 35mm source on plain 'aq-mode=3' produces nearly double the bitrate of a clean title at the same CRF.  JUDGING FROM RELEASE YEAR IS NOT RELIABLE;  check the source.
 
 TEN GIGABYTES IS A GUIDE, NOT A LIMIT:  a prompt to check whether the grain tune was missed.  Raising CRF to pull a file under the number is the WRONG move;  the size is a preference, the quality target is not.
+
+### hevc_qsv parameters
+
+```
+hevc_qsv    -profile:v main10 -preset veryslow -global_quality 22, p010le via hwupload
+```
+
+'hevc_qsv_preset' and 'hevc_qsv_global_quality' are per-kind settings on the Encoding group, separate from the av1_qsv pair because the two encoders' quality scales differ.  'global_quality' IS NOT CRF:  the QSV wrapper takes it as an ICQ target where the driver supports one and a plain QP otherwise.  One point is measured, on a clean 1080p H.264 source:  quality 22 produced 23 percent of the x265 CRF 18 slow track's bytes at an SSIM 0.0039 lower.  No figure exists for a grainy or an HDR source.  Colour goes through the ffmpeg flags as on the AV1 QSV path, since a QSV encoder takes no params string.
 
 ### AV1 parameters
 
@@ -813,12 +823,12 @@ PUBLISHING IS ATOMIC.  'paths.publish_file' reserves the destination with 'O_CRE
 ### Pools
 
 ```
-GPU encode threads   1     the A310 has one media engine, queueing more at it gains nothing
+GPU encode threads   1     av1_qsv and hevc_qsv;  the A310 has one media engine, queueing more at it gains nothing
 CPU encode threads   1     x265 preset slow and svt-av1 preset 4 both saturate the allotted cores
 passthrough threads  1     fixed;  the I/O-only path, bounded by the disk rather than a core
 ```
 
-Each pool has exactly as many threads as the device has slots and takes the first unclaimed row in queue order whose decision names it, per section 6.  'max_jobs' is the assessment pool and has nothing to do with encoding capacity.  All three resize live per section 5.
+Each pool has exactly as many threads as the device has slots and takes the first unclaimed row in queue order whose decision lists it, per section 6;  an HEVC decision under 'hevc_devices' of 'both' lists both encode pools and goes to whichever is free first.  'max_jobs' is the assessment pool and has nothing to do with encoding capacity.  All three resize live per section 5.
 
 TWO CPU ENCODERS GAIN LITTLE, AND ONLY AT LOW RESOLUTION.  x265's wavefront parallelism is bounded by CTU rows, about 11 at 720p and 17 at 1080p, so two four-thread encodes recover idle threads on SD and 720p, near zero at 1080p and above, at doubled per-title latency and doubled staged copies.
 
@@ -877,13 +887,13 @@ BINDING 443 AS A NON-ROOT PROCESS.  The build applies 'cap_net_bind_service' to 
 
 ### The build gate
 
-The build FAILS if ffmpeg lacks libx265, libsvtav1 or av1_qsv.  DO NOT DELETE THIS CHECK IF IT FAILS.  The escalation order is av1_vaapi, the same hardware through VAAPI rather than oneVPL, then a pinned ffmpeg from Alpine's edge community repository.  Pick one at build time and record which in an image label; never let the runtime choose.  Alpine's ffmpeg carries all four, so no fallback is in use.
+The build FAILS if ffmpeg lacks libx265, libsvtav1, av1_qsv or hevc_qsv.  DO NOT DELETE THIS CHECK IF IT FAILS.  The escalation order is av1_vaapi, the same hardware through VAAPI rather than oneVPL, then a pinned ffmpeg from Alpine's edge community repository.  Pick one at build time and record which in an image label; never let the runtime choose.  Alpine's ffmpeg carries all four, so no fallback is in use.
 
 THE GATE ALSO ASSERTS THE LIBX265 WRAPPER HAS '-dolbyvision', per section 14, so the build cannot ship an ffmpeg older than 7.1 claiming otherwise.  AND THAT 'argon2' AND 'qrcode' IMPORT, with argon2id available:  'app/auth.py' imports both at module level, so without them 'import app.main' fails.
 
 ### Runtime GPU probe
 
-At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice.  A failed probe does NOT crash:  it marks the GPU degraded and routes av1_qsv titles to libsvtav1, and at the HEVC default it changes nothing.  Every encode logs which encoder actually ran.
+At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice, and VAProfileHEVCMain10 with the same entrypoint is recorded beside it as 'hevc_available'.  A failed probe does NOT crash:  it marks the GPU degraded and routes av1_qsv titles to libsvtav1, and a missing HEVC profile sends 'hevc_devices' of 'gpu' or 'both' to the CPU;  at the defaults it changes nothing.  Every encode logs which encoder actually ran.
 
 ## 23.  Versioning and release tags
 

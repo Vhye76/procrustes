@@ -21,6 +21,9 @@ SVTAV1_PARAMS = "tune=0:film-grain=8"
 
 QSV_PRESET = "veryslow"
 QSV_GLOBAL_QUALITY = 26
+HEVC_QSV_PRESET = "veryslow"
+HEVC_QSV_GLOBAL_QUALITY = 22
+HEVC_DEVICES = "cpu"
 
 RENDER_NODE = os.environ.get("RENDER_NODE", "/dev/dri/renderD128")
 
@@ -30,11 +33,13 @@ ENCODE = "encode"
 LIBX265 = "libx265"
 LIBSVTAV1 = "libsvtav1"
 AV1_QSV = "av1_qsv"
+HEVC_QSV = "hevc_qsv"
 
 CPU = "cpu"
 GPU = "gpu"
 
-DEVICE_BY_ENCODER = {LIBX265: CPU, LIBSVTAV1: CPU, AV1_QSV: GPU}
+DEVICE_BY_ENCODER = {LIBX265: CPU, LIBSVTAV1: CPU, AV1_QSV: GPU, HEVC_QSV: GPU}
+QSV_ENCODERS = (AV1_QSV, HEVC_QSV)
 
 
 #----- The routing decision
@@ -49,20 +54,43 @@ TELECINE_FRAME_RATIO = 4.0 / 5.0
 
 class Decision:
     def __init__(self, action, gate, reason, encoder=None, grain=None, notes=None, fields=None,
-                 params=None):
+                 params=None, devices=None, encoder_by_device=None, device=None):
         self.action = action
         self.gate = gate
         self.reason = reason
         self.encoder = encoder
-        self.device = DEVICE_BY_ENCODER.get(encoder)
         self.grain = grain
         self.fields = fields
         self.notes = list(notes or [])
         self.params = dict(params) if params else None
+        if encoder_by_device:
+            self.encoder_by_device = dict(encoder_by_device)
+        elif encoder:
+            self.encoder_by_device = {DEVICE_BY_ENCODER.get(encoder, CPU): encoder}
+        else:
+            self.encoder_by_device = {}
+        self.devices = list(devices or self.encoder_by_device.keys())
+        if device is not None:
+            self.device = device
+        elif len(self.devices) == 1:
+            self.device = self.devices[0]
+        else:
+            self.device = None
 
     @property
     def is_passthrough(self):
         return self.action == PASSTHROUGH
+
+    @property
+    def is_bound(self):
+        return self.device is not None
+
+    def bind(self, pool):
+        if pool not in self.encoder_by_device:
+            raise ValueError("decision is not eligible for the %s pool" % pool)
+        self.device = pool
+        self.encoder = self.encoder_by_device[pool]
+        return self
 
     def as_dict(self):
         return {
@@ -71,6 +99,8 @@ class Decision:
             "reason": self.reason,
             "encoder": self.encoder,
             "device": self.device,
+            "devices": self.devices,
+            "encoder_by_device": self.encoder_by_device,
             "grain": self.grain,
             "fields": self.fields,
             "notes": self.notes,
@@ -104,7 +134,8 @@ PARAM_KEYS = (
     "x265_preset", "x265_crf", "x265_aq_mode", "x265_aq_mode_film", "x265_tune_film",
     "x265_psy_rd", "x265_psy_rdoq", "x265_deblock", "x265_pix_fmt", "x265_extra_params",
     "x265_dv_vbv_kbps", "svtav1_preset", "svtav1_crf", "svtav1_params", "svtav1_pix_fmt",
-    "qsv_preset", "qsv_global_quality", "sd_display_height", "threads_per_job",
+    "qsv_preset", "qsv_global_quality", "hevc_devices", "hevc_qsv_preset",
+    "hevc_qsv_global_quality", "sd_display_height", "threads_per_job",
 )
 
 
@@ -115,8 +146,11 @@ def encoder_params(profile, render_node=None):
 
 
 #----- The router
-def select(video, kind, profile, grain=None, gpu_available=True, override=None):
-    decision = _select(video, kind, profile, grain, gpu_available, override)
+def select(video, kind, profile, grain=None, gpu_available=True, override=None,
+           hevc_gpu_available=None):
+    if hevc_gpu_available is None:
+        hevc_gpu_available = gpu_available
+    decision = _select(video, kind, profile, grain, gpu_available, override, hevc_gpu_available)
     log.debug(
         "router gate %s: %s, %s",
         decision.gate, decision.encoder or "passthrough", decision.reason,
@@ -127,10 +161,29 @@ def select(video, kind, profile, grain=None, gpu_available=True, override=None):
 def describe(decision):
     if decision.is_passthrough:
         return "gate %s: passthrough, %s" % (decision.gate, decision.reason)
+    if not decision.is_bound and len(decision.devices) > 1:
+        return "gate %s: %s, %s" % (
+            decision.gate,
+            " or ".join("%s on %s" % (decision.encoder_by_device[d], d) for d in decision.devices),
+            decision.reason,
+        )
     return "gate %s: %s, %s" % (decision.gate, decision.encoder, decision.reason)
 
 
-def _select(video, kind, profile, grain=None, gpu_available=True, override=None):
+def _hevc_pools(profile, hevc_gpu_available, notes):
+    policy = str(profile.get("hevc_devices") or HEVC_DEVICES).lower()
+    if policy in (GPU, "both") and not hevc_gpu_available:
+        notes.append("GPU unavailable for HEVC, hevc_qsv fell back to libx265")
+        policy = CPU
+    if policy == GPU:
+        return {GPU: HEVC_QSV}, "hevc_qsv on the gpu"
+    if policy == "both":
+        return {CPU: LIBX265, GPU: HEVC_QSV}, "hevc on the cpu or the gpu"
+    return {CPU: LIBX265}, "x265"
+
+
+def _select(video, kind, profile, grain=None, gpu_available=True, override=None,
+            hevc_gpu_available=True):
     override = override or {}
     notes = []
     log.debug(
@@ -202,20 +255,24 @@ def _select(video, kind, profile, grain=None, gpu_available=True, override=None)
             notes=notes,
         )
 
+    #----- the pools are eligibility, not a choice:  the pool that claims the title binds the encoder.
+    encoders, label = _hevc_pools(profile, hevc_gpu_available, notes)
     if grain:
         return Decision(
             ENCODE,
             6,
-            "grainy source, x265 grain tune",
-            encoder=LIBX265,
+            "grainy source, %s%s" % (label, " grain tune" if label == "x265" else ""),
+            encoder=encoders.get(CPU) or encoders.get(GPU),
+            encoder_by_device=encoders,
             grain=grain,
             notes=notes,
         )
     return Decision(
         ENCODE,
         7,
-        "clean source, x265 default",
-        encoder=LIBX265,
+        "clean source, %s%s" % (label, " default" if label == "x265" else ""),
+        encoder=encoders.get(CPU) or encoders.get(GPU),
+        encoder_by_device=encoders,
         grain=grain,
         notes=notes,
     )
@@ -318,6 +375,8 @@ def x265_tuning(params, grain):
 def build_command(decision, src, dst, video, params, crop=None, crf=None):
     if decision.is_passthrough:
         raise ValueError("build_command called on a passthrough decision")
+    if not decision.is_bound:
+        raise ValueError("build_command called on a decision not bound to a pool")
     if video.get("dolby_vision") and decision.encoder != LIBX265:
         raise ValueError(
             "Dolby Vision RPU cannot be carried by %s, only libx265 preserves it"
@@ -327,7 +386,7 @@ def build_command(decision, src, dst, video, params, crop=None, crf=None):
 
     args = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1"]
 
-    if decision.encoder == AV1_QSV:
+    if decision.encoder in QSV_ENCODERS:
         node = params.get("render_node") or RENDER_NODE
         args += ["-init_hw_device", "qsv=hw:%s" % node, "-filter_hw_device", "hw"]
 
@@ -341,7 +400,7 @@ def build_command(decision, src, dst, video, params, crop=None, crf=None):
         filters.append(field_filter)
     if crop:
         filters.append(crop)
-    if decision.encoder == AV1_QSV:
+    if decision.encoder in QSV_ENCODERS:
         filters += ["format=p010le", "hwupload=extra_hw_frames=64"]
     if filters:
         args += ["-vf", ",".join(filters)]
@@ -394,6 +453,21 @@ def build_command(decision, src, dst, video, params, crop=None, crf=None):
             "-c:v", "av1_qsv",
             "-preset", str(params.get("qsv_preset") or QSV_PRESET),
             "-global_quality", str(crf if crf is not None else params.get("qsv_global_quality", QSV_GLOBAL_QUALITY)),
+        ]
+        if stamp:
+            args += _sdr_ffmpeg_colour_args(stamp)
+        elif hdr:
+            args += _ffmpeg_colour_args(*hdr)
+
+    elif decision.encoder == HEVC_QSV:
+        args += [
+            "-c:v", "hevc_qsv",
+            "-profile:v", "main10",
+            "-preset", str(params.get("hevc_qsv_preset") or HEVC_QSV_PRESET),
+            "-global_quality", str(
+                crf if crf is not None
+                else params.get("hevc_qsv_global_quality", HEVC_QSV_GLOBAL_QUALITY)
+            ),
         ]
         if stamp:
             args += _sdr_ffmpeg_colour_args(stamp)
