@@ -369,6 +369,14 @@ def check_tracks(path, keep_langs=None):
     if sub_defaults:
         problems.append("%d non-forced subtitle track(s) marked default" % sub_defaults)
 
+    forced = [
+        r for r in rows
+        if r["type"] == "subtitles" and r["forced"] and r["language"] in keep_langs
+    ]
+    forced_defaults = sum(1 for r in forced if r["default"])
+    if forced and forced_defaults != 1:
+        problems.append("forced subtitle default count is %d, must be exactly 1" % forced_defaults)
+
     for row in rows:
         lang = row["language"]
         if row["type"] in ("audio", "subtitles") and lang not in keep_langs:
@@ -422,6 +430,35 @@ def check_hdr(path, baseline=None):
     return problems
 
 
+def _subtitle_pairs(rows, keep_langs):
+    pairs = []
+    for row in rows:
+        lang = (row.get("language") or "und").lower()
+        if lang in keep_langs:
+            pairs.append((lang, bool(row.get("forced"))))
+    return pairs
+
+
+def check_subtitles(path, baseline=None, keep_langs=None):
+    if not baseline:
+        return []
+    keep_langs = tuple(keep_langs or KEEP_LANGS)
+    rows, _ = probemod.track_selectors(path)
+    expected = _subtitle_pairs(baseline, keep_langs)
+    actual = _subtitle_pairs([r for r in rows if r["type"] == "subtitles"], keep_langs)
+    #----- loss against the baseline is a hold;  a track the output gained is not.
+    problems = []
+    for pair in expected:
+        if pair in actual:
+            actual.remove(pair)
+            continue
+        problems.append(
+            "subtitle track %s%s carried by the source is missing from the output"
+            % (pair[0], ", forced" if pair[1] else "")
+        )
+    return problems
+
+
 def check_segment_title(path, expected):
     _, data = probemod.track_selectors(path)
     actual = ((data.get("container") or {}).get("properties") or {}).get("title")
@@ -431,7 +468,7 @@ def check_segment_title(path, expected):
 
 
 def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidentified=False,
-              keep_langs=None):
+              keep_langs=None, subtitle_baseline=None):
     problems = []
     if not os.path.isfile(path):
         return False, ["output file is missing"]
@@ -448,6 +485,7 @@ def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidenti
             )
         problems += check_segment_title(path, expected_title)
         problems += check_tracks(path, keep_langs=keep_langs)
+        problems += check_subtitles(path, baseline=subtitle_baseline, keep_langs=keep_langs)
         problems += check_hdr(path, baseline=hdr_baseline)
     except (TagError, probemod.ProbeError) as exc:
         return False, problems + [str(exc)]

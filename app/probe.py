@@ -214,6 +214,14 @@ def probe(path, keep_langs=None):
         "subtitle_default_count": sum(
             1 for s in subtitles if s["default"] and not s["forced"]
         ),
+        "subtitle_forced_count": sum(
+            1 for s in subtitles
+            if s["forced"] and (s["language"] or "und").lower() in keep_langs
+        ),
+        "subtitle_forced_default_count": sum(
+            1 for s in subtitles
+            if s["forced"] and s["default"] and (s["language"] or "und").lower() in keep_langs
+        ),
         "foreign_tracks": [
             t["language"]
             for t in audio + subtitles

@@ -23,12 +23,12 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | COMPARED | compared | Checked against whatever 'complete/' and the library already hold, in that order.  Also the value recorded when there is no incumbent in either, and when the incumbent could not be read.  A second arrival of a title still in the pipeline holds here naming the first, with its own table against the incumbent and a second against the first arrival. |
 | ROUTED | waiting for encoder | The encoder is chosen and the title waits for its pool, CPU, GPU or passthrough, which takes titles in queue order.  Assessment is done;  everything from here runs on the pool's thread when one is free. |
 | STAGED | copying | Copying the source into the encode work area.  A multi-gigabyte title sits here for minutes. |
-| REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected. |
+| REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected:  one default audio track, no default on a non-forced subtitle, and exactly one default among forced subtitle tracks when any exists. |
 | TAGGED | tagged | Matroska tag block and segment title written. |
 | READY | ready | Passed the readiness gate, or was forced past it, and is queued for an encoder slot. |
 | ENCODING | encoding | An encoder is running.  Frames done of the total and the estimated time remaining appear beside it;  the count comes from the encoder itself, so a sparse subtitle track cannot make a running encode look stuck. |
 | ENCODED | encoded | The encoder finished, or the router chose passthrough and no re-encode was needed. |
-| VERIFIED | verified | Duration, packet count, track statistics, tag structure and HDR declarations checked on the finished file, every failure collected before it holds. |
+| VERIFIED | verified | Duration, packet count, track statistics, tag structure, HDR declarations and the subtitle set checked on the finished file, every failure collected before it holds. |
 | PUBLISHED | ready to promote | **The file is in 'complete/' and is yours to collect.**  This is the end of the pipeline as far as you are concerned.  Move the file out of 'complete/' and the title leaves this column on the next poll:  its record is closed if nothing of it remains, or counted under quarantined files while its retired source is still in '.quarantine'. |
 | CLEANUP | ready to promote | Housekeeping after publishing:  the source is retired to quarantine, the folder it leaves empty under 'import/' is removed, and the work area is wiped.  It touches nothing you collect, so it reads the same as PUBLISHED. |
 
@@ -262,7 +262,7 @@ Every encoder-bound title is also classified as progressive, interlaced or telec
 
 ## Comparison gates
 
-Before any encode, an arrival is compared against whatever 'complete/' and the library already hold, 'complete/' first because what is waiting to be promoted is the best copy known.  Every incumbent found is compared, and the arrival must win against each.  Seven gates, in order:
+Before any encode, an arrival is compared against whatever 'complete/' and the library already hold, 'complete/' first because what is waiting to be promoted is the best copy known.  Every incumbent found is compared, and the arrival must win against each.  Eight gates, in order:
 
 ```
 1  HDR or Dolby Vision present    losing it is never an upgrade
@@ -271,7 +271,8 @@ Before any encode, an arrival is compared against whatever 'complete/' and the l
 4  audio maximum channel count    5.1 beats 2.0
 5  bit depth                      10-bit beats 8-bit
 6  video bitrate                  weighted for codec efficiency
-7  source pedigree                remux > encode > web, tiebreak only
+7  forced subtitle track          a kept-language track flagged forced
+8  source pedigree                remux > encode > web, tiebreak only
 ```
 
 Every gate is evaluated and the votes are tallied.  The first difference does not decide.  Every vote a win and the title proceeds to the encode.  Every vote a loss and it goes to quarantine with no encode spent on it.  Votes in both directions go to hold, behind the Compare button, and so does a pair on which no gate voted at all.  Nothing resolves a split verdict automatically, because there is no correct automatic answer for a file that is better in one respect and worse in another.  The two exits from that hold are Force through and Discard, and both are yours.
@@ -282,11 +283,13 @@ Gate 2 defers to gate 3 whenever either side carries baked-in bars, because disp
 
 Gate 6 is comparative only.  There is no minimum bitrate anywhere in this pipeline and none is to be added.  Raw figures are weighted by codec first, h264 at 1.0, HEVC at 1.7 and AV1 at 2.2, because without the weighting the gate systematically favours the less efficient codec:  a surviving h264 source would rate above the HEVC this pipeline produced from it, and the pipeline would quarantine its own output.
 
-Gate 7 is a tiebreak rather than a vote.  Pedigree is inferred from release naming, which is exactly the kind of signal the rest of this pipeline distrusts, so it is consulted only when no measurable gate voted and it is marked as a weak signal when it decides.
+Gate 7 counts subtitle tracks that carry the forced flag in a kept language, the track that translates non-English dialogue on screen.  A file that carries one where the other side has none wins the vote;  the count is taken before the language strip, and only kept languages count, so a foreign forced track that the strip is about to drop cannot win it.
+
+Gate 8 is a tiebreak rather than a vote.  Pedigree is inferred from release naming, which is exactly the kind of signal the rest of this pipeline distrusts, so it is consulted only when no measurable gate voted and it is marked as a weak signal when it decides.
 
 Gates 2, 3 and 6 need both sides to be measurable.  Where one side is missing, the gate casts no vote and the skip is recorded rather than counted as a tie.  The tolerances are 5 percent on pixel count and 25 percent on bitrate;  the bitrate figure is a starting point and has not been calibrated.
 
-The table behind the Compare button carries every attribute the pipeline measured, not only the seven it gates on.  A row that differs with no gate against it is marked as such, and that is the row worth looking at:  it is where the pipeline saw a difference and had no rule for it.
+The table behind the Compare button carries every attribute the pipeline measured, not only the eight it gates on.  A row that differs with no gate against it is marked as such, and that is the row worth looking at:  it is where the pipeline saw a difference and had no rule for it.
 
 A library incumbent is read, compared against and left alone.  Nothing in the container writes to a library.  An incumbent in 'complete/' that loses is retired to 'complete/.quarantine' when the winner publishes, its record marked as superseded by the winner, so one folder never holds two copies of one cut.
 
@@ -318,7 +321,7 @@ Cover art is a by-product of the same lookup.  The poster comes off the TMDB pag
 
 ## Library audit
 
-A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.
+A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags including a forced subtitle track with no default, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.  A second listing is a subtitle track named forced without the forced flag set:  the name is a release convention the pipeline never acts on, so the row reports it and nothing repairs it.
 
 It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 

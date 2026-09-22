@@ -12,6 +12,7 @@ AMBIGUOUS = "ambiguous"
 PIXEL_TOLERANCE = 0.05
 BITRATE_TOLERANCE = 0.25
 EDITION_RUNTIME_TOLERANCE_S = 30
+KEEP_LANGS = ("eng", "en", "und")
 
 CODEC_EFFICIENCY = {
     "h264": 1.0,
@@ -83,7 +84,7 @@ MEASURED = (
     ("bit_depth", "bit depth", 5),
     ("pix_fmt", "pixel format", None),
     ("video_bitrate", "video bitrate", 6),
-    ("pedigree", "source pedigree", 7),
+    ("pedigree", "source pedigree", 8),
     ("frame_rate", "frame rate", None),
     ("frame_count", "frame count", None),
     ("duration_s", "runtime seconds", None),
@@ -94,6 +95,8 @@ MEASURED = (
     ("subtitle_codecs", "subtitle codecs", None),
     ("subtitle_tracks", "subtitle tracks", None),
     ("subtitle_default_count", "default subtitle tracks", None),
+    ("subtitle_forced_tracks", "forced subtitle tracks", 7),
+    ("subtitle_named_forced", "subtitles named forced without the flag", None),
     ("foreign_tracks", "foreign language tracks", None),
     ("chapters", "chapters", None),
     ("cover_art", "cover art tracks", None),
@@ -127,7 +130,23 @@ def _joined(values):
     return ", ".join(seen) or None
 
 
-def attributes(container, path=None, crop=None, tag_structure=None, statistics_ratio=None):
+def _forced_count(subtitles, keep_langs):
+    return sum(
+        1 for s in subtitles
+        if s.get("forced") and (s.get("language") or "und").lower() in keep_langs
+    )
+
+
+def _named_forced_count(subtitles):
+    return sum(
+        1 for s in subtitles
+        if not s.get("forced") and "forced" in (s.get("title") or "").lower()
+    )
+
+
+def attributes(container, path=None, crop=None, tag_structure=None, statistics_ratio=None,
+               keep_langs=None):
+    keep_langs = tuple(keep_langs or KEEP_LANGS)
     video = container.get("video") or {}
     audio = container.get("audio") or []
     subtitles = container.get("subtitles") or []
@@ -166,6 +185,8 @@ def attributes(container, path=None, crop=None, tag_structure=None, statistics_r
         "subtitle_codecs": _joined([s.get("codec") for s in subtitles]),
         "subtitle_tracks": len(subtitles),
         "subtitle_default_count": int(container.get("subtitle_default_count") or 0),
+        "subtitle_forced_tracks": _forced_count(subtitles, keep_langs),
+        "subtitle_named_forced": _named_forced_count(subtitles),
         "foreign_tracks": _joined(container.get("foreign_tracks") or []),
         "chapters": int(container.get("chapters") or 0),
         "cover_art": len(container.get("cover_art") or []),
@@ -194,10 +215,10 @@ def _variable_aspect(secondary):
     return "%dx%d in %.0f%% of samples" % (secondary["width"], secondary["height"], secondary["share"] * 100)
 
 
-def measure(path, crop=None):
+def measure(path, crop=None, keep_langs=None):
     from . import probe as probemod, tags as tagsmod
 
-    container = probemod.probe(path).container
+    container = probemod.probe(path, keep_langs=keep_langs).container
     video = container.get("video") or {}
     if not video.get("frame_count"):
         try:
@@ -214,7 +235,10 @@ def measure(path, crop=None):
         ratio = round(tagsmod.byte_sum_ratio(path), 4)
     except Exception as exc:
         log.debug("byte-sum ratio unreadable on %s: %s", path, exc)
-    return attributes(container, path, crop=crop, tag_structure=structure, statistics_ratio=ratio)
+    return attributes(
+        container, path, crop=crop, tag_structure=structure, statistics_ratio=ratio,
+        keep_langs=keep_langs,
+    )
 
 
 #----- Same cut, or not
@@ -426,6 +450,12 @@ def compare(incoming, incumbent, profile=None):
     else:
         notes.append("video bitrate unavailable on one side, gate 6 skipped")
 
+    #----- counted before the strip, so only a kept-language forced track can win the vote.
+    new_forced = int(incoming.get("subtitle_forced_tracks") or 0)
+    old_forced = int(incumbent.get("subtitle_forced_tracks") or 0)
+    if new_forced != old_forced:
+        _cast(votes, 7, "the %s carries a forced subtitle track", new_forced, old_forced)
+
     wins = [v for v in votes if v["verdict"] == WIN]
     losses = [v for v in votes if v["verdict"] == LOSS]
 
@@ -457,11 +487,11 @@ def compare(incoming, incumbent, profile=None):
     old_rank = _pedigree_rank(incumbent.get("pedigree"))
     if new_rank >= 0 and old_rank >= 0 and new_rank != old_rank:
         notes.append("decided on release naming, which is a weak signal")
-        _cast(votes, 7, "the %s has the better source pedigree", new_rank, old_rank)
+        _cast(votes, 8, "the %s has the better source pedigree", new_rank, old_rank)
         decided = votes[0]
-        log.info("comparison %s at gate 7: %s", decided["verdict"], decided["reason"])
+        log.info("comparison %s at gate 8: %s", decided["verdict"], decided["reason"])
         return Comparison(
-            decided["verdict"], 7, decided["reason"], incoming, incumbent, notes, votes
+            decided["verdict"], 8, decided["reason"], incoming, incumbent, notes, votes
         )
 
     log.info("comparison ambiguous, no gate produced a clear difference")

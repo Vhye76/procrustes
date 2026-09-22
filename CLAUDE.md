@@ -244,7 +244,8 @@ A SAME-IDENTITY ARRIVAL STILL IN THE PIPELINE HOLDS THE LATER ONE, WITH BOTH TAB
 4  audio maximum channel count    5.1 beats 2.0
 5  bit depth                      10-bit beats 8-bit
 6  video bitrate                  weighted for codec efficiency, comparative only
-7  source pedigree                remux > encode > web, tiebreak only
+7  forced subtitle track          a kept-language track flagged forced, higher count wins
+8  source pedigree                remux > encode > web, tiebreak only
 ```
 
 Every vote a win proceeds.  Every vote a loss goes to quarantine with no encode spent.  VOTES IN BOTH DIRECTIONS GO TO HELD with a side-by-side attribute table in the UI, and so does a pair on which no gate voted.  'compare.compare' returns only after every gate has voted;  returning at the first difference settles a split verdict silently by whichever gate sits earliest.
@@ -253,11 +254,13 @@ A held contradictory verdict has two exits:  the section 7 override, or Discard,
 
 GATE 1 IS ASYMMETRIC AND IT IS THE ONLY SHORT CIRCUIT.  An incoming file that LACKS HDR or Dolby Vision the incumbent carries is an immediate loss.  One that GAINS it casts an ordinary win vote.
 
-Gate 7 is a tiebreak rather than a vote.  Source pedigree is inferred from release naming, so it is consulted ONLY when no measurable gate voted, and flagged as a weak signal when it decides.
+Gate 7 counts subtitle tracks carrying the forced flag whose language is in 'keep_langs', the translation of non-English dialogue for the audience the library serves.  The count is read from the arrival before its strip, so the language filter is what keeps a foreign forced track the strip will drop from winning a vote.
+
+Gate 8 is a tiebreak rather than a vote.  Source pedigree is inferred from release naming, so it is consulted ONLY when no measurable gate voted, and flagged as a weak signal when it decides.
 
 Gates 2, 3 and 6 need both sides to be measurable.  When one side is missing the gate casts no vote and the skip is recorded in the notes.  A deferred gate 2 casts no vote either.
 
-THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SIX IT GATES ON.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such.
+THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SEVEN IT GATES ON.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such.
 
 AN INCONCLUSIVE HOLD NAMES THE INCUMBENT, AND SAYS WHEN ITS TITLE DIFFERS, since a library numbered one behind the catalogue puts a different episode at the matched number.  'orchestrator._ambiguous_detail' puts the incumbent's file name on the hold reason, the COMPARED record and the log line, and says first when its segment title differs from the incoming title under the section 9 transform.
 
@@ -554,7 +557,7 @@ USE '--tags global:' AND NEVER '--tags all:', which replaces every tag and destr
 
 Audio tracks:  EXACTLY ONE default, and it must be the primary track rather than a commentary.  Assert the count is exactly one rather than merely testing that some default exists.  No default lets the player choose arbitrarily;  more than one is the common scene-release failure.
 
-Subtitle tracks:  no default, in any language.  Forced subtitle tracks are exempt and keep their default.  Key that exception off the actual forced_track property and NEVER off the track name, since names like 'SDH' and 'Force' are inconsistent scene conventions.
+Subtitle tracks:  no default on a non-forced track, in any language.  Among forced tracks EXACTLY ONE default when any exists, the first in track order, and none otherwise;  a player's initial pick reads the default flag, so a forced track left without it plays nowhere until selected by hand.  Key forced off the actual forced_track property and NEVER off the track name, since names like 'SDH' and 'Force' are inconsistent scene conventions.  A track named forced without the flag is listed by the comparison and the audit and is never repaired from the name.
 
 ### Language
 
@@ -720,7 +723,7 @@ Letterboxing            metadata first, cropdetect only on real candidates
 
 TRAP:  COMPARE VIDEO STREAM DURATION, NOT CONTAINER DURATION.  After a language strip the container figure can drop by minutes with nothing lost, because the longest stream was a removed subtitle track.
 
-WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the readiness check, which carries the structural tag test and the HDR invariant from section 12.  The full decode scan is deliberately NOT implemented:  it costs a complete read of the output per title, and an encode preserves the video packet count exactly, which is why that check is an equality rather than a tolerance.
+WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the readiness check, which carries the structural tag test, the HDR invariant from section 12 and the subtitle set.  'tags.check_subtitles' takes the PROBED subtitle list as its baseline and fails when a kept-language (language, forced) pair the source carried is missing from the output, at READY and again at VERIFIED;  a track the output gained is fine.  The full decode scan is deliberately NOT implemented:  it costs a complete read of the output per title, and an encode preserves the video packet count exactly, which is why that check is an equality rather than a tolerance.
 
 TRAP:  a decode scan does NOT catch dropped audio.  Surviving packets are valid and there is simply a hole in the timeline.
 
@@ -969,6 +972,9 @@ container not Matroska                    remux
 foreign audio or subtitle tracks          language strip
 audio default count not exactly 1         flag repair
 non-forced subtitle marked default        flag repair
+forced subtitle present, default count    flag repair
+  not exactly 1
+subtitle named forced without the flag    listed, no repair
 video track language not eng              flag repair
 tag block missing, inverted or flattened  tag rewrite
 folder and file names differ from the     republish through the pipeline

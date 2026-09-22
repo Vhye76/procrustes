@@ -826,7 +826,7 @@ class Orchestrator:
             log.info("title %s %s", title_id, verdicts[0])
         else:
             verdicts.extend(misses)
-            incoming = compare.measure(source)
+            incoming = compare.measure(source, keep_langs=keep_langs)
         for incumbent_path, route, root_name, other_cut in incumbents:
             where = "%s, %s" % (root_name, route)
             log.info(
@@ -841,7 +841,7 @@ class Orchestrator:
             new_crop, old_crop = self._crop_pair(
                 title_id, (source, container), (incumbent_path, incumbent_container), crops
             )
-            incumbent = compare.measure(incumbent_path, crop=old_crop)
+            incumbent = compare.measure(incumbent_path, crop=old_crop, keep_langs=keep_langs)
             incoming_attrs = compare.with_crop(incoming, new_crop)
             #----- a claimed edition is checked against the folder's plain file before it can skip the comparison.
             if other_cut and identity.get("edition"):
@@ -895,7 +895,7 @@ class Orchestrator:
         sibling = self.store.sibling_in_flight(row)
         if sibling is not None:
             if incoming is None:
-                incoming = compare.measure(source)
+                incoming = compare.measure(source, keep_langs=keep_langs)
             pair = self._compare_sibling(title_id, source, container, incoming, crops, sibling, kind)
             detail = (
                 "title %s (%s) carries the same identity and is at %s; %s; retry once it has "
@@ -922,7 +922,7 @@ class Orchestrator:
         new_crop, old_crop = self._crop_pair(title_id, (source, container), (path, sibling_container), crops)
         result = compare.compare(
             compare.with_crop(incoming, new_crop),
-            compare.measure(path, crop=old_crop),
+            compare.measure(path, crop=old_crop, keep_langs=self.settings.get("keep_langs")),
             profile=self.settings.profile(kind),
         )
         #----- informational only:  a pair verdict never quarantines, the operator settles the pair.
@@ -1337,9 +1337,11 @@ class Orchestrator:
         if self.cfg.dry_run:
             self.store.advance(title_id, state.READY, "dry run")
             return
+        probe = (self.store.get(title_id) or {}).get("probe") or {}
         ok, problems = tags.readiness(
             work, kind, identity["title"], show=identity.get("show"),
             unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
+            subtitle_baseline=probe.get("subtitles"),
         )
         if not ok:
             if self._forced(title_id, state.READY, problems):
@@ -1493,10 +1495,13 @@ class Orchestrator:
         if ratio <= tags.STATS_RATIO_FLOOR:
             problems.append("track statistics missing after encode, byte-sum ratio %.4f" % ratio)
         notes.append("statistics ratio %.4f" % ratio)
-        baseline = ((self.store.get(title_id) or {}).get("probe") or {}).get("video")
+        probe = (self.store.get(title_id) or {}).get("probe") or {}
+        baseline = probe.get("video")
+        subtitle_baseline = probe.get("subtitles") or []
         ok, readiness_problems = tags.readiness(
             work, kind, identity["title"], show=identity.get("show"), hdr_baseline=baseline,
             unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
+            subtitle_baseline=subtitle_baseline,
         )
         if not ok:
             problems += ["published file failed readiness: %s" % p for p in readiness_problems]
@@ -1504,7 +1509,9 @@ class Orchestrator:
             notes.append("tag structure verified")
             if (baseline or {}).get("hdr"):
                 notes.append("hdr declaration intact")
-        self.store.update(title_id, output_probe=compare.measure(work))
+            if any((s.get("language") or "und").lower() in profile["keep_langs"] for s in subtitle_baseline):
+                notes.append("subtitle tracks intact")
+        self.store.update(title_id, output_probe=compare.measure(work, keep_langs=profile["keep_langs"]))
         if problems:
             if self._forced(title_id, state.VERIFIED, problems):
                 return

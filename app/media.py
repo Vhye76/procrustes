@@ -247,7 +247,7 @@ def strip_foreign(src, dst, keep_langs=None):
         if lang in keep_langs:
             target.append(str(track.get("id")))
         else:
-            dropped.append("%s:%s" % (kind, lang))
+            dropped.append("%s:%s%s" % (kind, lang, " forced" if props.get("forced_track") else ""))
 
     if not dropped:
         log.info("language strip: nothing to drop, every track is %s", " or ".join(keep_langs))
@@ -273,6 +273,7 @@ def fix_flags_and_language(path):
     rows, _ = probemod.track_selectors(path)
     args = []
     first_audio = None
+    first_forced = None
     for row in rows:
         if row["type"] == "video":
             if "V_MJPEG" not in (row["codec_id"] or "").upper():
@@ -285,8 +286,17 @@ def fix_flags_and_language(path):
                 "--edit", "track:%s" % row["selector"],
                 "--set", "flag-default=%d" % wanted,
             ]
-        elif row["type"] == "subtitles" and not row["forced"]:
-            args += ["--edit", "track:%s" % row["selector"], "--set", "flag-default=0"]
+        elif row["type"] == "subtitles":
+            #----- the first forced track takes the default, the rule the audio side uses.
+            wanted = 0
+            if row["forced"]:
+                if first_forced is None:
+                    first_forced = row["selector"]
+                wanted = 1 if row["selector"] == first_forced else 0
+            args += [
+                "--edit", "track:%s" % row["selector"],
+                "--set", "flag-default=%d" % wanted,
+            ]
 
     if not args:
         log.info("track flags and languages already correct, no edit needed")
@@ -299,8 +309,9 @@ def fix_flags_and_language(path):
             % (proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()[-400:])
         )
     log.info(
-        "track flags repaired, %d edit(s), default audio is %s",
+        "track flags repaired, %d edit(s), default audio is %s, %s",
         len(args) // 4, first_audio,
+        "forced subtitle default is %s" % first_forced if first_forced else "no forced subtitle",
     )
     log.debug("mkvpropedit args: %s", " ".join(args))
     return {"edits": len(args) // 4}

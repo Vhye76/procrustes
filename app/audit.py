@@ -219,6 +219,18 @@ def assess(path, kind, profile=None):
     rows.append(_row("audio default count", 1, audio_defaults, audio_defaults == 1, REPAIR_FLAGS))
     sub_defaults = int(container.get("subtitle_default_count") or 0)
     rows.append(_row("subtitle defaults", 0, sub_defaults, sub_defaults == 0, REPAIR_FLAGS))
+    forced_wanted = 1 if int(container.get("subtitle_forced_count") or 0) else 0
+    forced_defaults = int(container.get("subtitle_forced_default_count") or 0)
+    rows.append(_row(
+        "forced subtitle default", forced_wanted, forced_defaults,
+        forced_defaults == forced_wanted, REPAIR_FLAGS,
+    ))
+    #----- a track name is never acted on, so the row lists and nothing repairs.
+    named_forced = sum(
+        1 for s in container.get("subtitles") or []
+        if not s.get("forced") and "forced" in (s.get("title") or "").lower()
+    )
+    rows.append(_row("forced by name only", 0, named_forced, named_forced == 0, None))
     video_lang = next(
         (r["language"] for r in selectors
          if r["type"] == "video" and "V_MJPEG" not in (r["codec_id"] or "").upper()),
