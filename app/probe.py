@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 
 log = logging.getLogger("probe")
@@ -10,6 +11,7 @@ MKVMERGE = os.environ.get("MKVMERGE", "mkvmerge")
 
 KEEP_LANGS = ("eng", "en", "und")
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".m4v", ".avi", ".ts", ".m2ts", ".mov", ".wmv")
+NAMED_FORCED = re.compile(r"(?<![a-z0-9])(non|not|no|un)?[\s_.-]*forced(?![a-z0-9])", re.IGNORECASE)
 
 BITSTREAM_SAMPLE_FRAMES = 12
 MASTERING_SIDE_DATA = "Mastering display metadata"
@@ -541,6 +543,17 @@ def _subtitle_summary(s):
         "default": bool(disp.get("default")),
         "forced": bool(disp.get("forced")),
     }
+
+
+def named_forced(name):
+    #----- a match whose first group caught a negation ('Non-Forced', 'Unforced') does not count.
+    return any(m.group(1) is None for m in NAMED_FORCED.finditer(name or ""))
+
+
+def forced_subtitle(track, keep_langs):
+    if (track.get("language") or "und").lower() not in keep_langs:
+        return False
+    return bool(track.get("forced")) or named_forced(track.get("title") or track.get("name"))
 
 
 def _stream_summary(s):

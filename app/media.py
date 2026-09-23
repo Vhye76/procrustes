@@ -269,11 +269,13 @@ def strip_foreign(src, dst, keep_langs=None):
     return {"stripped": len(dropped), "dropped": dropped, "output": str(dst)}
 
 
-def fix_flags_and_language(path):
+def fix_flags_and_language(path, keep_langs=None):
+    keep_langs = tuple(keep_langs or KEEP_LANGS)
     rows, _ = probemod.track_selectors(path)
     args = []
     first_audio = None
     first_forced = None
+    named = []
     for row in rows:
         if row["type"] == "video":
             if "V_MJPEG" not in (row["codec_id"] or "").upper():
@@ -289,7 +291,8 @@ def fix_flags_and_language(path):
         elif row["type"] == "subtitles":
             #----- the first forced track takes the default, the rule the audio side uses.
             wanted = 0
-            if row["forced"]:
+            forced = row["forced"] or probemod.forced_subtitle(row, keep_langs)
+            if forced:
                 if first_forced is None:
                     first_forced = row["selector"]
                 wanted = 1 if row["selector"] == first_forced else 0
@@ -297,10 +300,13 @@ def fix_flags_and_language(path):
                 "--edit", "track:%s" % row["selector"],
                 "--set", "flag-default=%d" % wanted,
             ]
+            if forced and not row["forced"]:
+                named.append(row["selector"])
+                args += ["--set", "flag-forced=1"]
 
     if not args:
         log.info("track flags and languages already correct, no edit needed")
-        return {"edits": 0}
+        return {"edits": 0, "named_forced": []}
 
     proc = run([MKVPROPEDIT, str(path)] + args)
     if proc.returncode != 0:
@@ -308,13 +314,15 @@ def fix_flags_and_language(path):
             "mkvpropedit flag fix failed rc=%d: %s"
             % (proc.returncode, ((proc.stdout or "") + (proc.stderr or "")).strip()[-400:])
         )
+    edits = sum(1 for a in args if a == "--edit")
     log.info(
-        "track flags repaired, %d edit(s), default audio is %s, %s",
-        len(args) // 4, first_audio,
+        "track flags repaired, %d edit(s), default audio is %s, %s%s",
+        edits, first_audio,
         "forced subtitle default is %s" % first_forced if first_forced else "no forced subtitle",
+        ", flagged forced from the track name: %s" % ", ".join(named) if named else "",
     )
     log.debug("mkvpropedit args: %s", " ".join(args))
-    return {"edits": len(args) // 4}
+    return {"edits": edits, "named_forced": named}
 
 
 #----- HDR declaration repair

@@ -377,6 +377,13 @@ def check_tracks(path, keep_langs=None):
     if forced and forced_defaults != 1:
         problems.append("forced subtitle default count is %d, must be exactly 1" % forced_defaults)
 
+    named = [
+        r["selector"] for r in rows
+        if r["type"] == "subtitles" and not r["forced"] and probemod.forced_subtitle(r, keep_langs)
+    ]
+    if named:
+        problems.append("subtitle %s named forced without the forced flag" % ", ".join(named))
+
     for row in rows:
         lang = row["language"]
         if row["type"] in ("audio", "subtitles") and lang not in keep_langs:
@@ -430,12 +437,13 @@ def check_hdr(path, baseline=None):
     return problems
 
 
-def _subtitle_pairs(rows, keep_langs):
+def _subtitle_pairs(rows, keep_langs, by_name=False):
     pairs = []
     for row in rows:
         lang = (row.get("language") or "und").lower()
         if lang in keep_langs:
-            pairs.append((lang, bool(row.get("forced"))))
+            forced = bool(row.get("forced")) or (by_name and probemod.forced_subtitle(row, keep_langs))
+            pairs.append((lang, forced))
     return pairs
 
 
@@ -444,7 +452,7 @@ def check_subtitles(path, baseline=None, keep_langs=None):
         return []
     keep_langs = tuple(keep_langs or KEEP_LANGS)
     rows, _ = probemod.track_selectors(path)
-    expected = _subtitle_pairs(baseline, keep_langs)
+    expected = _subtitle_pairs(baseline, keep_langs, by_name=True)
     actual = _subtitle_pairs([r for r in rows if r["type"] == "subtitles"], keep_langs)
     #----- loss against the baseline is a hold;  a track the output gained is not.
     problems = []

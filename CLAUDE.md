@@ -244,7 +244,7 @@ A SAME-IDENTITY ARRIVAL STILL IN THE PIPELINE HOLDS THE LATER ONE, WITH BOTH TAB
 4  audio maximum channel count    5.1 beats 2.0
 5  bit depth                      10-bit beats 8-bit
 6  video bitrate                  weighted for codec efficiency, comparative only
-7  forced subtitle track          a kept-language track flagged forced, higher count wins
+7  forced subtitle track          a kept-language track flagged or named forced, higher count wins
 8  source pedigree                remux > encode > web, tiebreak only
 ```
 
@@ -254,7 +254,7 @@ A held contradictory verdict has two exits:  the section 7 override, or Discard,
 
 GATE 1 IS ASYMMETRIC AND IT IS THE ONLY SHORT CIRCUIT.  An incoming file that LACKS HDR or Dolby Vision the incumbent carries is an immediate loss.  One that GAINS it casts an ordinary win vote.
 
-Gate 7 counts subtitle tracks carrying the forced flag whose language is in 'keep_langs', the translation of non-English dialogue for the audience the library serves.  The count is read from the arrival before its strip, so the language filter is what keeps a foreign forced track the strip will drop from winning a vote.
+Gate 7 counts subtitle tracks whose language is in 'keep_langs' and that carry the forced flag or a forced name under section 13, the translation of non-English dialogue for the audience the library serves.  The count is read from the arrival before its strip, so the language filter is what keeps a foreign forced track the strip will drop from winning a vote.
 
 Gate 8 is a tiebreak rather than a vote.  Source pedigree is inferred from release naming, so it is consulted ONLY when no measurable gate voted, and flagged as a weak signal when it decides.
 
@@ -557,7 +557,7 @@ USE '--tags global:' AND NEVER '--tags all:', which replaces every tag and destr
 
 Audio tracks:  EXACTLY ONE default, and it must be the primary track rather than a commentary.  Assert the count is exactly one rather than merely testing that some default exists.  No default lets the player choose arbitrarily;  more than one is the common scene-release failure.
 
-Subtitle tracks:  no default on a non-forced track, in any language.  Among forced tracks EXACTLY ONE default when any exists, the first in track order, and none otherwise;  a player's initial pick reads the default flag, so a forced track left without it plays nowhere until selected by hand.  Key forced off the actual forced_track property and NEVER off the track name, since names like 'SDH' and 'Force' are inconsistent scene conventions.  A track named forced without the flag is listed by the comparison and the audit and is never repaired from the name.
+Subtitle tracks:  no default on a non-forced track, in any language.  Among forced tracks EXACTLY ONE default when any exists, the first in track order, and none otherwise;  a player's initial pick reads the default flag, so a forced track left without it plays nowhere until selected by hand.  A track is forced when it carries the forced_track property, or when it is in 'keep_langs' and its name holds 'forced' as a whole word with no negation directly before it ('Non-Forced', 'Not Forced', 'Unforced' are not forced);  'probe.named_forced' and 'probe.forced_subtitle' are the one test.  A named track is a forced translation track that shipped without its flag, and 'media.fix_flags_and_language' sets 'flag-forced=1' on it.  THE FORCED FLAG IS ONLY EVER SET, NEVER CLEARED:  nothing writes 'flag-forced=0', and a flagged track keeps the flag whatever its name.  'tags.check_subtitles' reads the name on the PROBED baseline and only the flag on the output, so a named track left unflagged or a flagged track that lost its flag holds;  'tags.check_tracks' fails a kept-language track named forced without the flag.
 
 ### Language
 
@@ -733,7 +733,7 @@ Letterboxing            metadata first, cropdetect only on real candidates
 
 TRAP:  COMPARE VIDEO STREAM DURATION, NOT CONTAINER DURATION.  After a language strip the container figure can drop by minutes with nothing lost, because the longest stream was a removed subtitle track.
 
-WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the readiness check, which carries the structural tag test, the HDR invariant from section 12 and the subtitle set.  'tags.check_subtitles' takes the PROBED subtitle list as its baseline and fails when a kept-language (language, forced) pair the source carried is missing from the output, at READY and again at VERIFIED;  a track the output gained is fine.  The full decode scan is deliberately NOT implemented:  it costs a complete read of the output per title, and an encode preserves the video packet count exactly, which is why that check is an equality rather than a tolerance.
+WHAT 'orchestrator._verify' ACTUALLY RUNS:  video stream duration, video packet count in against out, the statistics byte-sum ratio, and the readiness check, which carries the structural tag test, the HDR invariant from section 12 and the subtitle set.  'tags.check_subtitles' takes the PROBED subtitle list as its baseline and fails when a kept-language (language, forced) pair the source carried is missing from the output, at READY and again at VERIFIED, the baseline counting a track forced by flag or name and the output by flag only, per section 13;  a track the output gained is fine.  The full decode scan is deliberately NOT implemented:  it costs a complete read of the output per title, and an encode preserves the video packet count exactly, which is why that check is an equality rather than a tolerance.
 
 TRAP:  a decode scan does NOT catch dropped audio.  Surviving packets are valid and there is simply a hole in the timeline.
 
@@ -984,7 +984,7 @@ audio default count not exactly 1         flag repair
 non-forced subtitle marked default        flag repair
 forced subtitle present, default count    flag repair
   not exactly 1
-subtitle named forced without the flag    listed, no repair
+subtitle named forced without the flag    flag repair
 video track language not eng              flag repair
 tag block missing, inverted or flattened  tag rewrite
 folder and file names differ from the     republish through the pipeline

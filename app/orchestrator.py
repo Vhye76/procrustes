@@ -1346,8 +1346,12 @@ class Orchestrator:
                     os.remove(current)
                 current = stripped
             with self._phase(title_id, "repairing flags"):
-                media.fix_flags_and_language(current)
+                flags = media.fix_flags_and_language(current, keep_langs=profile["keep_langs"])
                 detail.append("flags and languages normalised")
+                if flags["named_forced"]:
+                    detail.append(
+                        "subtitle %s flagged forced from the track name" % ", ".join(flags["named_forced"])
+                    )
                 video = probemod.probe(current, keep_langs=profile["keep_langs"]).video
                 if video.get("hdr"):
                     repair = media.repair_hdr_declaration(current, video)
@@ -1516,7 +1520,7 @@ class Orchestrator:
         elapsed = int(time.time() - started)
         with self._phase(title_id, "tagging output"):
             tags.refresh_statistics(target)
-            media.fix_flags_and_language(target)
+            media.fix_flags_and_language(target, keep_langs=profile["keep_langs"])
             self._apply_tags(target, identity, kind, carry)
             tags.refresh_statistics(target)
         os.remove(work)

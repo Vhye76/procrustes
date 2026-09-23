@@ -2,6 +2,8 @@ import logging
 import os
 import re
 
+from . import probe
+
 log = logging.getLogger("compare")
 
 #----- Verdicts, tolerances and codec weighting
@@ -131,16 +133,13 @@ def _joined(values):
 
 
 def _forced_count(subtitles, keep_langs):
-    return sum(
-        1 for s in subtitles
-        if s.get("forced") and (s.get("language") or "und").lower() in keep_langs
-    )
+    return sum(1 for s in subtitles if probe.forced_subtitle(s, keep_langs))
 
 
 def _named_forced_count(subtitles):
     return sum(
         1 for s in subtitles
-        if not s.get("forced") and "forced" in (s.get("title") or "").lower()
+        if not s.get("forced") and probe.named_forced(s.get("title"))
     )
 
 

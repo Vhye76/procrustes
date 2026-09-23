@@ -23,7 +23,7 @@ Every title carries a stage, shown in the Stage column of the dashboard.  These 
 | COMPARED | compared | Checked against whatever 'complete/' and the library already hold, in that order.  Also the value recorded when there is no incumbent in either, and when the incumbent could not be read.  A second arrival of a title still in the pipeline holds here naming the first, with its own table against the incumbent and a second against the first arrival. |
 | ROUTED | waiting for encoder | The encoder is chosen and the title waits for its pool, CPU, GPU or passthrough, which takes titles in queue order.  Assessment is done;  everything from here runs on the pool's thread when one is free. |
 | STAGED | staged | The source is copied into the encode work area. |
-| REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected:  one default audio track, no default on a non-forced subtitle, and exactly one default among forced subtitle tracks when any exists. |
+| REMUXED | remuxed | Converted to Matroska if needed, non-English tracks dropped, track flags corrected:  one default audio track, no default on a non-forced subtitle, and exactly one default among forced subtitle tracks when any exists.  A kept-language subtitle named forced without the flag, such as 'English-FORCED-PGS', is flagged forced;  a forced flag is never cleared. |
 | TAGGED | tagged | Matroska tag block and segment title written. |
 | READY | ready | Passed the readiness gate, or was forced past it, and is queued for an encoder slot. |
 | ENCODING | encoding | An encoder is running.  Frames done of the total and the estimated time remaining appear beside it;  the count comes from the encoder itself, so a sparse subtitle track cannot make a running encode look stuck. |
@@ -275,7 +275,7 @@ Before any encode, an arrival is compared against whatever 'complete/' and the l
 4  audio maximum channel count    5.1 beats 2.0
 5  bit depth                      10-bit beats 8-bit
 6  video bitrate                  weighted for codec efficiency
-7  forced subtitle track          a kept-language track flagged forced
+7  forced subtitle track          a kept-language track flagged or named forced
 8  source pedigree                remux > encode > web, tiebreak only
 ```
 
@@ -287,7 +287,7 @@ Gate 2 defers to gate 3 whenever either side carries baked-in bars, because disp
 
 Gate 6 is comparative only.  There is no minimum bitrate anywhere in this pipeline and none is to be added.  Raw figures are weighted by codec first, h264 at 1.0, HEVC at 1.7 and AV1 at 2.2, because without the weighting the gate systematically favours the less efficient codec:  a surviving h264 source would rate above the HEVC this pipeline produced from it, and the pipeline would quarantine its own output.
 
-Gate 7 counts subtitle tracks that carry the forced flag in a kept language, the track that translates non-English dialogue on screen.  A file that carries one where the other side has none wins the vote;  the count is taken before the language strip, and only kept languages count, so a foreign forced track that the strip is about to drop cannot win it.
+Gate 7 counts subtitle tracks in a kept language that carry the forced flag or are named forced, the track that translates non-English dialogue on screen.  A file that carries one where the other side has none wins the vote;  the count is taken before the language strip, and only kept languages count, so a foreign forced track that the strip is about to drop cannot win it.
 
 Gate 8 is a tiebreak rather than a vote.  Pedigree is inferred from release naming, which is exactly the kind of signal the rest of this pipeline distrusts, so it is consulted only when no measurable gate voted and it is marked as a weak signal when it decides.
 
@@ -325,7 +325,7 @@ Cover art is a by-product of the same lookup.  The poster comes off the TMDB pag
 
 ## Library audit
 
-A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags including a forced subtitle track with no default, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.  A second listing is a subtitle track named forced without the forced flag set:  the name is a release convention the pipeline never acts on, so the row reports it and nothing repairs it.
+A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags including a forced subtitle track with no default, a subtitle track named forced without the forced flag, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.
 
 It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
 
