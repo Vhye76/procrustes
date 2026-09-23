@@ -1489,6 +1489,13 @@ class Orchestrator:
         if self.cfg.dry_run:
             self.store.advance(title_id, state.VERIFIED, "dry run")
             return
+        self._progress[title_id] = {"phase": "verifying"}
+        try:
+            self._verify_checks(title_id, work, source, identity, kind, profile)
+        finally:
+            self._progress.pop(title_id, None)
+
+    def _verify_checks(self, title_id, work, source, identity, kind, profile):
         notes = []
         problems = []
         src_duration = probemod.video_duration(source)
