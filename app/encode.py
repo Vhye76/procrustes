@@ -148,6 +148,7 @@ def encoder_params(profile, render_node=None):
 #----- The router
 def select(video, kind, profile, grain=None, gpu_available=True, override=None,
            hevc_gpu_available=None):
+    #----- unset, HEVC hardware availability follows the AV1 probe.
     if hevc_gpu_available is None:
         hevc_gpu_available = gpu_available
     decision = _select(video, kind, profile, grain, gpu_available, override, hevc_gpu_available)
@@ -464,6 +465,7 @@ def build_command(decision, src, dst, video, params, crop=None, crf=None):
             "-c:v", "hevc_qsv",
             "-profile:v", "main10",
             "-preset", str(params.get("hevc_qsv_preset") or HEVC_QSV_PRESET),
+            #----- a sidecar crf is taken as the global quality.
             "-global_quality", str(
                 crf if crf is not None
                 else params.get("hevc_qsv_global_quality", HEVC_QSV_GLOBAL_QUALITY)

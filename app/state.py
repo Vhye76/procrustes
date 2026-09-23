@@ -43,7 +43,7 @@ DISPLAY_NAMES = {
     IDENTIFIED: "identified",
     COMPARED: "compared",
     ROUTED: "waiting for encoder",
-    STAGED: "copying",
+    STAGED: "staged",
     REMUXED: "remuxed",
     TAGGED: "tagged",
     READY: "ready",

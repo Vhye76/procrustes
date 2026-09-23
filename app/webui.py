@@ -5,6 +5,7 @@ import os
 import re
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.cookies import CookieError, SimpleCookie
@@ -159,7 +160,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.app.status(user))
             if path == "/api/titles":
                 queue = self.app.orchestrator.queue_view()
-                return self._json(200, [self.app.annotate(r, queue) for r in self.app.store.all()])
+                progress = self.app.orchestrator.progress()
+                return self._json(
+                    200, [self.app.annotate(r, queue, progress) for r in self.app.store.all()]
+                )
             if path == "/api/held":
                 return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
@@ -452,11 +456,13 @@ class WebUI:
             return "".join(fh.readlines()[-lines:])
 
     #----- Operator decisions
-    def annotate(self, row, queue=None):
+    def annotate(self, row, queue=None, progress=None):
         if not row:
             return row
         if queue is None:
             queue = self.orchestrator.queue_view()
+        if progress is None:
+            progress = self.orchestrator.progress()
         place = queue.get(row["id"]) or {}
         row["queue_position"] = place.get("position")
         row["locked"] = bool(place.get("locked"))
@@ -465,6 +471,16 @@ class WebUI:
         decision = row.get("decision") or {}
         if row.get("stage") == state.ROUTED and decision.get("action") == "passthrough":
             row["display_stage"] = "waiting for passthrough"
+        live = progress.get(row["id"]) or {}
+        if live.get("phase"):
+            row["display_stage"] = live["phase"]
+            row["phase"] = live["phase"]
+            row["copied_bytes"] = live.get("copied_bytes")
+            row["total_bytes"] = live.get("total_bytes")
+        elif row.get("stage") == state.HELD and (row.get("retry_after") or 0) > time.time():
+            wait = int(row["retry_after"] - time.time())
+            #----- minutes, rounded up.
+            row["display_stage"] = "retrying in %d min" % -(-wait // 60)
         by_device = decision.get("encoder_by_device") or {}
         if not decision.get("device") and len(by_device) > 1:
             row["encoder_label"] = " or ".join(

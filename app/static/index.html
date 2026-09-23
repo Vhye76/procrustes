@@ -426,7 +426,14 @@ function encodeSub(t, prog) {
   const bits = [t.encoder_label || t.encoder || t.display_stage || ""];
   if (p && p.eta_s != null) bits.push("eta " + fmtEta(p.eta_s));
   const line = esc(bits.filter(Boolean).join("   "));
-  if (p && p.phase === "verifying") return `<div class="s">${line}</div><div class="s">verifying</div>`;
+  if (p && p.phase) {
+    if (p.copied_bytes == null || !p.total_bytes)
+      return `<div class="s">${line}</div><div class="s">${esc(p.phase)}</div>`;
+    const c = Math.max(0, Math.min(100, 100 * p.copied_bytes / p.total_bytes));
+    return `<div class="s">${line}</div>
+    <div class="bar"><i style="width:${c}%"></i></div>
+    <div class="s">${esc(p.phase)} ${gb(p.copied_bytes)} / ${gb(p.total_bytes)}</div>`;
+  }
   if (!p || p.frame == null) return `<div class="s">${line}</div>`;
   if (!p.total_frames) return `<div class="s">${line}</div><div class="s">${num(p.frame)} frames</div>`;
   const w = Math.max(0, Math.min(100, 100 * p.frame / p.total_frames));

@@ -575,6 +575,7 @@ class Provider:
     #----- The walk, shared by both kinds
     def _identify_from(self, rungs, kind, pinned=None):
         resolved = self._identify_walk(rungs, kind, pinned)
+        #----- 'hold_candidates' preselects this entity.
         self._local.resolved_qid = (resolved or {}).get("qid")
         return resolved
 
@@ -595,6 +596,7 @@ class Provider:
                 )
                 return resolved
         results = []
+        id_rungs = set()
         for rung, ids, readings in rungs:
             pinned = {
                 field: (ids or {}).get(field)
@@ -603,6 +605,7 @@ class Provider:
             }
             readings = [r for r in readings if r[0]]
             if pinned:
+                id_rungs.add(rung)
                 name, year = (readings[0][0], readings[0][1]) if readings else ("", None)
                 resolved = self._resolve_by_ids(pinned, name, year, kind)
             elif readings:
@@ -625,6 +628,7 @@ class Provider:
                 log.debug("rung %s resolved %s", rung, resolved.get("qid"))
             results.append((rung, resolved))
 
+        #----- (rung, qid, the tied entry or None, resolved)
         votes = []
         for rung, resolved in results:
             if resolved["missing"]:
@@ -633,6 +637,12 @@ class Provider:
                 votes.extend((rung, t["qid"], t, resolved) for t in resolved["tied"])
             else:
                 votes.append((rung, resolved.get("qid"), None, resolved))
+        id_votes = [v for v in votes if v[0] in id_rungs]
+        if id_votes and len({v[1] for v in id_votes}) == 1:
+            for rung, qid, _entry, _resolved in votes:
+                if rung not in id_rungs and qid != id_votes[0][1]:
+                    log.debug("rung %s reached %s, the id rungs settle on %s", rung, qid, id_votes[0][1])
+            votes = id_votes
         distinct = []
         for _rung, qid, _entry, _resolved in votes:
             if qid not in distinct:

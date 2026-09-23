@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import os
 import shutil
@@ -230,6 +231,34 @@ class Orchestrator:
                 row["eta_s"] = int(max(0, total_frames - frame) / fps)
             self._progress[title_id] = row
         return handle
+
+    @contextlib.contextmanager
+    def _phase(self, title_id, name, watch=None, total=None):
+        entry = {"phase": name}
+        if watch:
+            entry["watch"] = watch
+            entry["total_bytes"] = total
+        self._progress[title_id] = entry
+        try:
+            yield
+        finally:
+            #----- an entry a later phase put in its place is left alone.
+            if self._progress.get(title_id) is entry:
+                self._progress.pop(title_id, None)
+
+    def progress(self):
+        out = {}
+        for title_id, entry in list(self._progress.items()):
+            entry = dict(entry)
+            watch = entry.pop("watch", None)
+            if watch is not None:
+                #----- the size of the file being written so far.
+                try:
+                    entry["copied_bytes"] = os.path.getsize(watch)
+                except OSError:
+                    entry["copied_bytes"] = None
+            out[title_id] = entry
+        return out
 
     def _register_proc(self, proc):
         with self._procs_lock:
@@ -543,9 +572,11 @@ class Orchestrator:
             container = self._probe(title_id, source)
             kind = self._classify(title_id, source, container)
             reasons = self._screen(title_id, source, container, kind)
-            identity, more = self._identify(title_id, container, kind, source)
+            with self._phase(title_id, "identifying"):
+                identity, more = self._identify(title_id, container, kind, source)
             reasons += more
-            reasons += self._compare(title_id, container, identity, kind, source)
+            with self._phase(title_id, "comparing"):
+                reasons += self._compare(title_id, container, identity, kind, source)
             if reasons:
                 raise HoldError(reasons)
             self._route(title_id, container, kind, source)
@@ -694,6 +725,7 @@ class Orchestrator:
                 for e in entries:
                     if e["rung"] not in rungs:
                         rungs.append(e["rung"])
+                #----- every entry from one rung is a tie inside that rung.
                 if len(rungs) == 1:
                     names = ", ".join(
                         "%s (%s)" % (e.get("qid"), e.get("year") or "no date") for e in entries
@@ -887,6 +919,7 @@ class Orchestrator:
                     state.COMPARED,
                     "comparison against the incumbent in %s was inconclusive: %s" % (root_name, detail),
                 ))
+                #----- no further incumbent is compared once one is inconclusive.
                 break
             verdicts.append("%s (incumbent in %s)" % (result.reason, where))
             if root_name == "complete":
@@ -1207,7 +1240,9 @@ class Orchestrator:
         if self.cfg.dry_run:
             return {"grain": False, "ratio": None, "reason": "dry run"}
         scratch = os.path.join(self.layout.encode, ".probe", str(title_id))
-        with self._grain_lock:
+        #----- the wait phase shows until the lock is held, then the run phase replaces it.
+        with self._phase(title_id, "waiting for grain probe"), self._grain_lock, \
+                self._phase(title_id, "grain probe"):
             self.layout.guarded_makedirs(scratch)
             try:
                 return media.grain_probe(
@@ -1224,7 +1259,9 @@ class Orchestrator:
     def _fields(self, title_id, source, video, container, profile):
         if self.cfg.dry_run:
             return {"fields": media.FIELDS_PROGRESSIVE, "reason": "dry run"}
-        with self._grain_lock:
+        #----- the wait phase shows until the lock is held, then the run phase replaces it.
+        with self._phase(title_id, "waiting for grain probe"), self._grain_lock, \
+                self._phase(title_id, "field probe"):
             return media.field_probe(
                 source, video, container=container,
                 sample_seconds=profile["grain_sample_seconds"],
@@ -1250,15 +1287,16 @@ class Orchestrator:
     def _stage(self, title_id, source, job_id, container, profile):
         size = container.get("size_bytes") or os.path.getsize(source)
         ok, need = self.layout.has_headroom(size, profile["encode_headroom"])
-        while not ok and not self.stop_event.is_set():
-            log.info(
-                "title %s waiting for encode space: need %s, have %s",
-                title_id,
-                paths.gb(need),
-                paths.gb(self.layout.encode_free_bytes()),
-            )
-            self.stop_event.wait(30)
-            ok, need = self.layout.has_headroom(size, self.settings.get("encode_headroom"))
+        with self._phase(title_id, "waiting for encode space"):
+            while not ok and not self.stop_event.is_set():
+                log.info(
+                    "title %s waiting for encode space: need %s, have %s",
+                    title_id,
+                    paths.gb(need),
+                    paths.gb(self.layout.encode_free_bytes()),
+                )
+                self.stop_event.wait(30)
+                ok, need = self.layout.has_headroom(size, self.settings.get("encode_headroom"))
 
         workdir = self.layout.make_job_dir(job_id)
         work = os.path.join(workdir, os.path.basename(source))
@@ -1266,7 +1304,8 @@ class Orchestrator:
             log.info("title %s DRY RUN would copy %s -> %s", title_id, source, work)
         else:
             copy_started = time.time()
-            shutil.copy2(source, work)
+            with self._phase(title_id, "copying", watch=work, total=size):
+                shutil.copy2(source, work)
             copied = time.time() - copy_started
             log.info(
                 "title %s staged %s, %.1f GB in %.0fs (%.0f MB/s)",
@@ -1287,7 +1326,8 @@ class Orchestrator:
             if self.cfg.dry_run:
                 log.info("title %s DRY RUN would remux %s -> %s", title_id, current, target)
             else:
-                info = media.to_matroska(current, target)
+                with self._phase(title_id, "remuxing", watch=target, total=os.path.getsize(current)):
+                    info = media.to_matroska(current, target)
                 detail.append(info["method"])
                 os.remove(current)
             current = target
@@ -1296,27 +1336,31 @@ class Orchestrator:
         if self.cfg.dry_run:
             log.info("title %s DRY RUN would strip foreign tracks from %s", title_id, current)
         else:
-            info = media.strip_foreign(current, stripped, keep_langs=profile["keep_langs"])
+            with self._phase(
+                title_id, "stripping languages", watch=stripped, total=os.path.getsize(current)
+            ):
+                info = media.strip_foreign(current, stripped, keep_langs=profile["keep_langs"])
             if info["stripped"]:
                 detail.append("stripped %d foreign track(s)" % info["stripped"])
                 if current != source:
                     os.remove(current)
                 current = stripped
-            media.fix_flags_and_language(current)
-            detail.append("flags and languages normalised")
-            video = probemod.probe(current, keep_langs=profile["keep_langs"]).video
-            if video.get("hdr"):
-                repair = media.repair_hdr_declaration(current, video)
-                if repair["repaired"]:
-                    detail.append(
-                        "hdr declaration repaired from the bitstream: %s"
-                        % ", ".join(repair["repaired"])
-                    )
-                if repair["unrepairable"]:
-                    detail.append(
-                        "hdr declaration cannot be repaired by a header edit: %s"
-                        % ", ".join(repair["unrepairable"])
-                    )
+            with self._phase(title_id, "repairing flags"):
+                media.fix_flags_and_language(current)
+                detail.append("flags and languages normalised")
+                video = probemod.probe(current, keep_langs=profile["keep_langs"]).video
+                if video.get("hdr"):
+                    repair = media.repair_hdr_declaration(current, video)
+                    if repair["repaired"]:
+                        detail.append(
+                            "hdr declaration repaired from the bitstream: %s"
+                            % ", ".join(repair["repaired"])
+                        )
+                    if repair["unrepairable"]:
+                        detail.append(
+                            "hdr declaration cannot be repaired by a header edit: %s"
+                            % ", ".join(repair["unrepairable"])
+                        )
 
         self.store.advance(
             title_id, state.REMUXED, "; ".join(detail) or "no remux needed", work_path=current
@@ -1344,8 +1388,9 @@ class Orchestrator:
             log.info("title %s DRY RUN would write %s tags to %s", title_id, kind, work)
             self.store.advance(title_id, state.TAGGED, "dry run")
             return {}
-        carry = tags.carry_forward(tags.read_tags(work))
-        ratio = self._apply_tags(work, identity, kind, carry)
+        with self._phase(title_id, "tagging"):
+            carry = tags.carry_forward(tags.read_tags(work))
+            ratio = self._apply_tags(work, identity, kind, carry)
         self.store.advance(title_id, state.TAGGED, "statistics byte-sum ratio %.4f" % ratio)
         return carry
 
@@ -1354,11 +1399,12 @@ class Orchestrator:
             self.store.advance(title_id, state.READY, "dry run")
             return
         probe = (self.store.get(title_id) or {}).get("probe") or {}
-        ok, problems = tags.readiness(
-            work, kind, identity["title"], show=identity.get("show"),
-            unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
-            subtitle_baseline=probe.get("subtitles"),
-        )
+        with self._phase(title_id, "checking readiness"):
+            ok, problems = tags.readiness(
+                work, kind, identity["title"], show=identity.get("show"),
+                unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
+                subtitle_baseline=probe.get("subtitles"),
+            )
         if not ok:
             if self._forced(title_id, state.READY, problems):
                 return
@@ -1416,7 +1462,8 @@ class Orchestrator:
         if override.get("crop"):
             crop = override["crop"]
         elif not self.cfg.dry_run:
-            detected = self._detect_crop(work, video, container)
+            with self._phase(title_id, "detecting crop"):
+                detected = self._detect_crop(work, video, container)
             if detected and detected.get("filter"):
                 crop = detected["filter"]
                 log.info(
@@ -1467,10 +1514,11 @@ class Orchestrator:
             self._progress.pop(title_id, None)
 
         elapsed = int(time.time() - started)
-        tags.refresh_statistics(target)
-        media.fix_flags_and_language(target)
-        self._apply_tags(target, identity, kind, carry)
-        tags.refresh_statistics(target)
+        with self._phase(title_id, "tagging output"):
+            tags.refresh_statistics(target)
+            media.fix_flags_and_language(target)
+            self._apply_tags(target, identity, kind, carry)
+            tags.refresh_statistics(target)
         os.remove(work)
         log.info(
             "title %s encoded with %s on %s in %d min",
@@ -1489,11 +1537,8 @@ class Orchestrator:
         if self.cfg.dry_run:
             self.store.advance(title_id, state.VERIFIED, "dry run")
             return
-        self._progress[title_id] = {"phase": "verifying"}
-        try:
+        with self._phase(title_id, "verifying"):
             self._verify_checks(title_id, work, source, identity, kind, profile)
-        finally:
-            self._progress.pop(title_id, None)
 
     def _verify_checks(self, title_id, work, source, identity, kind, profile):
         notes = []
@@ -1594,17 +1639,21 @@ class Orchestrator:
             self.store.advance(title_id, state.PUBLISHED, "dry run", output_path=destination)
             return
 
-        self._retire_beaten(title_id, row.get("supersedes") or [])
         detail = "published to completed"
-        try:
-            self.layout.publish_file(work, destination)
-        except FileExistsError as exc:
-            if not forced:
-                raise HoldError(str(exc), stage=state.PUBLISHED)
-            destination = self.layout.unique_path(outdir, filename)
-            self.layout.move_file(work, destination)
-            detail = "destination existed, forced through beside it as %s" % os.path.basename(destination)
-            log.warning("title %s %s", title_id, detail)
+        #----- '.incoming' is the name 'move_file' copies to when the move crosses mounts.
+        with self._phase(
+            title_id, "publishing", watch=destination + ".incoming", total=os.path.getsize(work)
+        ):
+            self._retire_beaten(title_id, row.get("supersedes") or [])
+            try:
+                self.layout.publish_file(work, destination)
+            except FileExistsError as exc:
+                if not forced:
+                    raise HoldError(str(exc), stage=state.PUBLISHED)
+                destination = self.layout.unique_path(outdir, filename)
+                self.layout.move_file(work, destination)
+                detail = "destination existed, forced through beside it as %s" % os.path.basename(destination)
+                log.warning("title %s %s", title_id, detail)
         self.store.advance(title_id, state.PUBLISHED, detail, output_path=destination)
 
     #----- A beaten complete/ file makes way for the winner
@@ -1642,11 +1691,12 @@ class Orchestrator:
         if self.cfg.dry_run:
             self.store.advance(title_id, state.CLEANUP, "dry run")
             return
-        destination = self.layout.quarantine_path(source)
-        self.layout.move_file(source, destination)
-        self.layout.prune_source_folders(source)
-        log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
-        self.layout.wipe_job_dir(job_id)
+        with self._phase(title_id, "cleaning up"):
+            destination = self.layout.quarantine_path(source)
+            self.layout.move_file(source, destination)
+            self.layout.prune_source_folders(source)
+            log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
+            self.layout.wipe_job_dir(job_id)
         self.store.advance(
             title_id, state.CLEANUP, "source retired, work area wiped",
             quarantine_path=destination,
@@ -1760,6 +1810,7 @@ class Orchestrator:
             if row["stage"] in state.ASSESSMENT:
                 depths[ASSESS] += 1
             else:
+                #----- a decision eligible for two pools counts in both.
                 for pool in self._pools_for(row.get("decision")) or [ASSESS]:
                     depths[pool] += 1
         return depths
@@ -1774,7 +1825,7 @@ class Orchestrator:
             "queues": {"assess": depths[ASSESS], "cpu": depths[encode.CPU],
                        "gpu": depths[encode.GPU], "passthrough": depths[encode.PASSTHROUGH]},
             "slots": self.pools.snapshot(),
-            "progress": dict(self._progress),
+            "progress": self.progress(),
             "stages": self.store.counts_by_stage(),
             "gpu": self.gpu.as_dict(),
             "encode": {
