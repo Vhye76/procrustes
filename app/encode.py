@@ -389,7 +389,8 @@ def build_command(decision, src, dst, video, params, crop=None, crf=None):
 
     if decision.encoder in QSV_ENCODERS:
         node = params.get("render_node") or RENDER_NODE
-        args += ["-init_hw_device", "qsv=hw:%s" % node, "-filter_hw_device", "hw"]
+        #----- a later frame whose properties differ goes through the graph built for the first frame.
+        args +=["-init_hw_device", "qsv=hw:%s" % node, "-filter_hw_device", "hw", "-reinit_filter", "0"]
 
     args += ["-i", str(src)]
     args += _map_args()

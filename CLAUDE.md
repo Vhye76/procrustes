@@ -588,8 +588,8 @@ A LANGUAGE STRIP CAN MAKE A FILE LARGER.  ffmpeg '-c copy' writes zlib-compresse
 Evaluated in order, first match wins.  'encode.select' is a pure function of the probed attributes.
 
 ```
-1  source codec is hevc or av1          PASSTHROUGH
-2  television and the source is SD      PASSTHROUGH
+1  codec in 'passthrough_codecs'        PASSTHROUGH
+2  the source is SD                     PASSTHROUGH
 3  Dolby Vision RPU present             libx265    on any setting
 4  output_codec av1 and grainy          libsvtav1  CPU
 5  output_codec av1                     av1_qsv    GPU
@@ -601,7 +601,7 @@ GATES 6 AND 7 NAME POOLS, NOT ONE ENCODER.  'hevc_devices', per kind, is 'cpu', 
 
 GATE ORDER IS LOAD BEARING AND BREAKS SILENTLY IF DISTURBED.  A misrouted title produces a valid file with the wrong tradeoff, so after touching this function exercise one title per gate and read the resolved gate back from '/api/titles/<id>', corroborated against the output file's codec.
 
-Gate 1:  an already-AV1 file is never transcoded back to HEVC.
+Gate 1:  'passthrough_codecs' is an Encoding setting, 'hevc' and 'av1' by default;  an already-AV1 file is never transcoded back to HEVC.
 
 Gate 2:  an SD source has little to gain and a generation of quality to lose.  SD means display height below 'sd_display_height', 720, computed from width times SAR over height.  'encode_sd' re-enables it per kind;  for movies it is reachable only once the standards floor admits an SD source.
 
@@ -623,11 +623,11 @@ HDR SIGNALLING TRAVELS INSIDE THE PARAMS STRING TOO.  For an HDR source 'x265_hd
 
 DOLBY VISION THROUGH AN ENCODE IS THREE PARAMETERS.  '-dolbyvision auto', the default, silently drops the RPU;  '-dolbyvision 1' without VBV fails with "Dolby Vision requires VBV settings to enable HRD";  with 'vbv-maxrate' and 'vbv-bufsize' it carries the RPU intact.  So 'build_command' passes '-dolbyvision 1' and 'x265_dv_vbv_kbps', default 'X265_DV_VBV_KBPS', for both VBV figures, and the build gate asserts the wrapper has the option.
 
-KNOWN ISSUE:  'x265_dv_vbv_kbps' IS AN UNMEASURED RATE CAP, THE ONLY CAP IN THE PIPELINE.  Default 40000, an expectation of sitting above a 1080p CRF 18 slow encode's peaks;  where it binds, x265 raises QP in the highest-complexity scenes.  x265 also derives the HEVC tier from the VBV maxrate, and 40000 kbps exceeds Main tier's 20000 at Level 4.1, so every DV encode signals High tier, which some hardware decoders do not accept.  Unmeasured because gate 1 lets no DV title reach an encoder.
+KNOWN ISSUE:  'x265_dv_vbv_kbps' IS AN UNMEASURED RATE CAP, THE ONLY CAP IN THE PIPELINE.  Default 40000, an expectation of sitting above a 1080p CRF 18 slow encode's peaks;  where it binds, x265 raises QP in the highest-complexity scenes.  x265 also derives the HEVC tier from the VBV maxrate, and 40000 kbps exceeds Main tier's 20000 at Level 4.1, so every DV encode signals High tier, which some hardware decoders do not accept.
 
 THE THREADING FIGURE IS NOT PART OF THAT TUNING.  'pools=' is appended to '-x265-params', and 'lp=' to '-svtav1-params', from 'encode_threads' divided by 'cpu_slots', autodetected from the cgroup quota when the setting is 0.
 
-USE tune=grain ON FILM SOURCES.  x265 reads film grain as detail worth preserving and pays for it frame by frame;  a grain-heavy 35mm source on plain 'aq-mode=3' produces nearly double the bitrate of a clean title at the same CRF.  JUDGING FROM RELEASE YEAR IS NOT RELIABLE;  check the source.
+USE tune=grain ON FILM SOURCES.  x265 reads film grain as detail worth preserving and pays for it frame by frame, so plain 'aq-mode=3' on a grain-heavy source spends far more bits than on a clean one at the same CRF.  JUDGING FROM RELEASE YEAR IS NOT RELIABLE;  check the source.
 
 TEN GIGABYTES IS A GUIDE, NOT A LIMIT:  a prompt to check whether the grain tune was missed.  Raising CRF to pull a file under the number is the WRONG move;  the size is a preference, the quality target is not.
 
@@ -637,7 +637,7 @@ TEN GIGABYTES IS A GUIDE, NOT A LIMIT:  a prompt to check whether the grain tune
 hevc_qsv    -profile:v main10 -preset veryslow -global_quality 22, p010le via hwupload
 ```
 
-'hevc_qsv_preset' and 'hevc_qsv_global_quality' are per-kind settings on the Encoding group, separate from the av1_qsv pair because the two encoders' quality scales differ.  'global_quality' IS NOT CRF:  the QSV wrapper takes it as an ICQ target where the driver supports one and a plain QP otherwise.  One point is measured, on a clean 1080p H.264 source:  quality 22 produced 23 percent of the x265 CRF 18 slow track's bytes at an SSIM 0.0039 lower.  No figure exists for a grainy or an HDR source.  Colour goes through the ffmpeg flags as on the AV1 QSV path, since a QSV encoder takes no params string.
+'hevc_qsv_preset' and 'hevc_qsv_global_quality' are per-kind settings on the Encoding group, separate from the av1_qsv pair because the two encoders' quality scales differ.  'global_quality' IS NOT CRF:  the QSV wrapper takes it as an ICQ target where the driver supports one and a plain QP otherwise.  The default of 22 is settled for a clean 1080p source and unmeasured for a grainy or an HDR source.  Colour goes through the ffmpeg flags as on the AV1 QSV path, since a QSV encoder takes no params string.
 
 ### AV1 parameters
 
@@ -696,15 +696,17 @@ VERIFICATION KNOWS ABOUT THE FIFTH FRAME.  For a 'telecine' decision the expecte
 
 ACCEPTED LIMITATION:  a mixed episode classifies on one 20 s sample, so a film-and-video show sampled on a video-only stretch classifies interlaced.  The x265 parameters are unmeasured at SD, and 'encode_sd' defaults to off.
 
-### Two traps in the command shapes
+### Traps in the command shapes
 
 MAPPING.  Explicit maps, never '-map 0', which hands a V_MJPEG cover-art track to the video encoder.  Use '-map 0:v:0 -map 0:a -map 0:s? -map 0:t? -map_chapters 0'.
 
 THE SDR STAMP IS A VALUE, NOT A FLAG.  An untagged SDR source is stamped smpte170m only when it is SD;  an untagged HD source is stamped bt709, because a 601 matrix on a 1080p master shifts every saturated colour.  SD is 'encode.is_sd', the predicate router gate 2 uses.
 
-COLOUR FLAGS, AND THE FIX THAT MUST NOT BE GENERALISED.  On the x265 path, ffmpeg's '-color_primaries', '-color_trc' and '-colorspace' suppress what '-x265-params' sets, so they are NOT passed there;  colour goes inside '-x265-params', with '-color_range tv' alongside.  Neither av1_qsv nor libsvtav1 accepts colour properties through a params string, so on both AV1 paths those three flags are the only mechanism.
+COLOUR FLAGS, AND THE FIX THAT MUST NOT BE GENERALISED.  On the x265 path, ffmpeg's '-color_primaries', '-color_trc' and '-colorspace' suppress what '-x265-params' sets, so they are NOT passed there;  colour goes inside '-x265-params', with '-color_range tv' alongside.  hevc_qsv, av1_qsv and libsvtav1 accept no colour properties through a params string, so on those three paths the three flags are the only mechanism.
 
 DO NOT APPLY SDR COLOUR ASSUMPTIONS TO HDR MATERIAL.  The smpte170m stamping is WRONG for anything bt2020.
+
+THE QSV PATH NEVER REBUILDS ITS FILTER GRAPH.  ffmpeg rebuilds the graph when a decoded frame's size, pixel format, aspect, colour space or range changes, and a rebuilt graph cannot follow 'hwupload':  its output side takes software formats only.  So both QSV commands carry '-reinit_filter 0' ahead of '-i', and every later frame goes through the graph built for the first.  A colour change is harmless, because the output's colour flags are stamped from the probe;  a size, pixel-format or aspect change is unhandled, its outcome untested.  The software encoders keep the rebuild.
 
 ## 15.  Container remuxing
 
