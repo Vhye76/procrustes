@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from . import VERSION
-from . import auth as authmod, provider as providermod, state
+from . import auth as authmod, provider as providermod, report as reportmod, rules, state
 from .settings import SettingsError
 
 log = logging.getLogger("webui")
@@ -71,6 +71,8 @@ def build_ssl_context(cfg):
 PUBLIC_PAGES = {
     "/": "index.html",
     "/settings": "settings.html",
+    "/standards": "settings.html",
+    "/report": "report.html",
     "/account": "account.html",
 }
 HTML = "text/html; charset=utf-8"
@@ -168,8 +170,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self.app.store.needs_decision())
             if path == "/api/logs":
                 return self._send(200, self.app.log_tail(), "text/plain; charset=utf-8")
-            if path == "/api/audit":
-                return self._json(200, self.app.audit())
+            if path == "/api/report":
+                return self._json(200, self.app.report())
             if path.startswith("/api/poster/"):
                 found = self.app.poster(path.rsplit("/", 1)[1])
                 if found is None:
@@ -385,6 +387,8 @@ class WebUI:
     def settings_view(self):
         view = self.settings.describe()
         view["pools"] = self.orchestrator.pools.snapshot()
+        view["rules"] = reportmod.describe_rules(self.settings)
+        view["columns"] = {c.key: c.as_dict() for c in rules.COLUMNS}
         threads, source = self.settings.threads()
         view["threads"] = {"total": threads, "source": source}
         return view
@@ -413,11 +417,8 @@ class WebUI:
         return view
 
     #----- Library audit
-    def audit(self):
-        return {
-            "status": self.orchestrator.auditor.status(),
-            "findings": [self.annotate_finding(f) for f in self.store.findings()],
-        }
+    def report(self):
+        return reportmod.build(self.store, self.settings, self.orchestrator)
 
     def sweep(self, rescan=False):
         if rescan:
@@ -425,29 +426,6 @@ class WebUI:
             return {"ok": True, "action": "findings wiped, full rescan requested"}
         self.orchestrator.auditor.sweep_now()
         return {"ok": True, "action": "sweep requested"}
-
-    def annotate_finding(self, finding):
-        title_id = finding.get("imported_title_id")
-        finding["in_pipeline"] = None
-        finding["copy"] = self.orchestrator.import_progress(finding["id"])
-        if title_id:
-            row = self.store.get(title_id)
-            if row and state.in_pipeline(row["stage"]):
-                finding["in_pipeline"] = {
-                    "id": row["id"],
-                    "stage": row["stage"],
-                    "display_stage": state.display_name(row["stage"]),
-                }
-        elif finding.get("import_path") and os.path.exists(finding["import_path"]):
-            finding["in_pipeline"] = {
-                "id": None,
-                "stage": state.DETECTED,
-                "display_stage": "awaiting detection",
-            }
-        finding["name"] = os.path.splitext(os.path.basename(finding["path"]))[0]
-        rows = (finding.get("measured") or {}).get("rows") or []
-        finding["repairable"] = any(not r.get("ok") and r.get("repair") for r in rows)
-        return finding
 
     def log_tail(self, lines=400):
         if not self.log_path or not os.path.isfile(self.log_path):

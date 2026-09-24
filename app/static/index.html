@@ -121,6 +121,7 @@
              gap: 12px; align-self: stretch; }
   .counter:hover { border-color: var(--accent); color: var(--accent); }
   .counter b { color: var(--ink); font-weight: 600; margin-left: auto; }
+  a.counter { text-decoration: none; }
   .counter.static { cursor: default; }
   .counter.static:hover { border-color: transparent; color: var(--dim); }
 
@@ -193,8 +194,6 @@
   .lst .row .btns { display: flex; gap: 6px; flex: 0 0 auto; flex-wrap: nowrap;
                     justify-content: flex-end; }
   .lst .row .btns button { white-space: nowrap; }
-  .lst .row .side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: stretch; }
-  .lst .row .side .s { font-size: 11px; color: var(--dim); margin-top: 2px; text-align: right; }
   #lst-acts { padding: 10px 16px; border-bottom: 1px solid var(--line);
               display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #lst-acts .lbl { font-size: 11px; color: var(--dim); text-transform: uppercase;
@@ -224,6 +223,7 @@
       <div class="st" id="libs">libraries</div>
       <hr>
       <a href="/settings" role="menuitem">Application Settings</a>
+      <a href="/standards" role="menuitem">Minimum Standards</a>
       <a href="/account" role="menuitem">User Settings</a>
       <a href="#" role="menuitem" id="signout" onclick="signOut(event)">Sign out</a>
     </div>
@@ -258,7 +258,7 @@
   </section>
 
   <div id="corner">
-    <div class="counter" id="c-audit" onclick="showAudit()" style="display:none">Library findings: <b>0</b></div>
+    <a class="counter" id="c-report" href="/report" style="display:none">Library Quality Report</a>
     <div class="counter static" id="c-scan" style="display:none">Scanning: <b>0/0</b></div>
     <div class="counter" id="c-quar" onclick="showList('QUARANTINED')">Quarantined Files: <b>0</b></div>
     <div class="counter" id="c-fail" onclick="showList('FAILED')">Failed Jobs: <b>0</b></div>
@@ -588,8 +588,7 @@ async function refresh() {
   $("c-quar").innerHTML = `Quarantined Files: <b>${q}</b>`;
   $("c-fail").innerHTML = `Failed Jobs: <b>${f}</b>`;
   const a = s.audit || {};
-  $("c-audit").style.display = a.enabled ? "" : "none";
-  $("c-audit").innerHTML = `Library findings: <b>${a.findings || 0}</b>`;
+  $("c-report").style.display = a.enabled ? "" : "none";
   $("c-scan").style.display = a.enabled && a.running ? "" : "none";
   $("c-scan").innerHTML = `Scanning: <b>${a.done || 0}/${a.total || 0}</b>`;
 }
@@ -880,143 +879,6 @@ async function showCompare(id, key) {
   pill($("cmp-verdict"), `${v}${gates}${reason ? " - " + reason : ""}`,
        v === "win" ? "ok" : (v === "loss" ? "bad" : "warn"));
   $("cmp").showModal();
-}
-
-//----- Library findings
-function when(ts) {
-  if (!ts) return "never";
-  return new Date(ts * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
-}
-
-let FINDINGS = {};
-let AUDIT_TIMER = null;
-let AUDIT_SIG = null;
-
-$("lst").addEventListener("close", () => {
-  if (AUDIT_TIMER) { clearInterval(AUDIT_TIMER); AUDIT_TIMER = null; }
-  AUDIT_SIG = null;
-});
-
-function findingSide(f) {
-  const copy = f.copy || {};
-  const copying = !!copy.copying;
-  let action;
-  if (f.in_pipeline) {
-    action = f.in_pipeline.id != null
-      ? `<button onclick="$('lst').close();showDetail(${f.in_pipeline.id})">In Pipeline</button>`
-      : `<button disabled>In Pipeline</button>`;
-  } else if (f.repairable) {
-    action = `<button onclick="importFinding(${f.id})"${copying ? " disabled" : ""}>Import</button>`;
-  } else {
-    action = "";
-  }
-  let progress = "";
-  if (copying) {
-    const done = copy.copied_bytes, total = copy.total_bytes;
-    progress = done == null || !total
-      ? `<div class="s">copying</div>`
-      : `<div class="bar"><i style="width:${Math.max(0, Math.min(100, 100 * done / total))}%"></i></div>
-         <div class="s">copying ${gb(done)} / ${gb(total)}</div>`;
-  }
-  return `<div class="side">
-      <div class="btns">
-        <button onclick="$('lst').close();showFinding(${f.id})">Details</button>
-        ${action}
-      </div>${progress}
-    </div>`;
-}
-
-async function renderAudit() {
-  let a;
-  try { a = await (await api("/api/audit")).json(); } catch (e) { return; }
-  if (LIST_KIND !== "AUDIT") return;
-  const st = a.status || {};
-  const rows = a.findings || [];
-  FINDINGS = {};
-  rows.forEach(f => { FINDINGS[f.id] = f; });
-
-  $("lst-h").textContent = "Library findings - " + rows.length;
-  const bits = [];
-  if (st.running) bits.push(`scanning ${st.done}/${st.total}` + (st.current ? " - " + esc(st.current) : ""));
-  else bits.push(`last pass finished ${when(st.finished_at)}`);
-  bits.push(`${st.audited || 0} files audited`);
-  if (!st.running && st.next_at) bits.push(`next pass ${when(st.next_at)}`);
-  $("lst-acts").innerHTML = `<span class="lbl">${bits.join(" &middot; ")}</span>
-     <button onclick="sweepNow()">Sweep now</button>
-     <button onclick="rescanAll()">Rescan entire library</button>`;
-  $("lst-acts").style.display = "";
-
-  const html = rows.length === 0
-    ? '<div class="empty" style="padding:16px">Every audited file meets the standard.</div>'
-    : rows.map(f => `<div class="row">
-        <div>
-          <div class="nm">${esc(f.name)}</div>
-          <div style="font-size:12px;color:var(--dim)">${esc(f.path)}</div>
-          <div class="why">${esc(f.summary || "")}</div>
-          ${f.copy && f.copy.error && !f.in_pipeline ? `<div class="why">copy failed: ${esc(f.copy.error)}</div>` : ""}
-          <div style="font-size:12px;color:var(--dim)">${gb(f.measured.size_bytes || 0)}</div>
-        </div>
-        ${findingSide(f)}
-      </div>`).join("");
-  if (AUDIT_SIG !== html) { AUDIT_SIG = html; $("lst-body").innerHTML = html; }
-}
-
-async function showAudit() {
-  LIST_KIND = "AUDIT"; LIST_IDS = [];
-  await renderAudit();
-  if (!$("lst").open) $("lst").showModal();
-  if (!AUDIT_TIMER) AUDIT_TIMER = setInterval(renderAudit, 2000);
-}
-
-async function showFinding(id) {
-  const f = FINDINGS[id];
-  if (!f) return;
-  const rows = (f.measured && f.measured.rows) || [];
-  $("cmp-title").textContent = "Library finding - " + f.name;
-  $("cmp-notes").innerHTML = "";
-  $("cmp-paths").innerHTML = `<div><strong>library</strong> ${esc(f.path)}</div>`;
-  const section = (title, subset, a, b) => subset.length === 0 ? "" :
-    `<tr><th>${title}</th><th>${a}</th><th>${b}</th><th>Repair</th></tr>` +
-    subset.map(r => `<tr class="${r.ok ? "" : "differs"}">
-      <td>${esc(r.check)}${r.ok ? "" : '<span class="tag ungated">differs</span>'}${
-        r.detail ? `<div style="font-size:12px;color:var(--dim)">${esc(r.detail)}</div>` : ""}</td>
-      ${cell(r.expected)}${cell(r.actual)}
-      <td class="gate">${r.ok ? "" : esc(r.repair || "listed, no repair")}</td>
-    </tr>`).join("");
-  const hdr = rows.filter(r => r.surface);
-  const rest = rows.filter(r => !r.surface);
-  $("cmp-body").innerHTML = `<table>` +
-    section("Check", hdr, "Bitstream", "Container") +
-    section("Check", rest, "Expected", "Actual") + `</table>`;
-  const failed = rows.filter(r => !r.ok).length;
-  const repairable = rows.some(r => !r.ok && r.repair);
-  pill($("cmp-verdict"),
-       failed ? `${failed} finding(s)` + (repairable ? ", correctable without re-encode" : ", listed for the operator")
-              : "meets the standard",
-       failed ? "warn" : "ok");
-  $("cmp").showModal();
-}
-
-async function importFinding(id) {
-  let r;
-  try {
-    r = await (await api(`/api/audit/${id}/import`, {method: "POST",
-      headers: {"Content-Type": "application/json"}, body: "{}"})).json();
-  } catch (e) { return; }
-  if (r.error) alert(r.error);
-  renderAudit();
-}
-
-async function sweepNow() {
-  try { await api("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"}); }
-  catch (e) {}
-  renderAudit();
-}
-
-async function rescanAll() {
-  try { await api("/api/audit", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({rescan: true})}); }
-  catch (e) {}
-  renderAudit();
 }
 
 //----- Operator actions

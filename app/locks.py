@@ -7,8 +7,6 @@ import time
 
 log = logging.getLogger("locks")
 
-OWNER_FILE = "owner.json"
-
 
 class AlreadyRunning(RuntimeError):
     pass
@@ -124,28 +122,3 @@ def pid_alive(pid):
     except OSError:
         return False
     return True
-
-
-#----- Job directory ownership
-def claim_job_dir(job_dir):
-    log.debug("claiming job directory %s for pid %d", job_dir, os.getpid())
-    with open(os.path.join(job_dir, OWNER_FILE), "w") as fh:
-        json.dump({"pid": os.getpid(), "started": time.time()}, fh)
-
-
-def job_owner(job_dir):
-    try:
-        with open(os.path.join(job_dir, OWNER_FILE)) as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-
-def job_is_orphaned(job_dir):
-    owner = job_owner(job_dir)
-    if owner is None:
-        log.debug("job directory %s has no owner file, treated as orphaned", job_dir)
-        return True
-    alive = pid_alive(owner.get("pid"))
-    log.debug("job directory %s owned by pid %s, alive=%s", job_dir, owner.get("pid"), alive)
-    return not alive

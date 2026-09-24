@@ -5,7 +5,7 @@ import re
 import threading
 import time
 
-from . import audit, compare, config as configmod, encode, episodes, media, provider as providermod, standards
+from . import audit, compare, config as configmod, encode, episodes, media, provider as providermod, rules, standards
 
 log = logging.getLogger("settings")
 
@@ -15,7 +15,7 @@ GROUPS = (
     ("pipeline", "Pipeline", "settings"),
     ("encoding", "Encoding", "settings"),
     ("probes", "Probes", "settings"),
-    ("standards", "Minimum standards", "settings"),
+    ("standards", "Minimum standards", "standards"),
     ("comparison", "Comparison", "settings"),
     ("matching", "Matching and provider", "settings"),
     ("access", "Access", "account"),
@@ -111,6 +111,9 @@ SETTINGS = (
     Setting("mtime_quiet", "pipeline", "Quiet window",
             "Seconds a file must be untouched before it counts as stable.",
             "int", 30, minimum=2, maximum=86400),
+    Setting("job_reclaim_interval", "pipeline", "Job reclaim interval",
+            "Seconds between passes that remove encode job directories no running title holds.",
+            "int", 300, minimum=60, maximum=86400),
     Setting("retry_max_attempts", "pipeline", "Retry attempts",
             "Transient failures retried this many times before the title holds for a person.",
             "int", 6, minimum=1, maximum=50),
@@ -124,9 +127,6 @@ SETTINGS = (
     Setting("encode_sd", "encoding", "Encode SD sources",
             "Off passes an SD source through untouched;  on sends it to the encoder.",
             "bool", _kinds(False), per_kind=True),
-    Setting("sd_display_height", "encoding", "SD display height",
-            "A display height below this counts as SD, for the passthrough gate and the SDR colour stamp.",
-            "int", encode.SD_DISPLAY_HEIGHT, minimum=1, maximum=4320),
     Setting("passthrough_codecs", "encoding", "Passthrough codecs",
             "Source codecs that are never re-encoded, comma separated.",
             "list", list(encode.PASSTHROUGH_CODECS), pattern=TOKEN),
@@ -243,12 +243,48 @@ SETTINGS = (
     Setting("letterbox_bars_px", "standards", "Letterbox bars",
             "Baked-in bars at or above this many pixels fail the standards and are cropped by the encoder.",
             "int", standards.LETTERBOX_MAX_BARS_PX, minimum=1, maximum=1000),
-    Setting("pal_speedup_check", "standards", "PAL speed-up check",
-            "Fail a 25 fps source at a PAL height as a speed-up of film material.",
-            "bool", True),
     Setting("keep_langs", "standards", "Kept languages",
             "Audio and subtitle language tags kept at ingest, comma separated;  everything else is dropped.",
             "list", list(standards.KEEP_LANGS), pattern=TOKEN),
+    Setting("class_720_width", "standards", "720p class width",
+            "Display width at or above which a file is at least 720p;  below every class it is SD.",
+            "int", rules.CLASS_BOUNDS[rules.HD720][0], minimum=1, maximum=7680),
+    Setting("class_720_height", "standards", "720p class height",
+            "Display height at or above which a file is at least 720p, whatever its width.",
+            "int", rules.CLASS_BOUNDS[rules.HD720][1], minimum=1, maximum=4320),
+    Setting("class_1080_width", "standards", "1080p class width",
+            "Display width at or above which a file is at least 1080p.",
+            "int", rules.CLASS_BOUNDS[rules.HD1080][0], minimum=1, maximum=7680),
+    Setting("class_1080_height", "standards", "1080p class height",
+            "Display height at or above which a file is at least 1080p, whatever its width.",
+            "int", rules.CLASS_BOUNDS[rules.HD1080][1], minimum=1, maximum=4320),
+    Setting("class_2160_width", "standards", "2160p class width",
+            "Display width at or above which a file is 2160p.",
+            "int", rules.CLASS_BOUNDS[rules.UHD][0], minimum=1, maximum=7680),
+    Setting("class_2160_height", "standards", "2160p class height",
+            "Display height at or above which a file is 2160p, whatever its width.",
+            "int", rules.CLASS_BOUNDS[rules.UHD][1], minimum=1, maximum=4320),
+    Setting("min_kbps_sd", "standards", "SD video bitrate",
+            "Weighted video bitrate floor in kbps for an SD file.",
+            "int", rules.MIN_KBPS[rules.SD], minimum=0, maximum=500000),
+    Setting("min_kbps_720", "standards", "720p video bitrate",
+            "Weighted video bitrate floor in kbps for a 720p file.",
+            "int", rules.MIN_KBPS[rules.HD720], minimum=0, maximum=500000),
+    Setting("min_kbps_1080", "standards", "1080p video bitrate",
+            "Weighted video bitrate floor in kbps for a 1080p file.",
+            "int", rules.MIN_KBPS[rules.HD1080], minimum=0, maximum=500000),
+    Setting("min_kbps_2160", "standards", "2160p video bitrate",
+            "Weighted video bitrate floor in kbps for a 2160p file.",
+            "int", rules.MIN_KBPS[rules.UHD], minimum=0, maximum=500000),
+    Setting("max_size_gb", "standards", "File size",
+            "Size in GB above which a file is highlighted.",
+            "float", float(rules.MAX_SIZE_GB), minimum=0.0, maximum=1000.0, step=0.1),
+    Setting("stats_ratio_min", "standards", "Statistics ratio floor",
+            "Summed NUMBER_OF_BYTES against the file size, at or below which statistics are missing.",
+            "float", rules.STATS_RATIO_MIN, minimum=0.0, maximum=10.0, step=0.01),
+    Setting("stats_ratio_max", "standards", "Statistics ratio ceiling",
+            "Summed NUMBER_OF_BYTES against the file size, above which statistics are stale.",
+            "float", rules.STATS_RATIO_MAX, minimum=0.0, maximum=10.0, step=0.01),
 
     Setting("pixel_tolerance", "comparison", "Pixel tolerance",
             "Relative difference in display or picture pixels below which gates 2 and 3 cast no vote.",
@@ -293,11 +329,31 @@ SETTINGS = (
             "int", 168, minimum=1, maximum=8760),
 )
 
+
+#----- Minimum Standards:  a standard for every generated rule, and an ignore flag for every rule
+def _standard_setting(rule):
+    column = rules.COLUMN_BY_KEY[rule.column]
+    if column.type == rules.NUMBER:
+        return Setting(rule.value_key, "standards", rule.label, rule.help, "float", 0.0, step=0.01)
+    if column.type == rules.BOOL:
+        return Setting(rule.value_key, "standards", rule.label, rule.help, "choice", "yes", choices=("yes", "no"))
+    return Setting(rule.value_key, "standards", rule.label, rule.help, "str", "")
+
+
+RULE_SETTINGS = tuple(_standard_setting(r) for r in rules.GENERATED) + tuple(
+    Setting(r.ignore_key, "standards", "Ignore %s" % r.label,
+            "Checked, the figure is still measured and shown but the rule neither highlights nor gates.",
+            "bool", r.ignored)
+    for r in rules.RULES
+)
+SETTINGS = SETTINGS + RULE_SETTINGS
+
 BY_KEY = {s.key: s for s in SETTINGS}
 POOL_KEYS = ("max_jobs", "gpu_slots", "cpu_slots")
 #----- written only through the account endpoint, which checks a factor first;  the settings batch refuses them.
 SWITCH_KEYS = ("auth_enabled",)
 SWITCH_MESSAGE = "set from the User Settings page"
+MIGRATED_PAL = "pal_speedup_check"
 
 
 #----- Coercion and validation of one value, from JSON or from the form
@@ -400,6 +456,12 @@ def _cross_checks(values):
         errors["poll_interval"] = "must be below the quiet window (%s)" % values["mtime_quiet"]
     if values["gpu_slots"] + values["cpu_slots"] < 1:
         errors["cpu_slots"] = "GPU and CPU slots must not both be zero"
+    #----- each boundary list must ascend, or a class could never be reached.
+    for side in ("width", "height"):
+        keys = ["class_%s_%s" % (cls, side) for cls in (rules.HD720, rules.HD1080, rules.UHD)]
+        for lower, upper in zip(keys, keys[1:]):
+            if values[lower] >= values[upper]:
+                errors[lower] = "must be below %s (%s)" % (upper, values[upper])
     return errors
 
 
@@ -420,6 +482,7 @@ class Settings:
         self._load()
 
     def _load(self):
+        self._migrate()
         loaded = {}
         for storage_key, text in self.store.settings_all():
             key, kind = _split(storage_key)
@@ -436,6 +499,20 @@ class Settings:
         with self._lock:
             self._values = loaded
         log.info("settings loaded, %d stored value(s)", len(loaded))
+
+    #----- a stored PAL check becomes the PAL rule's ignore flag, inverted, once.
+    def _migrate(self):
+        stored = dict(self.store.settings_all())
+        if MIGRATED_PAL in stored:
+            try:
+                checking = bool(json.loads(stored[MIGRATED_PAL]))
+            except ValueError:
+                checking = True
+            target = rules.RULE_BY_KEY["pal_speedup"].ignore_key
+            if target not in stored:
+                self.store.settings_put([(target, json.dumps(not checking), time.time())])
+            self.store.settings_delete([MIGRATED_PAL])
+            log.info("setting %s migrated to %s=%s", MIGRATED_PAL, target, not checking)
 
     def get(self, key, kind=None):
         setting = BY_KEY[key]

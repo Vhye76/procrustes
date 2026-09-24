@@ -2,7 +2,7 @@ import logging
 import os
 import re
 
-from . import episodes, probe as probemod
+from . import compare, episodes, probe as probemod, rules
 
 log = logging.getLogger("standards")
 
@@ -95,99 +95,68 @@ def is_letterbox_candidate(video):
     return any(abs(aspect - a) < ASPECT_TOLERANCE for a in LETTERBOX_CANDIDATE_ASPECTS)
 
 
-def _human_runtime(seconds):
-    seconds = int(seconds)
-    if seconds < 60:
-        return "%ds" % seconds
-    return "%d min" % (seconds // 60)
-
-
 def runtime_seconds(container):
     return probemod.usable_duration(container.get("video") or {}, container)
 
 
 #----- The gate
-#----- The per-kind floors, 0 meaning none;  the module constants are the defaults
-def floors(kind, profile=None):
+#----- Every report column that the probe alone can supply;  the gate and the report both read these.
+def values(container, kind, path=None, profile=None, crop=None, tag_structure=None, statistics_ratio=None):
     profile = profile or {}
-    if kind == "movie":
-        defaults = (MOVIE_MIN_DISPLAY_WIDTH, MOVIE_MIN_DISPLAY_HEIGHT, MOVIE_MIN_RUNTIME_S)
-    else:
-        defaults = (0, 0, TV_MIN_RUNTIME_S)
-    width = profile.get("min_display_width")
-    height = profile.get("min_display_height")
-    runtime_min = profile.get("min_runtime_min")
-    return (
-        int(defaults[0] if width is None else width),
-        int(defaults[1] if height is None else height),
-        int(defaults[2] if runtime_min is None else runtime_min * 60),
+    keep_langs = tuple(profile.get("keep_langs") or KEEP_LANGS)
+    video = container.get("video") or {}
+    audio = container.get("audio") or []
+    out = compare.attributes(
+        container, path, crop=crop, tag_structure=tag_structure,
+        statistics_ratio=statistics_ratio, keep_langs=keep_langs,
     )
+    bitrate = video.get("bitrate")
+    weighted = compare.normalised_bitrate(bitrate, video.get("codec"), profile.get("codec_efficiency"))
+    pixels = out.get("display_pixels") or 0
+    rate = out.get("frame_rate") or 0
+    runtime = runtime_seconds(container)
+    cls = rules.resolution_class(video.get("display_width"), video.get("display_height"), profile)
+    out.update({
+        "kind": kind,
+        "kbps": round(float(bitrate) / 1000.0) if bitrate else None,
+        "weighted_kbps": round(weighted / 1000.0) if weighted else None,
+        "bpp": round(float(bitrate) / (pixels * rate), 3) if bitrate and pixels and rate else None,
+        "res_class": cls,
+        "kbps_floor": rules.kbps_floor(cls, profile),
+        "runtime_min": round(runtime / 60.0, 1) if runtime else None,
+        "gb": round(out.get("size_bytes") / 1e9, 2) if out.get("size_bytes") else None,
+        "pal_speedup": is_pal_speedup_suspect(video),
+        "kept_audio": any((a.get("language") or "und").lower() in keep_langs for a in audio),
+        "extras": looks_like_extra(path) if path else None,
+        "dv_record_gap": bool(video.get("dv_in_bitstream") and not video.get("dolby_vision")),
+        "container_format": container.get("format_name"),
+        "video_language": video.get("language"),
+        "subtitle_forced_default_count": int(container.get("subtitle_forced_default_count") or 0),
+    })
+    return out
 
 
 def screen(container, kind, path=None, crop=None, profile=None):
-    problems = []
     warnings = []
     profile = profile or {}
-    keep_langs = tuple(profile.get("keep_langs") or KEEP_LANGS)
-    bars_limit = int(profile.get("letterbox_bars_px") or LETTERBOX_MAX_BARS_PX)
-    pal_check = profile.get("pal_speedup_check", True)
     log.debug("screening as %s, crop=%s, path=%s", kind, crop, path)
 
     video = container.get("video") or {}
     audio = container.get("audio") or []
+    problems = []
+    if kind not in ("movie", "tv"):
+        problems.append("unknown kind %r" % kind)
 
-    extra = looks_like_extra(path) if path else None
-    if extra:
-        problems.append("looks like a sample or extras file, %s: %s" % (extra, os.path.basename(str(path))))
+    found = values(container, kind, path=path, profile=profile, crop=crop)
+    #----- no crop here, so the letterbox rule has no figure and fires in the report only.
+    problems += [b["reason"] for b in rules.evaluate(found, kind, profile, gating_only=True)]
 
-    if not audio:
-        problems.append("no audio streams")
-    elif not any((a.get("language") or "und").lower() in keep_langs for a in audio):
-        problems.append(
-            "no audio track tagged %s, found %s"
-            % (" or ".join(keep_langs), ", ".join(sorted({(a.get("language") or "und") for a in audio})))
-        )
-
-    if pal_check and is_pal_speedup_suspect(video):
-        problems.append(
-            "25 fps at %dx%d, likely a PAL speed-up of film material"
-            % (video.get("width") or 0, video.get("height") or 0)
-        )
-
-    if crop:
-        bars = crop.get("bars_px") or 0
-        if bars > bars_limit:
-            problems.append(
-                "baked-in letterbox of %d px exceeds the %d px limit"
-                % (bars, bars_limit)
-            )
-    elif is_letterbox_candidate(video):
+    if not crop and is_letterbox_candidate(video):
         warnings.append(
             "display aspect %.3f can hide baked-in bars, cropdetect required"
             % float(video.get("display_aspect") or 0)
         )
-
     runtime = runtime_seconds(container)
-
-    if kind in ("movie", "tv"):
-        min_width, min_height, min_runtime = floors(kind, profile)
-        noun = "movie" if kind == "movie" else "episode"
-        dw = int(video.get("display_width") or 0)
-        dh = int(video.get("display_height") or 0)
-        #----- a zero floor is no floor, which is how television carries no resolution floor.
-        if (min_width and dw < min_width) or (min_height and dh < min_height):
-            problems.append(
-                "%s display resolution %dx%d is below the %dx%d floor"
-                % (noun, dw, dh, min_width, min_height)
-            )
-        if runtime and min_runtime and runtime < min_runtime:
-            problems.append(
-                "%s runtime %s is below the %d min floor"
-                % (noun, _human_runtime(runtime), min_runtime / 60)
-            )
-    else:
-        problems.append("unknown kind %r" % kind)
-
     if not runtime:
         warnings.append("no usable duration reported, runtime floor not applied")
 
@@ -197,7 +166,8 @@ def screen(container, kind, path=None, crop=None, profile=None):
     else:
         log.info("standards passed%s", ", warnings: " + "; ".join(warnings) if warnings else "")
     log.debug(
-        "runtime %ss, display %sx%s, %d audio track(s)",
-        runtime, video.get("display_width"), video.get("display_height"), len(audio),
+        "runtime %ss, display %sx%s, class %s, %s kbps weighted, %d audio track(s)",
+        runtime, video.get("display_width"), video.get("display_height"),
+        found.get("res_class"), found.get("weighted_kbps"), len(audio),
     )
     return verdict

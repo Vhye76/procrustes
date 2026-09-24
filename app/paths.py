@@ -3,14 +3,28 @@ import logging
 import os
 import shutil
 
-from . import locks
 
 log = logging.getLogger("paths")
+
+
+#----- a job directory renamed for deletion;  dotted, so the next reclaim pass finishes it if this one is cut short.
+RECLAIM_PREFIX = ".reclaim-"
 
 
 #----- Every size a person reads is GB to two decimals;  the API and the store keep bytes.
 def gb(n):
     return "%.2f GB" % (float(n or 0) / 1e9)
+
+
+def tree_bytes(path):
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, name))
+            except OSError:
+                pass
+    return total
 
 
 class WriteGuardError(PermissionError):
@@ -153,7 +167,6 @@ class Layout:
     def make_job_dir(self, job_id):
         d = self.job_dir(job_id)
         self.guarded_makedirs(d)
-        locks.claim_job_dir(d)
         log.info("job directory created at %s", d)
         return d
 
@@ -162,26 +175,26 @@ class Layout:
         log.info("wiping job directory %s", d)
         shutil.rmtree(d, ignore_errors=True)
 
-    def sweep_encode(self):
-        removed = []
-        skipped = []
+    def encode_entries(self):
         if not os.path.isdir(self.encode):
-            return removed, skipped
-        for name in sorted(os.listdir(self.encode)):
-            target = os.path.join(self.encode, name)
-            if not os.path.isdir(target):
-                continue
-            self.assert_writable(target)
-            owner = locks.job_owner(target)
-            if not locks.job_is_orphaned(target):
-                log.debug("job %s still owned by pid %s, not swept", name, (owner or {}).get("pid"))
-                skipped.append((name, owner))
-                continue
-            log.info("sweeping orphaned job directory %s", name)
-            log.debug("job %s was owned by pid %s", name, (owner or {}).get("pid"))
+            return []
+        return sorted(
+            name for name in os.listdir(self.encode)
+            if os.path.isdir(os.path.join(self.encode, name))
+        )
+
+    def detach_job_dir(self, name):
+        source = self.job_dir(name)
+        target = self.assert_writable(os.path.join(self.encode, RECLAIM_PREFIX + name))
+        if os.path.exists(target):
             shutil.rmtree(target, ignore_errors=True)
-            removed.append(name)
-        return removed, skipped
+        os.rename(source, target)
+        return target
+
+    def remove_encode_entry(self, name):
+        target = self.assert_writable(os.path.join(self.encode, name))
+        shutil.rmtree(target, ignore_errors=True)
+        return not os.path.exists(target)
 
     #----- Reserving, moving and publishing
     def reserve(self, destination):

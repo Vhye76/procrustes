@@ -6,7 +6,7 @@ import time
 
 import re
 
-from . import compare, episodes, probe as probemod, tags, titles
+from . import compare, episodes, media, probe as probemod, standards, tags, titles
 
 log = logging.getLogger("audit")
 
@@ -284,8 +284,26 @@ def assess(path, kind, profile=None):
         "codec": video.get("codec"),
         "duration_s": probemod.usable_duration(video, container),
         "tag": _tag_fields(found),
+        "container": container,
+        "crop": _crop(path, video, container, profile),
+        "tag_structure": ("flattened" if found["flattened"] else "targeted") if root is not None else None,
+        "statistics_ratio": ratio,
     }
     return failed, measured, _summary(rows)
+
+
+def _crop(path, video, container, profile):
+    if "crop_sample_count" not in profile or not standards.is_letterbox_candidate(video):
+        return None
+    try:
+        found = media.detect_crop_for(path, video, container, profile)
+    except Exception as exc:
+        log.warning("audit cropdetect failed on %s: %s", os.path.basename(path), exc)
+        return None
+    #----- detect_crop returns None under the bar floor;  a measured file with no bars records 0, not blank.
+    if found is None:
+        return {"bars_px": 0, "picture_pixels": int(video.get("display_pixels") or 0) or None}
+    return found
 
 
 def _summary(rows):
@@ -295,7 +313,7 @@ def _summary(rows):
 
 
 def _tag_fields(found):
-    return {k: found.get(k) for k in ("show", "season", "episode", "title")}
+    return {k: found.get(k) for k in ("show", "season", "episode", "title", "year")}
 
 
 #----- The two-episode listing
@@ -445,7 +463,8 @@ class Auditor:
                 self._set(done=len(seen))
                 continue
             previous = self.store.audit_seen(path)
-            if previous == (st.st_size, st.st_mtime):
+            #----- a row without a stored container summary is assessed again, whatever its size and mtime.
+            if previous == (st.st_size, st.st_mtime, True):
                 self._set(done=len(seen))
                 continue
             self._set(current=os.path.basename(path))
@@ -455,7 +474,8 @@ class Auditor:
                 )
             except Exception as exc:
                 log.warning("audit could not assess %s: %s", os.path.basename(path), exc)
-                failed, measured, summary = ["unreadable"], {"rows": []}, str(exc)
+                #----- a None container still counts as measured, so an unreadable file is stat-skipped like any other.
+                failed, measured, summary = ["unreadable"], {"rows": [], "container": None}, str(exc)
             self.store.audit_record(
                 path, kind, st.st_size, st.st_mtime, failed, measured, summary,
                 duration_s=measured.get("duration_s"),

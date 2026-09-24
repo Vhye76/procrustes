@@ -106,11 +106,22 @@
   #bar button.primary { border-color: var(--accent); color: var(--accent); }
   #pools { font-size: 12px; color: var(--dim); padding: 0 24px 8px; max-width: 1240px;
            margin: 0 auto; width: 100%; }
+  /*----- The Minimum Standards rule table */
+  .rules td.lbl { width: 30%; }
+  .rules td.how { width: 11%; color: var(--dim); font-size: 13px; white-space: nowrap; }
+  .rules td.std { width: 25%; }
+  .rules td.std .fixed { font-size: 13px; color: var(--dim); padding: 5px 0;
+                         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .rules td.ign { width: 12%; }
+  .rules td.mark { width: 11%; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  .rules td.mark.yes { color: var(--ink); }
+  .rules tr.sub td { background: #191c23; color: var(--dim); font-size: 11px; text-transform: uppercase;
+                     letter-spacing: .06em; padding: 8px 14px; }
 </style>
 </head>
 <body>
 <header>
-  <h1><a href="/">procrustes</a> <span>Application Settings</span></h1>
+  <h1><a href="/">procrustes</a> <span id="page-name">Application Settings</span></h1>
   <span class="pill" id="dry" style="display:none"></span>
   <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
   <div id="menu">
@@ -131,6 +142,8 @@
       <div class="st" id="libs">libraries</div>
       <hr>
       <a href="/" role="menuitem">Dashboard</a>
+      <a href="/settings" role="menuitem">Application Settings</a>
+      <a href="/standards" role="menuitem">Minimum Standards</a>
       <a href="/account" role="menuitem">User Settings</a>
       <a href="#" role="menuitem" id="signout" onclick="signOut(event)">Sign out</a>
     </div>
@@ -169,6 +182,11 @@ const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const KINDS = ["movie", "tv"];
 const KIND_LABEL = { movie: "Movies", tv: "TV" };
+//----- One file serves both pages;  the path names the page and the groups it renders
+const PAGE = location.pathname.replace(/\/+$/, "") === "/standards" ? "standards" : "settings";
+const PAGE_NAME = { settings: "Application Settings", standards: "Minimum Standards" };
+document.title = PAGE_NAME[PAGE];
+$("page-name").textContent = PAGE_NAME[PAGE];
 
 //----- SCHEMA is the registry as served, ORIGINAL the values at load, RESETS the storage keys marked for reset
 let SCHEMA = {};
@@ -282,13 +300,65 @@ function cell(st, kind) {
     <div class="e" id="e-${esc(rk)}"></div></div>`;
 }
 
+//----- The Minimum Standards page:  one row per rule, its standard and its ignore flag as ordinary settings
+function ignoreCell(st) {
+  const stored = st.source === "stored";
+  return `<div class="cell" id="c-${esc(st.key)}"><label class="chk"><input type="checkbox" class="ign"
+      id="${fieldId(st.key, null)}" data-key="${esc(st.key)}" data-kind="" ${st.value ? "checked" : ""}> ignore</label>
+    <div class="d ${st.value !== st.default ? "on" : ""}">${stored
+      ? `<button class="link" onclick="resetOne('${esc(st.key)}')">reset</button>` : ""}</div></div>`;
+}
+
+function ruleRow(rule, byKey) {
+  const scope = rule.kind === "movie" ? "Movies only.  " : (rule.kind === "tv" ? "Television only.  " : "");
+  const label = `<td class="lbl"><div class="n">${esc(rule.label)}</div>
+    <div class="h">${esc(scope + rule.help)}</div><div class="k">${esc(rule.value_key || rule.key)}</div></td>`;
+  const st = rule.value_key ? byKey[rule.value_key] : null;
+  const std = st
+    ? cell(st, st.per_kind ? rule.kind : null)
+    : `<div class="fixed">${esc(rule.fixed || "-")}</div>`;
+  const ign = byKey[rule.ignore_key];
+  const gates = rule.gates ? "yes" : (rule.library_only && !rule.repairable ? "library only" : "no");
+  return `<tr>${label}<td class="how">${esc(rule.method)}</td>
+    <td class="std">${std}</td><td class="ign">${ign ? ignoreCell(ign) : ""}</td>
+    <td class="mark ${rule.repairable ? "yes" : ""}">${rule.repairable ? "repairable" : "no"}</td>
+    <td class="mark ${gates === "yes" ? "yes" : ""}">${esc(gates)}</td></tr>`;
+}
+
+function renderStandards(g, rules) {
+  const byKey = {};
+  g.settings.forEach(st => { byKey[st.key] = st; });
+  const ruled = new Set();
+  rules.forEach(r => { if (r.value_key) ruled.add(r.value_key); ruled.add(r.ignore_key); });
+  const head = `<thead><tr><th>Measure</th><th>Passes when</th><th>Standard</th><th>Ignore</th>
+    <th>Repairable</th><th>Gates imports</th></tr></thead>`;
+  const own = rules.filter(r => !r.generated).map(r => ruleRow(r, byKey)).join("");
+  const other = rules.filter(r => r.generated).map(r => ruleRow(r, byKey)).join("");
+  const plain = g.settings.filter(st => !ruled.has(st.key)).map(st => {
+    const label = `<td class="lbl"><div class="n">${esc(st.label)}</div>
+      <div class="h">${esc(st.help)}</div><div class="k">${esc(st.key)}</div></td>`;
+    return `<tr>${label}<td class="val global" colspan="2">${cell(st, null)}</td></tr>`;
+  }).join("");
+  return `<section class="grp"><h2>Rules
+        <button class="link" onclick="resetGroup('${esc(g.name)}')">reset group to defaults</button></h2>
+      <table class="rules">${head}<tbody>${own}
+        <tr class="sub"><td colspan="7">Other measures, off until a standard is set</td></tr>${other}</tbody></table></section>
+    <section class="grp"><h2>Resolution classes and languages</h2>
+      <table><thead><tr><th>Setting</th><th colspan="2">Value</th></tr></thead><tbody>${plain}</tbody></table></section>`;
+}
+
 function render(view) {
   SCHEMA = {};
   ORIGINAL = {};
   RESETS = new Set();
   const parts = [];
   for (const g of view.groups) {
-    if (g.page !== "settings") continue;
+    if (g.page !== PAGE) continue;
+    if (PAGE === "standards") {
+      g.settings.forEach(st => { SCHEMA[st.key] = st; ORIGINAL[st.key] = JSON.parse(JSON.stringify(st.value)); });
+      parts.push(renderStandards(g, view.rules || []));
+      continue;
+    }
     const rows = g.settings.map(st => {
       SCHEMA[st.key] = st;
       ORIGINAL[st.key] = JSON.parse(JSON.stringify(st.value));
@@ -306,14 +376,14 @@ function render(view) {
   }
   const p = view.pools || {};
   const t = view.threads || {};
-  $("main").innerHTML = `<div id="pools">Pools now:  ${p.assess_threads ?? "?"} of ${p.assess_target ?? "?"} assessment workers,
+  $("main").innerHTML = PAGE === "standards" ? parts.join("") : `<div id="pools">Pools now:  ${p.assess_threads ?? "?"} of ${p.assess_target ?? "?"} assessment workers,
     ${p.cpu_threads ?? "?"} of ${p.cpu_target ?? "?"} CPU slots, ${p.gpu_threads ?? "?"} of ${p.gpu_target ?? "?"} GPU slots;
     ${t.total ?? "?"} encoder threads from ${esc(t.source || "?")}.  A slot that shrinks finishes its title first.</div>` + parts.join("");
   $("main").querySelectorAll("input, select").forEach(el => {
     el.addEventListener("input", changed);
     el.addEventListener("change", changed);
   });
-  $("main").querySelectorAll("input[type=checkbox]").forEach(el => {
+  $("main").querySelectorAll("input[type=checkbox]:not(.ign)").forEach(el => {
     el.addEventListener("change", () => { el.parentNode.lastChild.textContent = " " + (el.checked ? "on" : "off"); });
   });
   changed();
@@ -384,7 +454,10 @@ function resetOne(rk) {
   const st = SCHEMA[key];
   const dflt = kind ? st.default[kind] : st.default;
   const el = $(fieldId(key, kind || null));
-  if (st.type === "bool") { el.checked = !!dflt; el.parentNode.lastChild.textContent = " " + (dflt ? "on" : "off"); }
+  if (st.type === "bool") {
+    el.checked = !!dflt;
+    if (!el.classList.contains("ign")) el.parentNode.lastChild.textContent = " " + (dflt ? "on" : "off");
+  }
   else if (st.type === "list") el.value = dflt.join(", ");
   else if (st.type === "table") {
     el.innerHTML = Object.entries(dflt).map(([k, f]) => tableRow(k, f)).join("")

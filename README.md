@@ -49,14 +49,16 @@ app/            the pipeline: one module per concern
   main.py         supervisor, startup, signals
   config.py       the environment interface
   paths.py        mount contract, write guards, atomic publish
-  locks.py        single-instance lock and encode job ownership
+  locks.py        single-instance lock
   orchestrator.py the state machine, the assessment workers, the encoder pools and the queue order
   encode.py       the encoder router and command builders
   gpu.py          the runtime GPU probe
   media.py        remux, language strip, flag repair, cropdetect, grain probe
   tags.py         Matroska tag hierarchy and the readiness gate
   probe.py        one ffprobe pass, the attribute set everything else consumes
-  standards.py    the minimum-standards gate
+  standards.py    the minimum-standards gate, the rules applied to an arrival
+  rules.py        the Minimum Standards rules, the resolution classes and the report columns
+  report.py       the Library Quality Report rows
   compare.py      new versus incumbent
   titles.py       the filename transform and naming rules
   episodes.py     episode matching, ranges, part markers
@@ -67,7 +69,7 @@ app/            the pipeline: one module per concern
   settings.py     the settings registry
   audit.py        the background library sweep
   check_names.py  the third source check
-  static/         the dashboard, the settings pages and the login form
+  static/         the dashboard, the report, the settings pages and the login form
   data/           FileBot's release-group and media-source lists, CC0, vendored
 Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
@@ -168,9 +170,9 @@ stat -c %g /dev/dri/renderD128
 
 ## Settings
 
-Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard (the Access group on the User Settings page instead), read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
+Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard (the Access group on the User Settings page, and the Minimum standards group on the Minimum Standards page, instead), read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
 
-Every setting under Encoding except the SD height, the passthrough codec list and the Dolby Vision VBV figure has one value for movies and one for television, and so do the grain threshold and the standards floors.  The rest are global.
+Every setting under Encoding except the passthrough codec list and the Dolby Vision VBV figure has one value for movies and one for television, and so do the grain threshold and the display and runtime floors.  The rest are global.
 
 | Group | Setting | Default | Meaning |
 |---|---|---|---|
@@ -181,11 +183,11 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Pipeline | encode_threads | 0 | 0 autodetects from the cgroup CPU quota |
 | Pipeline | poll_interval | 15 | import watch interval in seconds;  the page refuses a value at or above mtime_quiet |
 | Pipeline | mtime_quiet | 30 | seconds a file must be untouched before it counts as stable |
+| Pipeline | job_reclaim_interval | 300 | seconds between passes that remove encode job directories no running title holds |
 | Pipeline | retry_max_attempts | 6 | transient failures retried this many times before the title holds |
 | Pipeline | retry_base_delay | 120 | seconds before the first retry, doubling each time |
 | Encoding | output_codec | hevc / hevc | hevc or av1 |
 | Encoding | encode_sd | off / off | on sends an SD source to the encoder instead of passing it through |
-| Encoding | sd_display_height | 720 | display height below which a source is SD |
 | Encoding | passthrough_codecs | hevc, av1 | source codecs never re-encoded |
 | Encoding | x265_preset, x265_crf | slow, 18 | libx265 speed and quality |
 | Encoding | x265_aq_mode, x265_aq_mode_film, x265_tune_film | 3, 4, grain | adaptive quantisation on a clean and on a grainy source, and the tune on a grainy one |
@@ -204,11 +206,11 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 | Probes | crop_sample_count, crop_sample_seconds, crop_sample_attempts | 6, 2, 12 | cropdetect sampling |
 | Probes | crop_black_level_factor, crop_black_level_cap | 1.5, 0.13 | the cropdetect limit from the measured black |
 | Probes | crop_secondary_share | 0.06 | share of samples at which a second geometry is a variable aspect |
-| Standards | min_display_width, min_display_height | 1920x800 / 0x0 | resolution floor, 0 for none |
-| Standards | min_runtime_min | 40 / 15 | runtime floor in minutes |
-| Standards | letterbox_bars_px | 20 | bars at or above this are cropped, and above it fail the standards |
-| Standards | pal_speedup_check | on | fail a 25 fps source at a PAL height |
-| Standards | keep_langs | eng, en, und | audio and subtitle languages kept at ingest |
+| Minimum standards | every rule | see Minimum Standards below | on the Minimum Standards page |
+| Minimum standards | class_720_width, class_720_height | 1100, 700 | display width or height at which a file is at least 720p;  below every class it is SD |
+| Minimum standards | class_1080_width, class_1080_height | 1600, 900 | the same for 1080p |
+| Minimum standards | class_2160_width, class_2160_height | 3200, 1800 | the same for 2160p |
+| Minimum standards | keep_langs | eng, en, und | audio and subtitle languages kept at ingest |
 | Comparison | pixel_tolerance, bitrate_tolerance | 0.05, 0.25 | below these differences gates 2, 3 and 6 cast no vote |
 | Comparison | codec_efficiency | h264 1.0, hevc 1.7, av1 2.2, vc1 0.9, mpeg4 0.7, mpeg2video 0.45 | bitrate weighting per codec |
 | Comparison | edition_runtime_tolerance_s | 30 | runtime difference under which a name-claimed edition is the same cut |
@@ -223,6 +225,31 @@ Every setting under Encoding except the SD height, the passthrough codec list an
 A change applies to the next title that reaches the stage reading it.  A title already routed keeps the encoder parameters it was routed with, stored in its decision and shown on its detail, so a queue does not change shape under a running configuration;  Retry re-assesses a title under the current settings.  A change to max_jobs, gpu_slots or cpu_slots resizes the pools live:  a pool grows at once, and a pool that shrinks lets its surplus thread finish the title it is on before it exits.
 
 The page posts every changed value in one request and nothing is written unless every value is valid;  a rejected value is named beside its field.  'Reset' beside a stored value, or on a whole group, returns it to the default.
+
+## Minimum Standards
+
+Every column of the Library Quality Report can carry a rule, and the rules are the Minimum Standards page under the menu.  Each rule is one row:  what it measures, how the file's figure is compared with the standard (fixed per rule), the standard itself, and an Ignore box.  An ignored rule still has its figure measured and shown;  it only stops highlighting and gating.  Rules apply to movies and television alike, except the display and runtime floors, which are named rows per kind.
+
+A rule is either repairable or not.  A repairable rule is one the pipeline corrects on the way through without an encode, so a library file that breaks it is red in the report and carries an Import action.  Every other rule is a standard:  a library file that breaks it is yellow, and a new arrival that breaks it holds at SCREENED, forceable like any other hold.
+
+| Rule | Passes when | Default | Repairable | Gates imports |
+|---|---|---|---|---|
+| Movie display width, height | at least | 1920, 800 | no | yes |
+| Episode display width, height | at least | 0, 0 (no floor) | no | yes |
+| Movie runtime, Episode runtime | at least | 40, 15 min | no | yes |
+| Letterbox bars | at most | 20 px | no | measured after SCREENED, so in practice the report only |
+| PAL speed-up | absent | | no | yes |
+| Kept-language audio | present | | no | yes |
+| Extras name | absent | | no | yes |
+| SD, 720p, 1080p, 2160p video bitrate | at least | 1500, 3000, 6000, 20000 kbps | no | yes |
+| File size | at most | 10 GB, ignored | no | yes |
+| Episodes in file | absent | | no | library only |
+| Dolby Vision record | absent | | no | no, held elsewhere |
+| Container, foreign tracks, default audio, default non-forced and forced subtitles, subtitles named forced, video track language, tag structure, folder and file names, path component rules, segment title, HDR declaration | as the audit checks them | | yes | no |
+| Statistics ratio floor, ceiling | above, at most | 0.5, 1.5 | yes | no |
+| Every other report column | at least a number, or is a value | none, ignored | no | yes, once switched on |
+
+The bitrate is the video track's own, weighted by 'codec_efficiency' into h264 terms, so one set of floors covers every codec;  the floors are rules of thumb and unmeasured.  A file's resolution class is the highest class whose width or height it reaches, so a 1920x800 scope master is 1080p by width and a 1440x1080 4:3 master is 1080p by height.  The same classes decide SD for the encoder router and the SDR colour stamp.
 
 ## The encoder router
 
@@ -248,7 +275,7 @@ An HDR source that reaches an encoder carries its colour, mastering display and 
 
 Gate 5 is the one that can produce an encoder the table does not name.  At startup 'vainfo' must report VAProfileAV1Profile0 with the encode entrypoint, and records VAProfileHEVCMain10 beside it;  a failed probe does not crash the container, it marks the GPU degraded, gate 5 then routes to libsvtav1 on the CPU instead of av1_qsv, and gates 6 and 7 fall back to the CPU when the HEVC profile is missing.  At the hevc default a degraded GPU changes nothing at all, which is the point:  the GPU cannot break the pipeline.  Every encode logs which encoder actually ran, so a GPU that has quietly stopped being used is visible rather than silent.
 
-SD is decided on display height, computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions.
+SD is the resolution class below 720p on the Minimum Standards page:  a display width under 'class_720_width' and a display height under 'class_720_height', computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions, and a 720p source wider than 16:9 is HD.
 
 Passthrough means no video re-encode.  It does not mean no processing.  A passthrough title is still remuxed to Matroska, language stripped, flag corrected, tagged and given track statistics.  An SD AVI rip arriving in 'complete/' still as an .avi would be a bug.
 
@@ -323,19 +350,21 @@ A title that cannot be identified holds, and Force through carries it on without
 
 Cover art is a by-product of the same lookup.  The poster comes off the TMDB page already fetched to verify the title, with TVDB as the fallback for a show that resolved without a TMDB id, and there is no API key involved.  Posters are cached under 'config/cache/posters' and served from '/api/poster/<hash>', keyed on the artwork URL rather than the title so a long browser cache header stays honest across a store wipe, and the browser never contacts an image CDN and the dashboard renders on a LAN with no internet once a poster is cached.  A fetch that fails serves 404 and the tile falls back to text;  artwork is never allowed to become a failure the pipeline notices.
 
-## Library audit
+## Library audit and the Library Quality Report
 
-A background sweep over the mounted libraries, looking for every deviation the passthrough path already corrects and nothing that needs an encode:  a container that is not Matroska, foreign tracks, wrong default flags including a forced subtitle track with no default, a subtitle track named forced without the forced flag, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file are all findings;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never findings.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.
+A background sweep over the mounted libraries, measuring every file and checking it for every deviation the passthrough path already corrects:  a container that is not Matroska, foreign tracks, wrong default flags including a forced subtitle track with no default, a subtitle track named forced without the forced flag, a missing or flattened tag block, a folder or file name that differs from what the tag block would produce, a path component that breaks a naming rule, a wrong segment title, missing statistics, and an HDR declaration short of the bitstream.  The names are built from the tag block by the same functions the publish step uses, so a folder that predates the current transform, a show folder carrying the wrong ids, an unpadded season folder and a mis-numbered file all break the names rule;  a tag that is itself wrong, with names that agree with it, is not, because the audit never consults a provider.  Resolution, bit depth, codec and letterbox are never repairable;  they are measured, and judged against the Minimum Standards in the report.  One row is a listing rather than a defect:  a single-numbered episode with no next episode beside it and a video duration at least 'range_duration_ratio' times its season's median is reported as two episodes in one file, with the range name the pipeline would give it, and carries no Import action.
 
-It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  That skip is what keeps the hourly pass cheap, and it also means a change to the checks never reaches a file that has not changed on disk:  'Rescan entire library' in the findings dialog wipes the findings and runs a first pass again.  It never starts when no library is mounted.
+It is throttled at AUDIT_INTERVAL seconds per file and skips files whose size and modification time it has already seen and whose stored measurement is complete, so a first pass over a few thousand files takes a couple of hours and a repeat pass takes seconds.  A file on a 16:9 or 4:3 frame also gets a cropdetect pass for its baked-in bars.  A change to the rules needs no rescan, because the report applies them when it is loaded;  a change to what the audit checks does, and 'Rescan Entire Library' on the report wipes every stored result and runs a first pass again.  'Scan for New Content' starts a pass at once, which assesses new and changed files and forgets removed ones.  It never starts when no library is mounted.
 
-Repair is by running the file through the pipeline.  Each finding carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with GB copied of the total under the finding's buttons, and once it is in 'import/' the button reads In Pipeline, clickable through to the title once the watcher has picked it up, until the repaired file is in the library and the next audit pass clears the finding.
+The Library Quality Report is its own page, from the 'Library Quality Report' button in the dashboard's lower-right corner.  One row per library file, titled from its tag block, then every measured attribute:  the comparison gates' attributes in gate order, the video bitrate with its codec-weighted figure, bits per pixel, resolution class and floor, runtime and size, the repair checks, and the rest of what the comparison measures.  Every column sorts on a click of its heading and filters from the row beneath it:  less than, greater than or equal to on a number, contains on text, yes or no on a flag, and the toolbar filters by severity.  The table scrolls both ways with its headings and the title column held in place.  A row that breaks a repairable rule is red and one that breaks only a standard is yellow, with the cells that broke a rule marked in the same colour;  hovering the broken-rules column lists why.  Clicking a row opens the audit's check table beneath it, with the Import action on a red row.
+
+Repair is by running the file through the pipeline.  A red row carries an Import action that copies the library file into 'import/', after which the ordinary chain remuxes, strips, repairs, tags and verifies it and leaves the result in 'complete/' for you to move into the library by hand.  A copied title skips the comparison against the file it came from and nothing else.  The copy refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, which includes a published copy you have not yet moved into the library.  The copy runs in the background with GB copied of the total in the row's detail, and once it is in 'import/' the detail reads In pipeline with the title's stage, until the repaired file is in the library and the next audit pass clears its red.
 
 ## One instance at a time
 
 The container takes an exclusive 'flock' on MEDIA_CONFIG/procrustes.lock at startup.  A second instance pointed at the same mounts waits for the first to exit rather than running alongside it, because two instances would sweep each other's encode area and could publish the same title twice.  The kernel releases the lock if the holder is killed, so a hard kill needs no manual cleanup.
 
-Encode job directories record their owning PID.  The startup sweep reclaims only directories whose owner is gone, and leaves a live job alone.
+An encode job directory lives only while a running title holds it.  Anything else in the encode area, a failed or held title's directory or one whose title was forgotten, is removed at startup and every 'job_reclaim_interval' seconds, and each removal is logged with its size.  The owner is tracked inside the process rather than by PID, because the supervisor has the same PID on every container start.
 
 ## Web UI
 
@@ -346,6 +375,8 @@ A login in front of everything.  The first visit to a fresh store asks 'Require 
 ```
 GET  /                            dashboard, or the login form without a session
 GET  /settings                    Application Settings, likewise
+GET  /standards                   Minimum Standards, likewise
+GET  /report                      the Library Quality Report, likewise
 GET  /account                     User Settings, likewise
 GET  /api/health                  {ok, version}, the only status readable without a session;  the Docker healthcheck
 GET  /api/login                   {enabled, setup}:  whether authentication is on and whether the first account is still to be created
@@ -378,21 +409,22 @@ GET  /api/poster/<hash>           cached cover art by the 'poster' hash on a tit
 GET  /api/logs                    log tail
 GET  /api/settings                every setting with its value, default and source, grouped, plus the pool targets
 POST /api/settings                {"set": {key: value}} and/or {"reset": [keys]};  400 with {"errors": {key: why}} writes nothing
-GET  /api/audit                   sweep status and every library finding
-POST /api/audit                   start a sweep now;  {"rescan": true} wipes the findings first
-POST /api/audit/<id>/import       copy that finding's file into import/ for repair, in the background
+GET  /api/report                  sweep status, the rules, the columns and one row per library file with its
+                                  values, broken rules, severity, check table and import state
+POST /api/audit                   scan for new content now;  {"rescan": true} wipes every stored result first
+POST /api/audit/<id>/import       copy that file into import/ for repair, in the background
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-A menu at the top right, behind a hamburger, carries the output codec per kind, the GPU state, free space in the encode area and whether a library is mounted, then Application Settings, User Settings and Sign out;  each page's menu links the other two.  A DRY_RUN badge stays in the header itself, and an AUTH OFF badge beside it while authentication is off.
+A menu at the top right, behind a hamburger, carries the output codec per kind, the GPU state, free space in the encode area and whether a library is mounted, then Application Settings, Minimum Standards, User Settings and Sign out;  each page's menu links the others.  A DRY_RUN badge stays in the header itself, and an AUTH OFF badge beside it while authentication is off.
 
 User Settings opens with the Access group:  the authentication switch, which asks for the current password or a fresh code before it turns off, and the session lifetime.  Below it, for the signed-in account:  the login mode as three options with any option the account cannot satisfy yet greyed out and the reason beside it, a password change, the authenticator with Enrol (a QR code and the secret as text, confirmed by the first code) or Remove, and the user list with Add and Remove.
 
-The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and counters in the lower right:  library findings, with a scanning line beneath it while a pass runs, then quarantined files and failed jobs.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
+The dashboard is a pipeline rather than a table.  Queue on the left, Encoding and Held as the two parallel paths out of it, Ready to promote on the right, and the lower right corner:  the Library Quality Report button, with a scanning line beneath it while a pass runs, then the quarantined files and failed jobs counters.  Each title is a cover art tile;  a title that has not been identified yet, or that was held before identification, shows its filename on the same footprint instead.  A season of television collapses to one tile per show with an episode count, and clicking it lists the episodes.
 
 The Queue reads in processing order, left to right then down.  A title a pool thread is already working sits first, locked, labelled with its stage in the corner of its art and carrying the encode's progress;  with two encoder slots that is the first two tiles.  A title a worker is running shows the step it is on, such as copying, remuxing, tagging, detecting crop or publishing, in place of the last stage it completed, and a copy carries a bar of the bytes written against the total.  A title held for a transient failure reads 'retrying in N min' until its backoff expires.  Every other tile carries its position number, a show's tile the range its episodes occupy, and can be dragged into a new place;  the order is saved when the tile is dropped and every worker takes its next title from it.  A show moves as a block and its queued episodes stay together.  A new arrival, and a title returning through Retry or Force through, joins the back.
 
-Clicking any tile opens its detail:  stage, provider ids, every reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard;  a failed title's carries Retry and Discard, with a line saying why Force cannot apply.  The three counters are clickable and list what is in them:  library findings, quarantined files and failed jobs, the first with a Details table per file, an Import action per row, and Sweep now and Rescan entire library in its header.
+Clicking any tile opens its detail:  stage, provider ids, every reason it stopped where it did, both paths, and the full stage history.  A held title's detail carries Retry, Force through and Discard;  a failed title's carries Retry and Discard, with a line saying why Force cannot apply.  The two counters are clickable and list what is in them.
 
 A television tile opens the episode list instead.  Every row carries the same decisions as a tile, and the header carries them for the whole season at once, so clearing a held season is one action rather than one per episode.  A season action closes the list, because there is nothing left in it to show.
 

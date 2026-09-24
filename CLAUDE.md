@@ -12,7 +12,7 @@ THE CONTAINER NEVER WRITES TO A MEDIA LIBRARY.  Libraries are mounted read only 
 
 PROMOTION INTO THE LIBRARIES IS MANUAL, ALWAYS.  The pipeline ends at 'complete/'.  No code in this repository moves a finished title into a library, and none should be added.
 
-NOTHING THAT MATTERS IS EVER DELETED.  A failure holds;  a rejected file and a completed source go to quarantine.  Nothing in a library, nothing incoming and nothing in 'complete/' is ever removed.  Three exceptions.  The encode area:  intermediates are removed once their successor exists, and a job directory is wiped after its title retires.  An empty folder under 'import/', 'hold/' or 'complete/':  when a file moves out, 'paths.prune_empty_folders' removes its parent folders upward while each is empty, stopping at the root or at the first folder with anything left in it;  the climb passes the write guard at every step and removes directories only, never a file.  And a file in 'complete/' that a later arrival beat under section 8:  it is moved to '.quarantine' when the winner publishes, never deleted, and its row moves to QUARANTINED naming the title that superseded it.
+NOTHING THAT MATTERS IS EVER DELETED.  A failure holds;  a rejected file and a completed source go to quarantine.  Nothing in a library, nothing incoming and nothing in 'complete/' is ever removed.  Three exceptions.  The encode area:  intermediates are removed once their successor exists, and a job directory no running title holds is reclaimed, per section 19.  An empty folder under 'import/', 'hold/' or 'complete/':  when a file moves out, 'paths.prune_empty_folders' removes its parent folders upward while each is empty, stopping at the root or at the first folder with anything left in it;  the climb passes the write guard at every step and removes directories only, never a file.  And a file in 'complete/' that a later arrival beat under section 8:  it is moved to '.quarantine' when the winner publishes, never deleted, and its row moves to QUARANTINED naming the title that superseded it.
 
 A PROVIDER ID IS NEVER GUESSED.  If it cannot be resolved, the title holds until an operator forces it.  A forced unidentified title carries no provider ID at all:  it keeps the name it arrived with, its tag block holds TITLE only, and it lands flat in 'complete/' rather than in a provider-named folder, so it cannot be mistaken for finished work.
 
@@ -74,13 +74,13 @@ statistics and tag writes          header rewrites plus a full re-read on re-add
 
 So copy in once, do everything on the encode mount, move out once.  Startup compares 'os.stat().st_dev' of the encode mount against the complete mount and warns when they match.
 
-STAGING HAPPENS BEHIND THE ENCODER SLOT.  A title is staged by the pool thread that will encode it, so at most 'cpu_slots + gpu_slots + 1' job directories exist at once whatever 'max_jobs' says.
+STAGING HAPPENS BEHIND THE ENCODER SLOT.  A title is staged by the pool thread that will encode it, so at most 'cpu_slots + gpu_slots + 1' job directories are held at once whatever 'max_jobs' says, and section 19's reclaim holds the encode area to that on disk.
 
 Admission control requires roughly 'encode_headroom' times the source size free before a job starts.  There is no guard for memory:  sizing CONTAINER_MEM is the operator's call and an OOM kill mid encode is an accepted failure mode.
 
 ## 5.  Configuration
 
-TWO SURFACES, BY WHAT THEY DESCRIBE.  The environment is the deployment surface, read once at startup, validated, and echoed into the log and onto '/api/status'.  Everything the pipeline decides with is a setting:  stored in the 'settings' table in 'state.db', edited on the Application Settings page, read at the point of use, and echoed into the log at startup with a mark on every stored value.
+TWO SURFACES, BY WHAT THEY DESCRIBE.  The environment is the deployment surface, read once at startup, validated, and echoed into the log and onto '/api/status'.  Everything the pipeline decides with is a setting:  stored in the 'settings' table in 'state.db', edited on the Application Settings or Minimum Standards page, read at the point of use, and echoed into the log at startup with a mark on every stored value.
 
 ```
 MEDIA_ROOT           /media            required rw, the one mount everything derives from
@@ -111,11 +111,11 @@ ELEVEN VARIABLES ARE NOT READ FROM THE ENVIRONMENT AT ALL.  'config.REMOVED' nam
 
 'app/settings.py' IS THE ONE REGISTRY.  'SETTINGS' declares every setting once:  key, group, label, one sentence of help, type (int, float, bool, str, choice, list, table), default, whether it is per kind, and its bounds, choices or pattern.  The default of a setting that replaced a module constant is that constant.  README.md carries the table.
 
-A GROUP NAMES THE PAGE THAT RENDERS IT.  Each 'GROUPS' entry carries a page, 'settings' or 'account', and 'describe()' emits it.  The Access group ('auth_enabled', 'session_hours') renders on User Settings only.  'auth_enabled' has one write route, 'POST /api/account/auth';  'Settings.update' and 'reset' refuse it from '/api/settings' with 'set from the User Settings page', and 'Auth' writes it with 'internal=True'.
+A GROUP NAMES THE PAGE THAT RENDERS IT.  Each 'GROUPS' entry carries a page, 'settings', 'standards' or 'account', and 'describe()' emits it.  'settings.html' serves both '/settings' and '/standards' and filters groups by the page its path names.  The Minimum standards group renders on Minimum Standards only, as section 7's rule rows.  The Access group ('auth_enabled', 'session_hours') renders on User Settings only.  'auth_enabled' has one write route, 'POST /api/account/auth';  'Settings.update' and 'reset' refuse it from '/api/settings' with 'set from the User Settings page', and 'Auth' writes it with 'internal=True'.
 
-A PER-KIND SETTING HAS ONE VALUE FOR MOVIES AND ONE FOR TELEVISION, stored as 'key.movie' and 'key.tv'.  Everything under Encoding is per kind except 'sd_display_height', 'passthrough_codecs' and 'x265_dv_vbv_kbps', and so are the grain threshold and the standards floors.  'Settings.profile(kind)' resolves one kind into a flat dict, adds the derived 'threads_per_job', and is what the orchestrator hands to 'encode', 'standards', 'compare', 'media', 'probe' and 'tags', which take the figures as parameters and never read the settings object.  'provider.Provider' and 'provider.Client' hold the settings object and read per call.
+A PER-KIND SETTING HAS ONE VALUE FOR MOVIES AND ONE FOR TELEVISION, stored as 'key.movie' and 'key.tv'.  Everything under Encoding is per kind except 'passthrough_codecs' and 'x265_dv_vbv_kbps', and so are the grain threshold and the display and runtime floors.  'Settings.profile(kind)' resolves one kind into a flat dict, adds the derived 'threads_per_job', and is what the orchestrator hands to 'encode', 'standards', 'compare', 'media', 'probe' and 'tags', which take the figures as parameters and never read the settings object.  'provider.Provider' and 'provider.Client' hold the settings object and read per call.
 
-A CHANGE APPLIES AT THE NEXT READ, AND A ROUTED TITLE KEEPS ITS PARAMETERS.  'Settings.update' validates every value in the batch, runs the cross-key rules ('poll_interval' below 'mtime_quiet', the two slot counts not both zero) against the merged result, and writes the whole batch in one transaction or nothing.  '_route' snapshots 'encode.encoder_params(profile)' into the decision as 'params', stored in 'decision_json', and '_encode' builds the command from that snapshot;  a decision without 'params' goes back to assessment.  The sidecar 'encode.job' still wins per title.
+A CHANGE APPLIES AT THE NEXT READ, AND A ROUTED TITLE KEEPS ITS PARAMETERS.  'Settings.update' validates every value in the batch, runs the cross-key rules ('poll_interval' below 'mtime_quiet', the two slot counts not both zero, the resolution class widths and heights each ascending) against the merged result, and writes the whole batch in one transaction or nothing.  '_route' snapshots 'encode.encoder_params(profile)' into the decision as 'params', stored in 'decision_json', and '_encode' builds the command from that snapshot;  a decision without 'params' goes back to assessment.  The sidecar 'encode.job' still wins per title.
 
 THE POOLS RESIZE LIVE.  'orchestrator.Pools' carries a target per pool;  a worker runs while its index is below its pool's target and checks that between titles, so a shrink never interrupts a running encode.  '_ensure_workers' starts a thread for every index below the target with no live thread, and 'apply_settings' calls it when 'max_jobs', 'gpu_slots' or 'cpu_slots' changed.  'Pools.snapshot' carries the targets beside the live counts.
 
@@ -166,7 +166,7 @@ THE THREE ASSESSMENT STAGES RUN THROUGH BEFORE ANYTHING HOLDS.  SCREENED, IDENTI
 
 PUBLISHED IS THE END OF THE PIPELINE FOR A PERSON;  CLEANUP IS HOUSEKEEPING, and a CLEANUP failure must never present a published title as failed.  'state.COMPLETE' is the pair, and the dashboard reads it as one figure.
 
-A TITLE IS IN THE PIPELINE UNTIL IT IS PROMOTED, AND THE WATCHER NEVER RECYCLES A ROW THAT IS.  'state.in_pipeline' is true for every stage but QUARANTINED, with three readers:  'webui.annotate_finding', 'orchestrator.import_finding' and the reappearance branch in 'orchestrator.scan'.  A path whose row is published and not yet promoted is skipped with one log line;  Forget reopens it.
+A TITLE IS IN THE PIPELINE UNTIL IT IS PROMOTED, AND THE WATCHER NEVER RECYCLES A ROW THAT IS.  'state.in_pipeline' is true for every stage but QUARANTINED, with three readers:  'report.import_state', 'orchestrator.import_finding' and the reappearance branch in 'orchestrator.scan'.  A path whose row is published and not yet promoted is skipped with one log line;  Forget reopens it.
 
 A ROW LEAVES READY TO PROMOTE WHEN ITS OUTPUT LEAVES 'complete/', AND LEAVES QUARANTINED WHEN ITS FILE LEAVES '.quarantine'.  'orchestrator._close_collected' runs on every watcher poll:  a PUBLISHED or CLEANUP row whose 'output_path' is gone moves to QUARANTINED when its retired source is still there and is forgotten when no file remains;  a QUARANTINED row with no file at any of its three paths is forgotten.  The test is 'state.files_present', the same one 'webui.annotate' reports as 'files_gone'.  Nothing on disk is touched.  Skipped under DRY_RUN.
 
@@ -191,6 +191,7 @@ BOTH KINDS
   not a 25 fps PAL speed-up of film material
   baked-in letterbox no worse than 20 px
   not a sample or extras file
+  weighted video bitrate at least 1500 / 3000 / 6000 / 20000 kbps for SD / 720p / 1080p / 2160p
 
 MOVIES
   display resolution at least 1920x800, computed width * SAR / height
@@ -201,7 +202,11 @@ TELEVISION
   runtime at least 15 min
 ```
 
-THE FLOORS ARE PER-KIND SETTINGS, AND THE FIGURES ABOVE ARE THEIR DEFAULTS.  'min_display_width', 'min_display_height' and 'min_runtime_min' on the Standards group, 0 meaning no floor;  'letterbox_bars_px', 'pal_speedup_check' and 'keep_langs' are global.  'standards.screen' takes them on a profile and its module constants are the defaults.
+THE GATE IS THE MINIMUM STANDARDS RULE SET, AND THE FIGURES ABOVE ARE ITS DEFAULTS.  'rules.RULES' is the one list:  every Library Quality Report column carries a rule, each with a fixed method ('at least', 'at most', 'above', 'is', 'absent', 'present', or 'passes' for a rule read off the audit's check rows), a standard stored as a setting, and an ignore flag, 'ignore_<rule>', stored beside it.  An ignored rule is still measured and shown;  it neither highlights nor gates.  'standards.screen' is 'rules.evaluate' over 'standards.values' with only the gating rules, so the gate and the report share one implementation.  The display and runtime floors are per-kind settings, 'min_display_width', 'min_display_height' and 'min_runtime_min', 0 meaning no floor, rendered as a movie row and an episode row;  'letterbox_bars_px' and 'keep_langs' are global.  A rule with no documented standard ships ignored with an empty standard.
+
+A RULE IS REPAIRABLE OR IT GATES, NEVER BOTH.  A repairable rule is section 27's repair set, what the passthrough path corrects;  it marks a library file red and never holds an arrival, because the pipeline fixes it on the way through.  Every other rule marks a library file yellow and holds an arrival at SCREENED, except the two that need the library:  'Episodes in file' reads the season folder, and 'Dolby Vision record' is held by section 18 instead.  A rule switched on from ignored gates like any other.  The letterbox rule reads cropdetect, which does not run at SCREENED, so it fires in the report only.
+
+A FILE'S RESOLUTION CLASS IS THE HIGHEST WHOSE WIDTH OR HEIGHT IT REACHES.  'rules.resolution_class' against 'class_720_width' / 'class_720_height' (1100, 700), 'class_1080_*' (1600, 900) and 'class_2160_*' (3200, 1800), so a scope master classes by width and a 4:3 master by height.  It is the one SD predicate:  the bitrate floors, router gate 2 and the SDR stamp all read it.  The bitrate compared is gate 6's video-track figure weighted by 'codec_efficiency' into h264 terms;  the floors are unmeasured.  'File size', 10 GB, ships ignored, because section 14 makes it a guide.
 
 THE HEIGHT FLOOR IS 800, NOT 1080, AND THE WIDTH FLOOR IS WHAT REJECTS SD.  A 2.40:1 scope master is 1920x800 and a 2.35:1 is 1920x818, so a 1080 floor rewards the file with bars.  The width floor of 1920 rejects 720p, NTSC and PAL DVD.
 
@@ -268,7 +273,7 @@ Cropdetect runs at COMPARED on both sides, on letterbox candidates only.  GATE 2
 
 ### Video bitrate, gate 6
 
-COMPARATIVE ONLY.  There is no minimum bitrate and none is to be added:  section 7 does not screen on it, and section 14's rule that size figures do not measure an encode is unchanged.
+COMPARATIVE HERE.  Gate 6 compares two files and sets no floor.  The one bitrate floor is section 7's per-class Minimum Standards rule, on the same weighted figure;  section 14's rule that size figures do not measure an encode is unchanged.
 
 THE FIGURE IS THE VIDEO TRACK'S OWN BPS, ON BOTH SIDES.  'probe._video_bitrate' reads the 'BPS' or 'BPS-eng' stream tag first, falls back to NUMBER_OF_BYTES times 8 over the track's own DURATION, and finally to ffprobe's stream 'bit_rate', which Matroska frequently omits.
 
@@ -603,7 +608,7 @@ GATE ORDER IS LOAD BEARING AND BREAKS SILENTLY IF DISTURBED.  A misrouted title 
 
 Gate 1:  'passthrough_codecs' is an Encoding setting, 'hevc' and 'av1' by default;  an already-AV1 file is never transcoded back to HEVC.
 
-Gate 2:  an SD source has little to gain and a generation of quality to lose.  SD means display height below 'sd_display_height', 720, computed from width times SAR over height.  'encode_sd' re-enables it per kind;  for movies it is reachable only once the standards floor admits an SD source.
+Gate 2:  an SD source has little to gain and a generation of quality to lose.  SD is section 7's resolution class below 720p, 'encode.is_sd' over 'rules.resolution_class', from display width and height computed with SAR;  the class boundaries travel in the decision's 'params'.  'encode_sd' re-enables it per kind;  for movies it is reachable only once the standards floor admits an SD source.
 
 Gate 3:  AV1 Dolby Vision is profile 10 and effectively nothing plays it, so DV titles always take the x265 path and the x265 path can never be retired.  GATE 3 IS UNREACHABLE FOR REAL MATERIAL:  every Dolby Vision profile is HEVC or AV1, so gate 1 is what protects the RPU;  'build_command' refuses any encoder but libx265 for a DV title regardless.
 
@@ -816,7 +821,7 @@ flock rather than a PID file, because the kernel releases it when the holder die
 
 The wait is interruptible.  SIGNAL HANDLERS ARE INSTALLED BEFORE THE LOCK IS ATTEMPTED;  registered later, a stop during startup has no handler and sits until SIGKILL.
 
-ENCODE JOB DIRECTORIES RECORD THEIR OWNING PID.  The startup sweep reclaims only directories whose owner is no longer alive.
+A JOB DIRECTORY IS LIVE ONLY WHILE A WORKER HOLDS IT.  '_work' adds its job id to 'orchestrator._jobs' before staging and removes it however it returns, and nothing reads a job directory across runs, since every run re-stages from the source.  'reclaim_jobs' removes every other entry in the encode area at startup, '.probe' included, and every 'job_reclaim_interval' seconds after, '.probe' excepted:  it renames the directory to '.reclaim-<name>' under the registry lock, so a Retry reusing the row's job id cannot race the delete, then removes it outside the lock and logs its size.  A PID is not an owner inside a container, because the supervisor's PID repeats on every start.  Under DRY_RUN nothing is removed.
 
 ENCODES RUN UNDER A TRACKED SUBPROCESS AND ARE TERMINATED ON SHUTDOWN.  Otherwise the supervisor exits while ffmpeg keeps running, reparented to the init process and still writing into the encode area.
 
@@ -999,7 +1004,7 @@ a single-numbered file whose length says  listed with its range name, no repair
   two episodes
 ```
 
-Resolution, bit depth, codec, letterbox and PAL speed-up are never findings.  They need an encode, which is the loss gate 1 exists to prevent.
+Resolution, bit depth, codec, letterbox and PAL speed-up are never repairable.  They need an encode, which is the loss gate 1 exists to prevent;  they are measured and judged against section 7's rules in the report.
 
 THE NAMING CHECK NEEDS NO PROVIDER.  The audit builds the names the pipeline would publish, through the same 'titles.movie_folder', 'movie_filename', 'show_folder', 'season_folder' and 'episode_filename' the publish step uses, and compares whole names with what is on disk.  It cannot check the reverse:  a tag that is itself wrong, and names that agree with it, pass until the file goes through the pipeline and rung 1's verification rewrites the identity.
 
@@ -1011,17 +1016,19 @@ THE TWO-EPISODE LISTING PROPOSES AND DOES NOT ACT.  A television file whose on-d
 
 Repairing a naming finding is the same Import as any other:  rung 1 reads the embedded block, verifies it, and the published names are regenerated from it.  For a folder-only defect that copies every file in the folder through the pipeline;  renaming the folder by hand is the cheaper route and remains the operator's, per section 2.
 
+THE AUDIT STORES THE MEASUREMENT, AND THE REPORT JUDGES IT AT READ TIME.  'assess' keeps the probe container summary, the cropdetect result, the tag structure and the statistics ratio in 'measured' beside the check rows;  cropdetect runs through 'media.detect_crop_for' on letterbox candidates only, and a candidate with no bars records 0 px.  'report.build_row' runs 'standards.values' and 'rules.evaluate' over the stored figures with the current settings, so a rule change shows on the next load with no rescan.  'frame_count' is the statistics tag's alone;  the full-decode count is not run.
+
 IT IS THROTTLED AND IT SKIPS WHAT HAS NOT CHANGED.  'AUDIT_INTERVAL' seconds between files, default 2.  A 'findings' table in 'state.db' records path, size and mtime for every file assessed, so a repeat pass is mostly 'stat' calls.  A pass restarts 'AUDIT_SWEEP_INTERVAL' seconds after the last one finished, default 3600.  'AUDIT_INTERVAL=0' disables it, and it never starts when no library is mounted.
 
-THE SKIP KEYS ON SIZE AND MTIME ONLY, SO A RULE CHANGE NEEDS A WIPE.  'Rescan entire library' in the findings dialog, 'POST /api/audit' with '{"rescan": true}', runs 'Auditor.rescan':  the findings table is deleted, a running pass is stopped through the '_restart' event so it does not leave a stat-skippable tail, and the next pass is a first pass by construction.  The wipe takes the repair links with it;  the title rows are untouched.
+THE SKIP KEYS ON SIZE, MTIME AND A STORED CONTAINER SUMMARY, SO A CHECK CHANGE NEEDS A WIPE.  A row whose 'measured' lacks 'container' is re-assessed on the next pass;  an unreadable file stores it as None and is skipped like any other.  'Scan for New Content' on the report is 'POST /api/audit' with an empty body, which starts a pass at once.  'Rescan Entire Library', 'POST /api/audit' with '{"rescan": true}', runs 'Auditor.rescan':  the findings table is deleted, a running pass is stopped through the '_restart' event so it does not leave a stat-skippable tail, and the next pass is a first pass by construction.  The wipe takes the repair links with it;  the title rows are untouched.
 
-REPAIR IS BY RUNNING THE FILE THROUGH THE PIPELINE.  Each finding carries a copy action, 'POST /api/audit/<id>/import', which copies the library file into 'import/', a read of the library and a write under the writable root.  The copy lands as '<name>.part' and is renamed, because the watcher ignores '.part';  it refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, per section 6.  The loop still ends by hand.
+REPAIR IS BY RUNNING THE FILE THROUGH THE PIPELINE.  A row with a broken repairable rule that is not ignored carries a copy action, 'POST /api/audit/<id>/import', which copies the library file into 'import/', a read of the library and a write under the writable root.  The copy lands as '<name>.part' and is renamed, because the watcher ignores '.part';  it refuses when the root lacks the space, when the name is already in 'import/', or while a title for that file is in the pipeline, per section 6.  The loop still ends by hand.
 
 A COPIED TITLE MUST NOT COMPARE AGAINST ITSELF.  It resolves to the same provider ID as the file it came from, so section 8 would hold it as a no-vote pair.  The finding records the import path, the watcher stores 'origin_path' on the row, and '_find_incumbents' skips that one realpath in either root.  Only the comparison is skipped;  screening and readiness still apply.  This does not use 'overridden', which section 7 makes far broader than this needs.
 
 A header repair through the pipeline moves a whole file to correct a few hundred bytes of Colour header;  what that buys is a file verified by the same 'readiness' check as any other title.
 
-The dashboard's 'Library findings' counter and its dialog are as README describes;  the Details table per finding is in the shape of the Compare dialog, container beside bitstream for the HDR rows, expected beside actual for the rest.
+THE LIBRARY QUALITY REPORT IS ITS OWN PAGE, NOT A DIALOG.  'report.html' at '/report', from the dashboard corner, and 'GET /api/report' for its data:  one row per file with the columns of 'rules.COLUMNS' in their order, title first, then the comparison gates' attributes in gate order.  Every column sorts and filters, less than, greater than or equal to on a number, and the table scrolls both ways with its headings and title column sticky.  A broken repairable rule makes the row red, a broken standard yellow, and each broken rule marks its own cell.  A row expands in place to the check table, in the shape of the Compare dialog, container beside bitstream for the HDR rows, expected beside actual for the rest.
 
 ## 28.  Out of scope
 
@@ -1037,7 +1044,7 @@ ONE EXCEPTION TO THE PACKAGING RULE, ADDED DELIBERATELY.  The Dockerfile carries
 
 ## 30.  Authentication
 
-THE LOGIN IS IN FRONT OF EVERY PAGE AND EVERY API ROUTE BUT FIVE.  'GET /api/health' answers '{ok, version}' for the Docker healthcheck;  'GET /api/login' says whether authentication is on and whether the first account is still to be created;  'POST /api/setup' and 'POST /api/setup/totp' serve the first run;  'POST /api/login' takes credentials.  Everything else answers 401 '{"error": "login required"}' without a valid session, and the three pages serve 'login.html' in place of themselves.  'webui.Handler._user' is the one gate:  the session from the cookie, or the synthetic operator while authentication is off.
+THE LOGIN IS IN FRONT OF EVERY PAGE AND EVERY API ROUTE BUT FIVE.  'GET /api/health' answers '{ok, version}' for the Docker healthcheck;  'GET /api/login' says whether authentication is on and whether the first account is still to be created;  'POST /api/setup' and 'POST /api/setup/totp' serve the first run;  'POST /api/login' takes credentials.  Everything else answers 401 '{"error": "login required"}' without a valid session, and every page in 'webui.PUBLIC_PAGES' serves 'login.html' in place of itself.  'webui.Handler._user' is the one gate:  the session from the cookie, or the synthetic operator while authentication is off.
 
 THE FIRST RUN IS ONE STATE, 'auth_enabled' ON WITH NO USER ROW.  The page asks 'Require Authentication?'.  No stores 'auth_enabled' off.  Yes takes a username and a method, Password, OTP/Google Authenticator or MFA with both, enrols the authenticator inline, and 'Auth.setup' verifies every factor the chosen mode needs before the row is written.  'user_create' checks the count inside the store lock, so two first-run posts cannot both succeed.  No account is seeded and no default password exists;  the window before the first answer is open to whoever reaches the port, accepted because a seeded credential would be a wider exposure.
 
@@ -1057,4 +1064,4 @@ EVERY CREDENTIAL CHANGE RE-CHECKS A FACTOR IN THE SAME REQUEST.  Changing the mo
 
 THE SWITCH HAS ONE ROUTE AND TWO DIRECTIONS.  'POST /api/account/auth' is the only writer of 'auth_enabled'.  Off needs a signed-in user and a factor and logs who did it at warning.  On has no precondition:  the response sets no cookie, and the next load is the login form with users present or the first-run page with none.  Sessions are not touched in either direction.  While off, the User Settings page shows the switch and nothing per user, every per-user and user-management endpoint answers 409, the header carries the 'AUTH OFF' pill, Sign out is hidden, and startup logs a warning.
 
-THE DASHBOARD AND THE SETTINGS PAGE REACH THE LOGIN THROUGH A 401.  Every 'fetch' on both pages goes through one wrapper that reloads the page on 401, and the reload lands on 'login.html', which sends the browser back to the path it was on.  User Settings is a third page, 'account.html' at '/account'.
+EVERY PAGE REACHES THE LOGIN THROUGH A 401.  Every 'fetch' on the dashboard, the report, both settings pages and User Settings goes through one wrapper that reloads the page on 401, and the reload lands on 'login.html', which sends the browser back to the path it was on.  User Settings is 'account.html' at '/account'.

@@ -425,6 +425,19 @@ def _plausible(cw, ch, cx, cy, width, height):
     return None
 
 
+def detect_crop_for(path, video, container, profile):
+    return detect_crop(
+        path, video, container=container,
+        sample_count=profile["crop_sample_count"],
+        sample_seconds=profile["crop_sample_seconds"],
+        sample_attempts=profile["crop_sample_attempts"],
+        black_level_factor=profile["crop_black_level_factor"],
+        black_level_cap=profile["crop_black_level_cap"],
+        secondary_share=profile["crop_secondary_share"],
+        min_bars_px=profile["letterbox_bars_px"],
+    )
+
+
 def detect_crop(path, video, container=None, sample_count=None, sample_seconds=None,
                 sample_attempts=None, black_level_factor=None, black_level_cap=None,
                 secondary_share=None, min_bars_px=None):

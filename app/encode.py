@@ -1,10 +1,11 @@
 import logging
 import os
 
+from . import rules
+
 log = logging.getLogger("encode")
 
 PASSTHROUGH_CODECS = ("hevc", "av1")
-SD_DISPLAY_HEIGHT = 720
 
 SDR_PRIMARIES_SD = "smpte170m"
 SDR_PRIMARIES_HD = "bt709"
@@ -125,18 +126,19 @@ def _threads(params):
     return max(1, os.cpu_count() or 1)
 
 
-def is_sd(video, floor=SD_DISPLAY_HEIGHT):
-    return int(video.get("display_height") or 0) < int(floor or SD_DISPLAY_HEIGHT)
+def is_sd(video, profile=None):
+    return rules.resolution_class(video.get("display_width"), video.get("display_height"), profile) == rules.SD
 
 
 #----- The encoder subset of a profile;  stored with the decision at ROUTED, so a queued title keeps it.
+#----- The class boundaries ride along because the SDR stamp decides SD at ENCODING from the snapshot.
 PARAM_KEYS = (
     "x265_preset", "x265_crf", "x265_aq_mode", "x265_aq_mode_film", "x265_tune_film",
     "x265_psy_rd", "x265_psy_rdoq", "x265_deblock", "x265_pix_fmt", "x265_extra_params",
     "x265_dv_vbv_kbps", "svtav1_preset", "svtav1_crf", "svtav1_params", "svtav1_pix_fmt",
     "qsv_preset", "qsv_global_quality", "hevc_devices", "hevc_qsv_preset",
-    "hevc_qsv_global_quality", "sd_display_height", "threads_per_job",
-)
+    "hevc_qsv_global_quality", "threads_per_job",
+) + rules.CLASS_KEYS
 
 
 def encoder_params(profile, render_node=None):
@@ -201,13 +203,12 @@ def _select(video, kind, profile, grain=None, gpu_available=True, override=None,
             grain=grain,
         )
 
-    sd_floor = profile.get("sd_display_height") or SD_DISPLAY_HEIGHT
-    if is_sd(video, sd_floor) and not profile.get("encode_sd"):
+    if is_sd(video, profile) and not profile.get("encode_sd"):
         return Decision(
             PASSTHROUGH,
             2,
-            "SD %s, display height %s is below %d and SD encoding is off"
-            % ("television" if kind == "tv" else "source", video.get("display_height"), sd_floor),
+            "SD %s, display %sx%s is below every HD class and SD encoding is off"
+            % ("television" if kind == "tv" else "source", video.get("display_width"), video.get("display_height")),
             grain=grain,
         )
 
@@ -280,10 +281,10 @@ def _select(video, kind, profile, grain=None, gpu_available=True, override=None,
 
 
 #----- Command fragments
-def sdr_stamp_primaries(video, sd_floor=SD_DISPLAY_HEIGHT):
+def sdr_stamp_primaries(video, profile=None):
     if video.get("hdr") or video.get("colour_tagged"):
         return None
-    return SDR_PRIMARIES_SD if is_sd(video, sd_floor) else SDR_PRIMARIES_HD
+    return SDR_PRIMARIES_SD if is_sd(video, profile) else SDR_PRIMARIES_HD
 
 
 def _map_args():
@@ -407,7 +408,7 @@ def build_command(decision, src, dst, video, params, crop=None, crf=None):
     if filters:
         args += ["-vf", ",".join(filters)]
 
-    stamp = sdr_stamp_primaries(video, params.get("sd_display_height") or SD_DISPLAY_HEIGHT)
+    stamp = sdr_stamp_primaries(video, params)
     hdr = hdr_colour(video)
 
     if decision.encoder == LIBX265:

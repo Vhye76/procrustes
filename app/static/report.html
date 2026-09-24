@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library Quality Report</title>
+<link rel="icon" type="image/png" href="/favicon.ico">
+<style>
+  /*----- Palette, the dashboard's, plus the two severities */
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2c313b;
+    --ink: #e7eaf0; --dim: #98a2b3; --accent: #6ea8fe;
+    --ok: #4ade80; --warn: #fbbf24; --bad: #f87171;
+    --repair: #2e1c1f; --repair-cell: #57262b; --repair-ink: #fca5a5;
+    --below: #2c2717; --below-cell: #5a4a1b; --below-ink: #fcd34d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+         display: flex; flex-direction: column; }
+  header { padding: 14px 24px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; flex: 0 0 auto; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  h1 a { color: inherit; text-decoration: none; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px;
+          border: 1px solid var(--line); color: var(--dim); }
+  .pill.warn { color: var(--warn); border-color: #5b4a23; }
+
+  /*----- The menu */
+  #menu { margin-left: auto; position: relative; align-self: center; }
+  #menu-btn { background: none; border: 1px solid transparent; border-radius: 6px;
+              padding: 3px 5px; color: var(--ink); cursor: pointer; display: flex; }
+  #menu-btn:hover, #menu-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--line); }
+  #menu-btn svg { width: 26px; height: 26px; display: block; }
+  #menu-list { display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+               min-width: 240px; background: var(--panel); border: 1px solid var(--line);
+               border-radius: 8px; padding: 6px 0; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  #menu-list.open { display: block; }
+  #menu-list .st { padding: 6px 14px; font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #menu-list .st.ok { color: var(--ok); }
+  #menu-list .st.warn { color: var(--warn); }
+  #menu-list hr { border: none; border-top: 1px solid var(--line); margin: 6px 0; }
+  #menu-list a { display: block; padding: 7px 14px; font-size: 13px; color: var(--ink);
+                 text-decoration: none; }
+  #menu-list a:hover { background: #232833; color: var(--accent); }
+
+  /*----- The toolbar */
+  main { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; padding: 12px 24px 16px; gap: 10px; }
+  #bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex: 0 0 auto; }
+  #bar .n { font-size: 13px; font-weight: 600; }
+  #bar .st { font-size: 12px; color: var(--dim); }
+  #bar .gap { flex: 1 1 auto; }
+  #bar a { font-size: 12px; color: var(--accent); text-decoration: none; }
+  #bar a:hover { text-decoration: underline; }
+  .key { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--dim); }
+  .key i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .key i.r { background: var(--repair-cell); }
+  .key i.b { background: var(--below-cell); }
+  button { background: #232833; color: var(--ink); border: 1px solid var(--line);
+           border-radius: 5px; padding: 5px 11px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.bad:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  select, input { background: #14161a; color: var(--ink); border: 1px solid var(--line); border-radius: 5px;
+                  padding: 3px 6px; font-size: 12px; font-family: inherit; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+
+  /*----- The table:  one scroll box, the head and the title column sticky */
+  #wrap { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+          background: var(--panel); }
+  #msg { padding: 24px; color: var(--dim); font-style: italic; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 12px; }
+  thead { position: sticky; top: 0; z-index: 3; }
+  thead th { background: #20242c; text-align: left; font-weight: 600; color: var(--dim);
+             padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: bottom; }
+  thead tr.lbl th { cursor: pointer; user-select: none; font-size: 11px; text-transform: uppercase;
+                    letter-spacing: .05em; }
+  thead tr.lbl th:hover { color: var(--accent); }
+  thead tr.lbl th .g { display: block; font-size: 10px; color: #6b7482; letter-spacing: .04em; }
+  thead tr.lbl th.sorted { color: var(--accent); }
+  thead tr.flt th { padding: 4px 6px 6px; }
+  thead tr.flt .nf { display: flex; gap: 3px; }
+  thead tr.flt .nf select { width: 42px; padding: 3px 2px; }
+  thead tr.flt .nf input { width: 72px; }
+  thead tr.flt input.tf { width: 120px; }
+  tbody td { padding: 5px 10px; border-bottom: 1px solid #252932; white-space: nowrap;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel); }
+  tbody td.t { font-family: inherit; font-weight: 600; max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+  tbody td.num { text-align: right; }
+  th:first-child, td:first-child { position: sticky; left: 0; z-index: 1; border-right: 1px solid var(--line); }
+  thead th:first-child { z-index: 4; }
+  tbody tr.row { cursor: pointer; }
+  tbody tr.row:hover td { background: #232833; }
+  tbody tr.sev-repair td { background: var(--repair); }
+  tbody tr.sev-below td { background: var(--below); }
+  tbody tr.row td.f-repair { background: var(--repair-cell); color: var(--repair-ink); }
+  tbody tr.row td.f-below { background: var(--below-cell); color: var(--below-ink); }
+  tbody tr.wait td { color: var(--dim); }
+  /*----- The detail row */
+  tbody tr.det > td { background: #181b21; white-space: normal; font-family: inherit; padding: 0; cursor: default; }
+  .det-in { padding: 12px 16px; position: sticky; left: 0; max-width: calc(100vw - 80px); }
+  .det-in .why { color: var(--warn); font-size: 12px; margin: 2px 0; }
+  .det-in .why.r { color: var(--repair-ink); }
+  .det-in .path { color: var(--dim); font-size: 12px; font-family: ui-monospace, Menlo, monospace;
+                  word-break: break-all; margin-bottom: 8px; }
+  .det-in table { margin: 8px 0; min-width: 640px; }
+  .det-in th, .det-in td { padding: 5px 10px; border-bottom: 1px solid var(--line); text-align: left;
+                           font-size: 12px; white-space: normal; vertical-align: top; background: none; position: static; }
+  .det-in th { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .det-in td.v { font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  .det-in tr.bad td { color: var(--repair-ink); }
+  .det-in .acts { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+  .det-in .acts .s { font-size: 12px; color: var(--dim); }
+  .bar { width: 200px; height: 5px; background: #22262f; border-radius: 99px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1><a href="/">procrustes</a> <span>Library Quality Report</span></h1>
+  <span class="pill warn" id="dry" style="display:none"></span>
+  <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
+  <div id="menu">
+    <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 10.5c0-3.6 3.6-6 8-6s8 2.4 8 6H4z"/>
+        <path d="M8.5 7.5h.01M12 6.5h.01M15.5 7.5h.01"/>
+        <path d="M3.5 13c1 .8 2 .8 3 0s2-.8 3 0 2 .8 3 0 2-.8 3 0 2 .8 3 0 2-.8 2.5 0"/>
+        <rect x="4" y="14.5" width="16" height="2.5" rx="1.25"/>
+        <path d="M4.5 18.5h15a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5z"/>
+      </svg>
+    </button>
+    <div id="menu-list" role="menu">
+      <div class="st" id="codec">output</div>
+      <div class="st" id="gpu">gpu</div>
+      <div class="st" id="encode">encode</div>
+      <div class="st" id="libs">libraries</div>
+      <hr>
+      <a href="/" role="menuitem">Dashboard</a>
+      <a href="/settings" role="menuitem">Application Settings</a>
+      <a href="/standards" role="menuitem">Minimum Standards</a>
+      <a href="/account" role="menuitem">User Settings</a>
+      <a href="#" role="menuitem" id="signout" onclick="signOut(event)">Sign out</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="bar">
+    <span class="n" id="count">-</span>
+    <select id="sev" title="Severity">
+      <option value="">any severity</option>
+      <option value="repair">needs repair</option>
+      <option value="below">below standards</option>
+      <option value="clean">clean</option>
+    </select>
+    <button onclick="clearFilters()">Clear filters</button>
+    <span class="key"><i class="r"></i>needs repair</span>
+    <span class="key"><i class="b"></i>below standards</span>
+    <span class="gap"></span>
+    <span class="st" id="scan"></span>
+    <button onclick="scanNew()">Scan for New Content</button>
+    <button class="bad" onclick="rescanAll()">Rescan Entire Library</button>
+    <a href="/standards">Minimum Standards</a>
+  </div>
+  <div id="wrap"><div id="msg">Loading the report...</div></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+//----- A 401 anywhere reloads the page, which then serves the login form
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 401) { location.reload(); throw new Error("login required"); }
+  return res;
+}
+async function signOut(ev) {
+  ev.preventDefault();
+  try { await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); }
+  catch (e) {}
+  location.href = "/";
+}
+//----- The AUTH OFF pill and the Sign out entry follow the switch
+function authPill(s) {
+  const off = s.auth && s.auth.enabled === false;
+  $("authoff").style.display = off ? "" : "none";
+  $("signout").style.display = off ? "none" : "";
+}
+const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function gb(n) { return (Number(n || 0) / 1e9).toFixed(2) + " GB"; }
+
+//----- The menu opens on its button and closes on a click elsewhere or Escape
+$("menu-btn").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  const open = !$("menu-list").classList.contains("open");
+  $("menu-list").classList.toggle("open", open);
+  $("menu-btn").setAttribute("aria-expanded", open ? "true" : "false");
+});
+function closeMenu() {
+  $("menu-list").classList.remove("open");
+  $("menu-btn").setAttribute("aria-expanded", "false");
+}
+document.addEventListener("click", (ev) => { if (!ev.target.closest("#menu")) closeMenu(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeMenu(); });
+function menuRow(el, text, cls) {
+  el.textContent = text;
+  el.className = "st" + (cls ? " " + cls : "");
+}
+function codecText(settings) {
+  const oc = (settings && settings.output_codec) || {};
+  if (!oc.movie && !oc.tv) return "output unknown";
+  return oc.movie === oc.tv ? "output " + oc.movie : `output movies ${oc.movie}, tv ${oc.tv}`;
+}
+function when(ts) {
+  if (!ts) return "never";
+  return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+//----- DATA is the report as served and TEXT its body, so an unchanged poll repaints nothing
+let DATA = null;
+let TEXT = null;
+let COLS = [];
+let SORT = { key: null, dir: 1 };
+const FILTERS = {};
+const OPEN = new Set();
+let AUDIT = {};
+let LOADED_AT = 0;
+
+//----- The status poll:  the menu rows and the scan line, and a report reload when a pass finishes,
+//----- every 30 s while one runs, or while a repair copy or an imported title is moving
+async function status() {
+  let s;
+  try { s = await (await api("/api/status")).json(); } catch (e) { return; }
+  menuRow($("codec"), codecText(s.settings));
+  menuRow($("gpu"), s.gpu.available ? "gpu ready" : "gpu degraded", s.gpu.available ? "ok" : "warn");
+  menuRow($("encode"), "encode " + gb(s.encode.free_bytes) + " free"
+          + (s.encode.separate_filesystem ? "" : " (same fs)"),
+          s.encode.separate_filesystem ? "" : "warn");
+  menuRow($("libs"), s.libraries_mounted ? "libraries mounted" : "no libraries, comparison off",
+          s.libraries_mounted ? "" : "warn");
+  $("dry").textContent = s.config.DRY_RUN ? "DRY RUN" : "";
+  $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+  authPill(s);
+  const a = s.audit || {};
+  const finished = AUDIT.running !== a.running || (!a.running && AUDIT.latest !== a.latest);
+  const progressed = a.running && AUDIT.latest !== a.latest && Date.now() - LOADED_AT > 30000;
+  AUDIT = a;
+  $("scan").textContent = a.running
+    ? `scanning ${a.done || 0}/${a.total || 0}` + (a.current ? " - " + a.current : "")
+    : `last pass ${when(a.finished_at)}` + (a.next_at ? `, next ${when(a.next_at)}` : "");
+  const active = DATA && DATA.rows.some(r => (r.import.copy && r.import.copy.copying) || r.import.in_pipeline);
+  if (finished || progressed || active) load();
+}
+
+async function load() {
+  let text;
+  try { text = await (await api("/api/report")).text(); } catch (e) { return; }
+  LOADED_AT = Date.now();
+  if (text === TEXT) return;
+  TEXT = text;
+  DATA = JSON.parse(text);
+  if (!COLS.length) {
+    COLS = DATA.columns;
+    buildHead();
+  }
+  paint();
+}
+
+function unit(c) { return c.unit ? ` (${c.unit})` : ""; }
+
+//----- The head is built once:  a label row that sorts and a filter row beneath it
+function buildHead() {
+  const lbl = COLS.map(c => `<th data-k="${esc(c.key)}" title="${esc(c.label + unit(c))}">${
+    c.gate ? `<span class="g">gate ${c.gate}</span>` : ""}${esc(c.label)}${esc(unit(c))}</th>`).join("");
+  const flt = COLS.map(c => {
+    if (c.type === "number") {
+      return `<th><div class="nf"><select data-f="${esc(c.key)}" data-p="op">
+        <option value=""></option><option value="<">&lt;</option><option value=">">&gt;</option><option value="=">=</option>
+        </select><input data-f="${esc(c.key)}" data-p="v" type="number" step="any"></div></th>`;
+    }
+    if (c.type === "bool") {
+      return `<th><select data-f="${esc(c.key)}" data-p="b"><option value="">any</option>
+        <option value="yes">yes</option><option value="no">no</option></select></th>`;
+    }
+    return `<th><input class="tf" data-f="${esc(c.key)}" data-p="t" type="text" placeholder="contains"></th>`;
+  }).join("");
+  $("wrap").innerHTML = `<table><thead><tr class="lbl">${lbl}</tr><tr class="flt">${flt}</tr></thead>
+    <tbody id="body"></tbody></table><div id="msg" style="display:none"></div>`;
+  $("wrap").querySelectorAll("thead tr.lbl th").forEach(th => th.addEventListener("click", () => sortBy(th.dataset.k)));
+  let timer = null;
+  $("wrap").querySelectorAll("[data-f]").forEach(el => {
+    el.addEventListener("input", () => {
+      const f = FILTERS[el.dataset.f] = FILTERS[el.dataset.f] || {};
+      f[el.dataset.p] = el.value;
+      clearTimeout(timer);
+      timer = setTimeout(paint, 150);
+    });
+  });
+  $("body").addEventListener("click", onRowClick);
+}
+
+//----- Sorting cycles ascending, descending, off;  a blank sorts last either way
+function sortBy(key) {
+  if (SORT.key !== key) SORT = { key, dir: 1 };
+  else if (SORT.dir === 1) SORT.dir = -1;
+  else SORT = { key: null, dir: 1 };
+  $("wrap").querySelectorAll("thead tr.lbl th").forEach(th => th.classList.toggle("sorted", th.dataset.k === SORT.key));
+  paint();
+}
+
+function clearFilters() {
+  for (const k in FILTERS) delete FILTERS[k];
+  $("sev").value = "";
+  $("wrap").querySelectorAll("[data-f]").forEach(el => { el.value = ""; });
+  paint();
+}
+$("sev").addEventListener("change", () => paint());
+
+function blank(v) { return v === null || v === undefined || v === ""; }
+
+//----- Filtering, every filter at once, on the displayed units
+function keep(r) {
+  const sev = $("sev").value;
+  if (sev === "clean" ? r.severity : (sev && r.severity !== sev)) return false;
+  for (const c of COLS) {
+    const f = FILTERS[c.key];
+    if (!f) continue;
+    const v = r.values[c.key];
+    if (c.type === "number" && f.op && f.v !== undefined && f.v !== "") {
+      if (blank(v)) return false;
+      const n = Number(v), t = Number(f.v);
+      if (f.op === "<" && !(n < t)) return false;
+      if (f.op === ">" && !(n > t)) return false;
+      if (f.op === "=" && Math.abs(n - t) > 1e-9) return false;
+    } else if (c.type === "bool" && f.b) {
+      if (blank(v) || (!!v) !== (f.b === "yes")) return false;
+    } else if (c.type === "text" && f.t) {
+      if (!String(v == null ? "" : v).toLowerCase().includes(f.t.toLowerCase())) return false;
+    }
+  }
+  return true;
+}
+
+function cmp(a, b) {
+  const x = a.values[SORT.key], y = b.values[SORT.key];
+  if (blank(x) && blank(y)) return 0;
+  if (blank(x)) return 1;
+  if (blank(y)) return -1;
+  if (typeof x === "number" && typeof y === "number") return (x - y) * SORT.dir;
+  if (typeof x === "boolean" || typeof y === "boolean") return ((x ? 1 : 0) - (y ? 1 : 0)) * SORT.dir;
+  return String(x).localeCompare(String(y), undefined, { numeric: true }) * SORT.dir;
+}
+
+const DECIMALS = { gb: 2, bpp: 3, statistics_ratio: 3, display_aspect: 3, frame_rate: 3, sar: 4, runtime_min: 1 };
+
+function show(c, v) {
+  if (blank(v)) return "";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  if (typeof v === "number") {
+    if (c.key in DECIMALS) return v.toFixed(DECIMALS[c.key]);
+    return Number.isInteger(v) ? v.toLocaleString("en-US") : String(v);
+  }
+  return String(v);
+}
+
+//----- Rendering
+function rowHtml(r) {
+  const cls = ["row"];
+  if (r.severity) cls.push("sev-" + r.severity);
+  if (!r.measured) cls.push("wait");
+  const reasons = r.broken.map(b => b.reason).join("\n");
+  const cells = COLS.map(c => {
+    let v = show(c, r.values[c.key]);
+    const tdc = [];
+    if (c.key === "title") tdc.push("t");
+    if (c.type === "number") tdc.push("num");
+    const f = r.flagged[c.key];
+    if (f) tdc.push("f-" + f);
+    let tip = "";
+    if (c.key === "title") tip = r.path;
+    if (c.key === "broken") {
+      tip = reasons;
+      if (!r.measured) v = v ? v + "; awaiting re-assessment" : "awaiting re-assessment";
+      if (r.unreadable) v = "unreadable";
+    }
+    return `<td class="${tdc.join(" ")}"${tip ? ` title="${esc(tip)}"` : ""}>${esc(v)}</td>`;
+  }).join("");
+  return `<tr class="${cls.join(" ")}" data-id="${r.id}">${cells}</tr>` + (OPEN.has(r.id) ? detailHtml(r) : "");
+}
+
+function checkTable(rows, heading, a, b) {
+  if (!rows.length) return "";
+  return `<tr><th>${heading}</th><th>${a}</th><th>${b}</th><th>Repair</th></tr>` + rows.map(c =>
+    `<tr class="${c.ok ? "" : "bad"}"><td>${esc(c.check)}${c.detail ? `<div style="color:var(--dim)">${esc(c.detail)}</div>` : ""}</td>
+      <td class="v">${esc(c.expected)}</td><td class="v">${esc(c.actual)}</td>
+      <td>${c.ok ? "" : esc(c.repair || "listed, no repair")}</td></tr>`).join("");
+}
+
+function actionHtml(r) {
+  const imp = r.import || {};
+  const copy = imp.copy || {};
+  if (imp.in_pipeline) {
+    const p = imp.in_pipeline;
+    return p.id != null
+      ? `<a href="/" style="font-size:12px;color:var(--accent)">In pipeline as title ${p.id}, ${esc(p.display_stage)}</a>`
+      : `<span class="s">In pipeline, ${esc(p.display_stage)}</span>`;
+  }
+  if (copy.copying) {
+    const done = copy.copied_bytes, total = copy.total_bytes;
+    return done == null || !total ? `<span class="s">copying</span>`
+      : `<div class="bar"><i style="width:${Math.max(0, Math.min(100, 100 * done / total))}%"></i></div>
+         <span class="s">copying ${gb(done)} / ${gb(total)}</span>`;
+  }
+  const err = copy.error ? `<span class="s" style="color:var(--bad)">copy failed: ${esc(copy.error)}</span>` : "";
+  return imp.repairable ? `<button data-import="${r.id}">Import</button>${err}` : err;
+}
+
+function detailHtml(r) {
+  const why = r.broken.map(b => `<div class="why${b.repairable ? " r" : ""}">${esc(b.reason)}</div>`).join("")
+    || `<div class="why" style="color:var(--ok)">Meets every rule that is not ignored.</div>`;
+  const hdr = (r.detail || []).filter(c => c.surface);
+  const rest = (r.detail || []).filter(c => !c.surface);
+  const table = hdr.length + rest.length
+    ? `<table>${checkTable(hdr, "Check", "Bitstream", "Container")}${checkTable(rest, "Check", "Expected", "Actual")}</table>`
+    : "";
+  return `<tr class="det" data-for="${r.id}"><td colspan="${COLS.length}"><div class="det-in">
+    <div class="path">${esc(r.path)}</div>
+    ${r.unreadable ? `<div class="why r">unreadable:  ${esc(r.unreadable)}</div>` : ""}
+    ${!r.measured ? `<div class="why">awaiting re-assessment on the next pass</div>` : ""}
+    ${why}${table}<div class="acts">${actionHtml(r)}</div></div></td></tr>`;
+}
+
+//----- One delegated listener:  Import, or a row opening and closing its detail in place
+function onRowClick(ev) {
+  const btn = ev.target.closest("[data-import]");
+  if (btn) { importRow(Number(btn.dataset.import), btn); return; }
+  if (ev.target.closest("tr.det")) return;
+  const tr = ev.target.closest("tr.row");
+  if (!tr) return;
+  const id = Number(tr.dataset.id);
+  const next = tr.nextElementSibling;
+  if (OPEN.has(id)) {
+    OPEN.delete(id);
+    if (next && next.classList.contains("det")) next.remove();
+  } else {
+    OPEN.add(id);
+    const r = DATA.rows.find(x => x.id === id);
+    if (r) tr.insertAdjacentHTML("afterend", detailHtml(r));
+  }
+}
+
+function paint() {
+  if (!DATA) return;
+  const msg = $("msg");
+  const st = DATA.status || {};
+  let empty = "";
+  if (!DATA.libraries.length) empty = "No library is mounted, so there is nothing to report.";
+  else if (st.enabled === false) empty = "The library audit is disabled (AUDIT_INTERVAL=0), so there is nothing to report.";
+  else if (!DATA.rows.length) empty = st.running ? "The first pass over the library is running." : "No library file has been audited yet.";
+  const body = $("body");
+  if (empty) {
+    msg.textContent = empty;
+    msg.style.display = "";
+    if (body) body.innerHTML = "";
+    $("count").textContent = "0 files";
+    return;
+  }
+  msg.style.display = "none";
+  let rows = DATA.rows.filter(keep);
+  if (SORT.key) rows = rows.slice().sort(cmp);
+  body.innerHTML = rows.map(rowHtml).join("");
+  $("count").textContent = `${rows.length.toLocaleString("en-US")} of ${DATA.rows.length.toLocaleString("en-US")} files`;
+}
+
+//----- Actions
+async function importRow(id, btn) {
+  btn.disabled = true;
+  let r;
+  try {
+    r = await (await api(`/api/audit/${id}/import`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+  } catch (e) { btn.disabled = false; return; }
+  if (r.error) alert(r.error);
+  TEXT = null;
+  load();
+}
+
+async function scanNew() {
+  try { await api("/api/audit", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); }
+  catch (e) {}
+  status();
+}
+
+async function rescanAll() {
+  try { await api("/api/audit", { method: "POST", headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ rescan: true }) }); }
+  catch (e) {}
+  TEXT = null;
+  load();
+  status();
+}
+
+load();
+status();
+setInterval(status, 5000);
+</script>
+</body>
+</html>

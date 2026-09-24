@@ -299,6 +299,13 @@ class Store:
             cur = self._db.execute("SELECT * FROM titles WHERE id = ?", (title_id,))
             return self._row_to_dict(cur.fetchone())
 
+    def title_by_job(self, job_id):
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT * FROM titles WHERE job_id = ? ORDER BY id DESC LIMIT 1", (str(job_id),)
+            )
+            return self._row_to_dict(cur.fetchone())
+
     def by_output_path(self, output_path):
         with self._lock:
             cur = self._db.execute(
@@ -551,10 +558,13 @@ class Store:
     def audit_seen(self, path):
         with self._lock:
             cur = self._db.execute(
-                "SELECT size, mtime FROM findings WHERE path = ?", (str(path),)
+                "SELECT size, mtime, measured_json FROM findings WHERE path = ?", (str(path),)
             )
             row = cur.fetchone()
-            return (row["size"], row["mtime"]) if row else None
+        if not row:
+            return None
+        measured = _unjson(row["measured_json"]) or {}
+        return (row["size"], row["mtime"], "container" in measured)
 
     def audit_record(self, path, kind, size, mtime, checks, measured, summary, duration_s=None):
         now = time.time()
@@ -617,14 +627,6 @@ class Store:
                 "SELECT * FROM findings WHERE import_path = ?", (str(import_path),)
             )
             return self._finding_to_dict(cur.fetchone())
-
-    def findings(self):
-        with self._lock:
-            cur = self._db.execute(
-                "SELECT * FROM findings WHERE checks_json IS NOT NULL AND checks_json != '[]'"
-                " ORDER BY path"
-            )
-            return [self._finding_to_dict(r) for r in cur.fetchall()]
 
     def audit_totals(self):
         with self._lock:

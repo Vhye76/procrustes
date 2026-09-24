@@ -142,6 +142,9 @@ class Orchestrator:
         self.pools = Pools(settings)
         self._claims = {}
         self._claims_lock = threading.Lock()
+        self._jobs = set()
+        self._jobs_lock = threading.Lock()
+        self._reclaimed_at = 0.0
         self.workers = []
         self._workers_lock = threading.Lock()
         self._grain_lock = threading.Semaphore(1)
@@ -159,14 +162,8 @@ class Orchestrator:
 
     #----- Lifecycle
     def start(self):
-        removed, skipped = self.layout.sweep_encode()
-        if removed:
-            log.info("startup swept %d orphaned encode job(s): %s", len(removed), ", ".join(removed))
-        for name, owner in skipped:
-            log.warning(
-                "encode job %s is owned by live pid %s and was NOT swept",
-                name, (owner or {}).get("pid"),
-            )
+        self.reclaim_jobs(startup=True)
+        self._reclaimed_at = time.time()
         self.requeue_resumable()
         self._ensure_workers()
         t = threading.Thread(target=self._watch, name="watcher", daemon=True)
@@ -430,7 +427,54 @@ class Orchestrator:
                 self.requeue_retries()
             except Exception:
                 log.exception("retry sweep failed")
+            if time.time() - self._reclaimed_at >= self.settings.get("job_reclaim_interval"):
+                try:
+                    self.reclaim_jobs()
+                except Exception:
+                    log.exception("job reclaim failed")
+                self._reclaimed_at = time.time()
             self.stop_event.wait(self.settings.get("poll_interval"))
+
+    #----- Reclaiming the encode area
+    def reclaim_jobs(self, startup=False):
+        detached = []
+        for name in self.layout.encode_entries():
+            if name.startswith(paths.RECLAIM_PREFIX) or (startup and name.startswith(".")):
+                detached.append((name, None, 0))
+                continue
+            if name.startswith("."):
+                continue
+            #----- detached under the lock, so a Retry reusing this job id cannot stage into a directory being deleted.
+            with self._jobs_lock:
+                if name in self._jobs:
+                    continue
+                size = paths.tree_bytes(os.path.join(self.layout.encode, name))
+                if self.cfg.dry_run:
+                    log.info("DRY RUN would reclaim job directory %s, %s", name, paths.gb(size))
+                    continue
+                try:
+                    target = self.layout.detach_job_dir(name)
+                except OSError as exc:
+                    log.warning("job directory %s could not be detached for reclaim: %s", name, exc)
+                    continue
+            detached.append((os.path.basename(target), name, size))
+        if self.cfg.dry_run:
+            return []
+        reclaimed = []
+        for entry, name, size in detached:
+            if not self.layout.remove_encode_entry(entry):
+                log.warning("encode entry %s could not be removed, retried on the next pass", entry)
+                continue
+            if name is None:
+                log.debug("removed leftover encode entry %s", entry)
+                continue
+            row = self.store.title_by_job(name)
+            log.info(
+                "reclaimed job directory %s, %s%s", name, paths.gb(size),
+                ", title %s at %s" % (row["id"], row["stage"]) if row else ", no title names it",
+            )
+            reclaimed.append(name)
+        return reclaimed
 
     #----- Watching the import directory
     def scan(self):
@@ -593,8 +637,18 @@ class Orchestrator:
         row = self.store.get(title_id)
         if row is None:
             return
-        source = row["source_path"]
         job_id = row["job_id"] or uuid.uuid4().hex[:12]
+        #----- held before staging, since the row carries no job id until the copy completes.
+        with self._jobs_lock:
+            self._jobs.add(job_id)
+        try:
+            self._work_job(title_id, row, job_id)
+        finally:
+            with self._jobs_lock:
+                self._jobs.discard(job_id)
+
+    def _work_job(self, title_id, row, job_id):
+        source = row["source_path"]
         kind = row["kind"]
         identity = row.get("identity") or {}
         try:
@@ -1271,17 +1325,7 @@ class Orchestrator:
 
     def _detect_crop(self, path, video, container):
         #----- cropdetect's floor is the standards limit, one setting, so the defer condition keeps no middle.
-        profile = self.settings.profile(None)
-        return media.detect_crop(
-            path, video, container=container,
-            sample_count=profile["crop_sample_count"],
-            sample_seconds=profile["crop_sample_seconds"],
-            sample_attempts=profile["crop_sample_attempts"],
-            black_level_factor=profile["crop_black_level_factor"],
-            black_level_cap=profile["crop_black_level_cap"],
-            secondary_share=profile["crop_secondary_share"],
-            min_bars_px=profile["letterbox_bars_px"],
-        )
+        return media.detect_crop_for(path, video, container, self.settings.profile(None))
 
     #----- Staging, remux and tagging
     def _stage(self, title_id, source, job_id, container, profile):
