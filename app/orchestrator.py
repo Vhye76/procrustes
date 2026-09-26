@@ -1729,9 +1729,10 @@ class Orchestrator:
             self.layout.prune_source_folders(source)
             log.info("title %s retired %s to quarantine", title_id, os.path.basename(source))
             self.layout.wipe_job_dir(job_id)
+        #----- source_path is unique across rows, so it follows the file into quarantine.
         self.store.advance(
             title_id, state.CLEANUP, "source retired, work area wiped",
-            quarantine_path=destination,
+            quarantine_path=destination, source_path=destination,
         )
 
     def _quarantine(self, title_id, source, reason):
@@ -1748,8 +1749,10 @@ class Orchestrator:
         destination = self.layout.quarantine_path(source)
         self.layout.move_file(source, destination)
         self.layout.prune_source_folders(source)
+        #----- source_path is unique across rows, so it follows the file into quarantine.
         self.store.advance(
-            title_id, state.QUARANTINED, reason, reason=reason, quarantine_path=destination
+            title_id, state.QUARANTINED, reason, reason=reason,
+            quarantine_path=destination, source_path=destination,
         )
         log.info("title %s quarantined %s: %s", title_id, os.path.basename(source), reason)
         return "quarantined"
