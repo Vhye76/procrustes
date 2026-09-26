@@ -14,11 +14,11 @@ PROMOTION INTO THE LIBRARIES IS MANUAL, ALWAYS.  The pipeline ends at 'complete/
 
 NOTHING THAT MATTERS IS EVER DELETED.  A failure holds;  a rejected file and a completed source go to quarantine.  Nothing in a library, nothing incoming and nothing in 'complete/' is ever removed.  Three exceptions.  The encode area:  intermediates are removed once their successor exists, and a job directory no running title holds is reclaimed, per section 19.  An empty folder under 'import/', 'hold/' or 'complete/':  when a file moves out, 'paths.prune_empty_folders' removes its parent folders upward while each is empty, stopping at the root or at the first folder with anything left in it;  the climb passes the write guard at every step and removes directories only, never a file.  And a file in 'complete/' that a later arrival beat under section 8:  it is moved to '.quarantine' when the winner publishes, never deleted, and its row moves to QUARANTINED naming the title that superseded it.
 
-A PROVIDER ID IS NEVER GUESSED.  If it cannot be resolved, the title holds until an operator forces it.  A forced unidentified title carries no provider ID at all:  it keeps the name it arrived with, its tag block holds TITLE only, and it lands flat in 'complete/' rather than in a provider-named folder, so it cannot be mistaken for finished work.
+A PROVIDER ID IS NEVER GUESSED, AND NOTHING PASSES IDENTIFICATION UNIDENTIFIED.  A title that cannot be resolved holds, and an identification hold is not forceable:  it leaves only when the operator confirms an identity, the best match or one entered by hand, or discards it.  A manual identity carries only what the operator entered and is named with the absent parts dropped, per section 10.
 
 ## 3.  Repository layout
 
-README.md carries the module tree.  Two things it does not say:  'app/static/' is vanilla JS with no framework, and 'app/data/' holds FileBot's release-group and media-source lists, CC0, vendored with SOURCES.
+README.md carries the module tree.  Two things it does not say:  'app/static/' is vanilla JS with no framework, and 'app/data/' holds FileBot's release-group and media-source lists, CC0, and the Moby word list, public domain, each vendored with SOURCES.
 
 'app/' is a single Python package with two third-party dependencies and no more.  The standard library is sufficient for everything else and the HTTP client is hand-rolled on urllib.  KEEP IT THAT WAY.  No requests, no npm, no framework, no CDN.
 
@@ -216,19 +216,18 @@ THE EXTRAS CHECK IS A VOCABULARY IN TWO STRENGTHS, KEYED ON POSITION.  'standard
 
 A HOLD MOVES THE FILE, AND SO DOES EVERY EXIT FROM HOLD.  'orchestrator._hold' is the one route into HELD, for gate failures and transient retries alike.  It moves the source under 'hold/' at its path relative to 'import/', so the folders the identity ladder reads travel with it, reserves the name through the same exclusive-create loop as quarantine, prunes the vacated 'import/' folders, and rewrites 'source_path'.  'orchestrator.release_from_hold' is the inverse:  Retry, Force, Identify and an expired backoff move the file back under 'import/' at the same relative path, prune the vacated 'hold/' folders and rewrite 'source_path' before the row returns to DETECTED, so the title re-runs from 'import/' and the watcher, which never scans 'hold/', finds the row already claiming the path;  Discard quarantines it.  'hold/' therefore holds exactly the titles awaiting a decision and is empty once every decision is made.  'paths.prune_source_folders' picks the root a departing source is under, 'import/' or 'hold/', so no move out of either leaves its folders behind.  Under DRY_RUN nothing moves.
 
-THE OVERRIDE CLEARS EVERY GATE IT CAN REACH, AND A HELD TITLE STATES EVERY REASON IT WAS HELD.  Every gate evaluates in full and collects its verdicts, and 'overridden' is read at seven gates:
+THE OVERRIDE CLEARS EVERY GATE IT CAN REACH, AND A HELD TITLE STATES EVERY REASON IT WAS HELD.  Every gate evaluates in full and collects its verdicts, and 'overridden' is read at six gates:
 
 ```
 _screen     standards bypassed
 _compare    comparison bypassed, including a clear LOSS, and the in-flight sibling hold with it
-_identify   proceeds with no provider ID, section 2
 _ready      proceeds, the readiness problems recorded in the stage history
 _verify     proceeds, the verification problems recorded in the stage history
 _publish    a destination collision publishes beside it under a unique name, never over it
 _remux      the mp4-path duration drift is a recorded note, as the avi path is
 ```
 
-FOUR STOP POINTS STAY OUT OF REACH, AND THAT IS PHYSICAL RATHER THAN POLICY.  An unreadable probe, a non-zero ffmpeg or mkvmerge in the remux, a non-zero encoder, and an I/O failure at publish each mean no output file exists.  Those land in FAILED, which force cannot apply to:  the decision endpoint refuses 'override' on a FAILED title and the UI offers Retry instead of Force.  Every HELD title is forceable.
+FOUR STOP POINTS STAY OUT OF REACH, AND THAT IS PHYSICAL RATHER THAN POLICY.  An unreadable probe, a non-zero ffmpeg or mkvmerge in the remux, a non-zero encoder, and an I/O failure at publish each mean no output file exists.  Those land in FAILED, which force cannot apply to:  the decision endpoint refuses 'override' on a FAILED title and the UI offers Retry instead of Force.  Every HELD title is forceable except an identification hold, which section 11's confirm leaves:  the identify decision sets 'overridden' beside the identity, so every gate the title meets afterwards is bypassed.
 
 A held title's reasons are stored as a list on the row and rendered as a list in the detail dialog, with the one-line 'reason' as the joined summary.  Every gate a forced title bypassed is written into its stage history.  A clear LOSS and a failed verification are forceable alike;  nothing writes to a library and promotion stays manual.
 
@@ -240,7 +239,7 @@ Runs after identification and before any encode.  EVERY GATE IS EVALUATED AND TH
 
 THE INCUMBENT IS LOOKED FOR IN 'complete/' FIRST, THEN IN THE LIBRARY, AND EVERY ONE FOUND IS COMPARED.  A file in 'complete/' is the operator's next promotion and so the best known copy;  'orchestrator._find_incumbents' scans both roots through the same folder match and records which root and route matched, and '_compare' runs the gates against each in that order.  A loss to either quarantines;  an inconclusive verdict against either holds;  a win against every one proceeds, and a win against a 'complete/' file is recorded in the row's 'supersedes' so '_publish' retires that file to '.quarantine' before taking its name, per section 2.  The library's absence is one route line in the COMPARED detail, not a skipped comparison.
 
-A SAME-IDENTITY ARRIVAL STILL IN THE PIPELINE HOLDS THE LATER ONE, WITH BOTH TABLES ON IT.  After the incumbent loop, 'Store.sibling_in_flight' looks for another row of the same identity, 'tmdb' for a movie, 'tvdb', season and an overlapping episode range for television, that is neither complete nor quarantined and is either lower in id, or higher in id and already past COMPARED.  The incumbent comparison has already run in full by then, so a sibling arrival that clearly loses to 'complete/' or the library quarantines like any other, an inconclusive verdict is collected, and a win over a 'complete/' file is in 'supersedes'.  Found, '_compare_sibling' runs the gates source against source, stores the table as 'sibling_comparison' (the Compare sibling button), and the title holds naming the sibling, its stage and the pair verdict beside whatever the incumbent loop collected.  THE PAIR VERDICT IS INFORMATIONAL:  a pair loss never quarantines;  the operator settles the pair.  Retry re-runs it once the sibling is in 'complete/', where the rule above applies, and every run regenerates both tables.  The lowest-id sibling is the one compared, so three arrivals settle pairwise in id order, each Retry one step down the chain.  The pair table lands on the later arrival only:  the earlier reached COMPARED before the later was past it and saw no sibling.  The two-sided test means that of a pair assessed at once exactly one proceeds whatever the interleaving;  the residual, both crossing COMPARED in the same instant, still lands on the PUBLISHED collision hold.  Edition is not part of the key.  Skipped, like the comparison, when the title is overridden.
+A SAME-IDENTITY ARRIVAL STILL IN THE PIPELINE HOLDS THE LATER ONE, WITH BOTH TABLES ON IT.  After the incumbent loop, 'Store.sibling_in_flight' looks for another row of the same identity, 'tmdb' for a movie, 'tvdb', season and an overlapping episode range for television, that is neither complete nor quarantined and is either lower in id, or higher in id and already past COMPARED.  The incumbent comparison has already run in full by then, so a sibling arrival that clearly loses to 'complete/' or the library quarantines like any other, an inconclusive verdict is collected, and a win over a 'complete/' file is in 'supersedes'.  Found, '_compare_sibling' runs the gates source against source, stores the table as 'sibling_comparison' (the Compare sibling button), and the title holds naming the sibling, its stage and the pair verdict beside whatever the incumbent loop collected.  THE PAIR VERDICT IS INFORMATIONAL:  a pair loss never quarantines;  the operator settles the pair.  Retry re-runs it once the sibling is in 'complete/', where the rule above applies, and every run regenerates both tables.  The lowest-id sibling is the one compared, so three arrivals settle pairwise in id order, each Retry one step down the chain.  The pair table lands on the later arrival only:  the earlier reached COMPARED before the later was past it and saw no sibling.  The two-sided test means that of a pair assessed at once exactly one proceeds whatever the interleaving;  the residual, both crossing COMPARED in the same instant, still lands on the PUBLISHED collision hold.  Edition is not part of the key.  A manual identity with no id has no key and is not checked.  Skipped, like the comparison, when the title is overridden.
 
 ```
 1  HDR or Dolby Vision present    losing it is never an upgrade, asymmetric, see below
@@ -370,6 +369,17 @@ Multi-part episodes use ', Part 1' rather than the provider's marker.  TVDB uses
 
 A file covering two episodes takes the range form and drops the part marker;  naming it as only the first makes Jellyfin report the second as missing.  Its EPISODE PART_NUMBER is the first episode of the range.
 
+### Manual identities
+
+A MANUAL IDENTITY TAKES THE SAME FORM WITH EVERY ABSENT PART DROPPED.  Title and year are always present;  an id appears only when the operator entered it.  Nothing is read from the arrival name, an edition included, and a manual show is a single episode.
+
+```
+Title (Year) [tmdbid-N]/Title (Year).mkv
+Show (Year) [tvdbid-N]/Season NN/Show - SNNENN - Episode Title.mkv
+```
+
+'titles.movie_folder' and 'show_folder' take 'manual' and drop an absent id;  for every other identity they raise 'TitleError' on a None.
+
 ## 11.  Provider IDs and episode matching
 
 Movies use tmdbid and imdbid.  Television uses tvdbid and tmdbid, because TVDB governs episode titles and numbering.
@@ -383,6 +393,12 @@ Searching a bare franchise name returns the franchise entity.  Search 'Title (YY
 ### The search is matched under section 9's own rules
 
 'wbsearchentities' IS A PREFIX MATCH THAT STOPS AT PUNCTUATION, so a filename with the colon removed finds nothing for an entity whose labels all carry it.  'provider._resolve_by_search' runs the two prefix searches, then a FULL-TEXT FALLBACK through 'action=query&list=search', with the hits' labels and aliases fetched in one 'wbgetentities' call.  EVERY CANDIDATE IS SCORED THE WAY SECTION 9 SAYS TO COMPARE:  'titles.to_filename' on the label against the name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Full-text hits must clear 'title_cutoff', the one setting the episode matcher and the search share, 0.82 by default;  prefix hits are ordered by score but not cut.  A CANDIDATE WHOSE RELEASE YEAR IS MORE THAN A YEAR FROM THE NAME'S IS SKIPPED.
+
+A WORD LIST DECIDES WHAT IS A WORD.  'app/data/words.txt' is the Moby word list, filtered to entries of lowercase letters, loaded by 'titles' into a set.  An abbreviation is a name word of letters only, two or more long, that the list does not carry.  The list's lowercase entries include a few abbreviations ('tng', 'tpm'), which count as words, and a proper noun or an accented word absent from it ('Tolkien', 'Amélie') counts as an abbreviation.
+
+AN ABBREVIATION IS READ AS INITIALS.  In '_candidate_score' an abbreviation that spells the first letters of a run of the candidate's words is replaced by that run, and the higher of the two scores counts:  'LOTR The Return Of The King' scores 1.0 against 'Lord of the Rings: The Return of the King'.  '_name_score' as '_page_confirms' uses it reads no initials.
+
+A LEADING ABBREVIATION IS DROPPED WHEN THE NAME FINDS NOTHING COMPLETE.  '_search_readings' then searches each reading again with its leading run of abbreviations removed and its year kept, labelled 'abbreviation dropped', and names the dropped words in the IDENTIFIED detail.  That search alone scores the part of a label after each ':', ' - ', en dash or em dash as a name in its own right, so 'The Return Of The King' scores 1.0 against the 1980 film and the 2003 film alike:  a year separates them, and without one the tie rule below holds the title with both listed.  The cutoff, the year check, the page confirmation and the tie hold apply unchanged.
 
 A TIE AT THE TOP SCORE IS A HOLD, NOT A PICK.  '_resolve_from' on a name search collects every top-scored candidate that verifies complete;  two or more come back as an identity carrying 'tied', each outcome reading 'tied at 1.00 with Q…', and the ladder holds with both named under the disagreement rule below.  A year in the name settles it first;  an id rung takes the first entity carrying the id that verifies.
 
@@ -413,7 +429,7 @@ Rung 6 is skipped for a file directly in 'import/' or 'hold/'.  RUNG 3a EXISTS B
 
 A RUNG SUPPLIES IDS AND A NAME;  THE PROVIDER SUPPLIES THE IDENTITY.  An id rung fetches the entities carrying that id statement, 'haswbstatement:P4947=11' through the full-text search;  a name rung searches by name.  Every candidate goes through '_accept_movie_hit' or '_accept_show_hit':  ids from the entity, the year check on a name search, the page confirmed, and the LABEL as the title.  An id rung's entity must carry that id;  two entities on one id are ordered by the section 9 score.  Nothing from the disk enters the identity except the ids that led to it, because disk text as the title is a filename wearing a tag, which the audit cannot catch;  an id Wikidata does not know falls to the next rung.  So every identification touches Wikidata, rung 1 included, and a tag TITLE that differs from the label is rewritten to the label.
 
-AN INCOMPLETE IDENTITY HOLDS, IT DOES NOT PUBLISH.  A movie needs title, year, TMDB and IMDB;  a show needs show, year, TVDB and TMDB.  Neither acceptance rejects an entity for lacking an id, because a lower-scored entity carrying the id would then win;  the identity carries a 'missing' list and the orchestrator holds with the field named.  A complete hit displaces an incomplete one at the same score, never at a lower one.  'titles.movie_folder', 'movie_filename', 'show_folder' and 'episode_filename' raise 'TitleError' on a None.
+AN INCOMPLETE IDENTITY HOLDS, IT DOES NOT PUBLISH.  A movie needs title, year, TMDB and IMDB;  a show needs show, year, TVDB and TMDB.  Neither acceptance rejects an entity for lacking an id, because a lower-scored entity carrying the id would then win;  the identity carries a 'missing' list and the orchestrator holds with the field named.  A complete hit displaces an incomplete one at the same score, never at a lower one.  'titles.movie_folder', 'movie_filename', 'show_folder' and 'episode_filename' raise 'TitleError' on a None, a manual identity's absent ids excepted per section 10.
 
 A MISSING TVDB ID IS LOOKED UP THROUGH THE IMDb ID, AND CONFIRMED BY THE ROUND TRIP.  'https://thetvdb.com/api/GetSeriesByRemoteID.php?imdbid=<id>' answers with no key.  'provider.tvdb_from_imdb' takes that id only when the dereferenced series page carries the same IMDb id back and confirms the entity's names, recorded as 'tvdb_from'.  The endpoint is TVDB's legacy v1 API;  should it stop answering, the show holds incomplete for the operator selection below.
 
@@ -423,15 +439,15 @@ A SHOW'S TMDB PAGE MAY DATE IT BY ITS ORIGINAL, AND THAT IS ACCEPTED IN ONE DIRE
 
 A stale or hand-edited tag cannot inject a wrong ID:  the entity's page has to confirm it.  The rung that produced an identity is recorded in the stage detail.  'verify_tvdb' dereferences the id to its series page;  a 404 is "not confirmed" and a network failure is transient.  A TMDB id on a show entity that its page does not confirm is dropped rather than rejecting the entity.
 
-### Operator selection, one selector per source
+### Operator selection:  best match or manual entry
 
-THE BACKSTOP FOR EVERY CASE THE RUNGS CANNOT SETTLE.  When identification holds, the detail dialog shows one candidate list per source, so the operator confirms every component of the identity.  For a show the sources are the Wikidata entity (title and year), the TVDB series (tvdb id and catalogue) and the TMDB series;  for a movie the entity, the TMDB movie and IMDb.
+THE BACKSTOP FOR EVERY CASE THE RUNGS CANNOT SETTLE, AND THE ONLY WAY PAST AN IDENTIFICATION HOLD.  A held title whose reasons carry an IDENTIFIED entry, a provider failure included ('RetryLater' carries the stage it was raised at), shows 'Best match', 'Enter manually', one button, 'Confirm and force through', and Discard.  'webui.annotate' marks it 'identification_held' and not 'forceable';  the decision endpoint refuses 'override', 'retry' and 'keep' on it, and the list dialog's bulk Retry and Force act only on the other rows.
 
-WHAT EACH SOURCE CAN ENUMERATE WITHOUT A KEY.  Wikidata:  every entity '_resolve_from' scored.  TVDB:  every P4835 plus the remote-id lookup for every P345, each dereferenced to its series page.  TMDB:  'https://www.themoviedb.org/search/tv?query=<name>' and '/search/movie?query=<name>', server-rendered, merged with every P4983 or P4947.  IMDb:  every P345.  Every source has a free-text id field.  Lists are capped at 'candidate_limit', eight by default.
+THE BEST MATCH IS BUILT WHEN THE HOLD IS WRITTEN, inside 'Client.fresh', by 'provider.hold_candidates', and stored in 'candidates_json' as 'guess' beside the rung and names searched.  Its seeds are every entity the ladder scored plus the entities carrying each TMDB search hit's id, found through 'haswbstatement', each fetched for its label, year and ids, uncapped.  One entry is the pipeline's resolved entity when it is complete, otherwise the complete identity scoring highest against the searched readings within a year of the reading's year, preselected when it stands alone.  A disagreement or tie lists every complete entity it named, none preselected.  A provider that cannot be reached leaves the list empty, never fails the hold.
 
-THE LISTS ARE BUILT WHEN THE HOLD IS WRITTEN, through 'provider.hold_candidates', stored as 'candidates_json' with the rung and name searched;  a provider that cannot be reached leaves the lists incomplete, never fails the hold.  The pipeline's own choice is preselected;  rejected rows show why.  A checkbox applies the decision to every held title of the same kind whose search name matches.
+MANUAL ENTRY TAKES THE WHOLE IDENTITY FROM THE OPERATOR.  A movie needs title and year, a show its name, year, season, episode and episode title;  the ids are optional.  The episode catalogue is not read for a manual show.
 
-THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'qid', the id fields for the kind, an optional 'year', and 'apply_to' of 'title' or 'same-search'.  The choice is stored as 'pinned_json', the history records it, and the row requeues to DETECTED.  A top rung 'operator' fires on a pinned row:  the entity is fetched by qid, the ids come from the selections, each page is still fetched and its confirmation written into the IDENTIFIED detail, but an operator-selected id is not rejected by the page or year check.
+THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'qid', the id fields for the kind and 'year' for a best match, or 'name' and the manual fields;  a manual decision missing a required field answers 400.  The choice is stored as 'pinned_json', the row gets 'overridden', the history records both, and the row requeues to DETECTED.  A top rung 'operator' fires on a pinned row:  the entity is fetched by qid, the ids come from the selections, each page is still fetched and its confirmation written into the IDENTIFIED detail, but an operator-selected id is not rejected by the page or year check.  A pinned row with no qid is the manual identity as entered, 'identified_from' 'manual'.
 
 TVDB'S 'allseasons' PAGE OMITS SEASON 0;  'episodes_for_order' reads '/seasons/official/0' as well when the order carries no specials.  A special TVDB does not list falls back to source numbering, with the warning.
 
@@ -461,7 +477,7 @@ Posters are cached under 'config/cache/posters' keyed by a hash of the URL and s
 
 P577 IS NOT A SINGLE VALUE.  A film carries several release claims in no meaningful order, and a year-only placeholder can precede them.  'provider._best_date' selects:  drop deprecated rank, prefer preferred rank, then the highest precision, then the earliest date.
 
-Lookups are cached on disk under 'config/cache'.  EVERY HTTP 200 IS CACHED WITHOUT EXPIRY, AND AN EMPTY SEARCH RESULT IS A 200, so a title held for "could not be resolved" would hold again identically.  The operator's Retry therefore runs a cache-bypassing identification:  'Client.fresh' is a thread-local context the orchestrator enters around 'provider.identify' for a retried title, and the fresh answers overwrite the cache.  INTERNET ACCESS IS REQUIRED:  a provider that cannot be reached raises ProviderError, treated as transient, retried five times over roughly 62 minutes with exponential backoff, then held with the reason written.
+Lookups are cached on disk under 'config/cache'.  EVERY HTTP 200 IS CACHED WITHOUT EXPIRY, AND AN EMPTY SEARCH RESULT IS A 200, so a title held for "could not be resolved" would hold again identically.  A hold therefore never rests on a cached answer:  a title that does not resolve is identified once more inside 'Client.fresh', a thread-local context the orchestrator enters around 'provider.identify', before it holds, and the best match is built inside it too.  Retry on any other hold runs its identification the same way, and counts as the fresh pass.  The fresh answers overwrite the cache.  INTERNET ACCESS IS REQUIRED:  a provider that cannot be reached raises ProviderError, treated as transient, retried five times over roughly 62 minutes with exponential backoff, then held with the reason written.
 
 ### Episode order
 
@@ -513,7 +529,7 @@ TRACK NAME, set with 'mkvpropedit FILE --edit track:v1 --set name='.  For tracks
 
 ### Movie tag shape
 
-A single MOVIE-targeted Tag carrying exactly TITLE, TMDB, IMDB and DATE_RELEASED.  TITLE equals the segment Info title.  mkvpropedit omits '<TargetTypeValue>50</TargetTypeValue>', so VERIFY BY TargetType NAME, NEVER BY GREPPING FOR THE NUMBER.
+A single MOVIE-targeted Tag carrying exactly TITLE, TMDB, IMDB and DATE_RELEASED;  a manual identity's carries TITLE and DATE_RELEASED plus the ids entered, and 'tags.movie_required' makes readiness require exactly those.  TITLE equals the segment Info title.  mkvpropedit omits '<TargetTypeValue>50</TargetTypeValue>', so VERIFY BY TargetType NAME, NEVER BY GREPPING FOR THE NUMBER.
 
 Some files carry a large untargeted block of scraped metadata:  ACTOR, DIRECTOR, GENRE, PRODUCER, SYNOPSIS, LAW_RATING and so on.  THESE ARE LEGITIMATE AND MUST BE CARRIED FORWARD, because '--tags global:' replaces untargeted tags.  Only ENCODER, COMMENT, MAJOR_BRAND, MINOR_VERSION, COMPATIBLE_BRANDS, HANDLER_NAME, VENDOR_ID, CREATION_TIME and SOFTWARE are safe to drop.
 
@@ -525,7 +541,7 @@ Target 60, SEASON       TITLE = 'Season N', PART_NUMBER = N
 Target 50, EPISODE      TITLE = episode title, PART_NUMBER = episode number
 ```
 
-The segment Info title is the EPISODE title.  For a range file the EPISODE PART_NUMBER is the first episode of the range.
+The segment Info title is the EPISODE title.  For a range file the EPISODE PART_NUMBER is the first episode of the range.  A manual show's COLLECTION block carries TVDB and TMDB only when entered.
 
 ### Flattened tag blocks
 
@@ -1009,6 +1025,7 @@ Resolution, bit depth, codec, letterbox and PAL speed-up are never repairable.  
 THE NAMING CHECK NEEDS NO PROVIDER.  The audit builds the names the pipeline would publish, through the same 'titles.movie_folder', 'movie_filename', 'show_folder', 'season_folder' and 'episode_filename' the publish step uses, and compares whole names with what is on disk.  It cannot check the reverse:  a tag that is itself wrong, and names that agree with it, pass until the file goes through the pipeline and rung 1's verification rewrites the identity.
 
 - A NAMING ROW NEEDS A COMPLETE TAG BLOCK.  A block missing any field the name needs reports 'tag incomplete' once per row and compares nothing;  the 'tag structure' row already carries that finding.
+- A MOVIE BLOCK NEEDS TITLE AND DATE_RELEASED, AND ONE WITHOUT BOTH IDS IS NAMED IN THE MANUAL FORM, per section 10, so a manual movie passes;  so does any library movie whose block lacks an id.  A show block still needs both ids, and a manual show without them reports 'tag incomplete'.
 - FINDINGS ARE PER FILE.  A wrong show folder is one finding on every episode in it.
 - THE SHOW FOLDER'S YEAR COMES FROM THE FOLDER, since the COLLECTION block carries no year;  'YYYY' when it has none.
 

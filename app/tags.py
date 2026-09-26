@@ -145,10 +145,12 @@ def build_movie_xml(title, year, tmdb, imdb, carry=None):
     return '<?xml version="1.0"?>\n<Tags>\n%s\n</Tags>\n' % _tag_xml(MOVIE, 50, pairs)
 
 
-def build_unidentified_xml(kind, title, carry=None):
-    target = MOVIE if kind == "movie" else EPISODE
-    pairs = [("TITLE", title)] + sorted((carry or {}).items())
-    return '<?xml version="1.0"?>\n<Tags>\n%s\n</Tags>\n' % _tag_xml(target, 50, pairs)
+#----- A manual identity carries only the ids the operator entered, and readiness requires only those.
+def movie_required(identity):
+    identity = identity or {}
+    present = {"TITLE": identity.get("title"), "TMDB": identity.get("tmdb"),
+               "IMDB": identity.get("imdb"), "DATE_RELEASED": identity.get("year")}
+    return tuple(key for key in CANONICAL_MOVIE if present[key])
 
 
 def build_tv_xml(show, tvdb, tmdb, season, episode_title, episode_number, carry=None):
@@ -475,7 +477,7 @@ def check_segment_title(path, expected):
     return []
 
 
-def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidentified=False,
+def readiness(path, kind, expected_title, show=None, hdr_baseline=None, required=CANONICAL_MOVIE,
               keep_langs=None, subtitle_baseline=None):
     problems = []
     if not os.path.isfile(path):
@@ -483,14 +485,9 @@ def readiness(path, kind, expected_title, show=None, hdr_baseline=None, unidenti
 
     try:
         if kind == "movie":
-            problems += check_movie(
-                path, expected_title, required=("TITLE",) if unidentified else CANONICAL_MOVIE
-            )
+            problems += check_movie(path, expected_title, required=required)
         else:
-            problems += check_tv(
-                path, show, expected_title,
-                levels=(EPISODE,) if unidentified else (COLLECTION, SEASON, EPISODE),
-            )
+            problems += check_tv(path, show, expected_title)
         problems += check_segment_title(path, expected_title)
         problems += check_tracks(path, keep_langs=keep_langs)
         problems += check_subtitles(path, baseline=subtitle_baseline, keep_langs=keep_langs)

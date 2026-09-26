@@ -16,7 +16,6 @@ NAMED_FORCED = re.compile(r"(?<![a-z0-9])(non|not|no|un)?[\s_.-]*forced(?![a-z0-
 BITSTREAM_SAMPLE_FRAMES = 12
 MASTERING_SIDE_DATA = "Mastering display metadata"
 CONTENT_LIGHT_SIDE_DATA = "Content light level metadata"
-DOVI_SIDE_DATA = "DOVI configuration record"
 CHROMATICITY_TOLERANCE = 1e-4
 LUMINANCE_TOLERANCE = 1e-3
 HDR_DECLARATIONS = ("mastering_display", "content_light", "dolby_vision")

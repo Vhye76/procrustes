@@ -128,7 +128,9 @@ class QuarantineError(RuntimeError):
 
 
 class RetryLater(RuntimeError):
-    pass
+    def __init__(self, message, stage=None):
+        super().__init__(message)
+        self.stage = stage
 
 
 class Orchestrator:
@@ -681,13 +683,15 @@ class Orchestrator:
     def _retry_later(self, title_id, source, exc):
         row = self.store.get(title_id) or {}
         attempts = row.get("attempts") or 0
+        stage = getattr(exc, "stage", None)
         if attempts + 1 >= int(self.settings.get("retry_max_attempts")):
             log.warning("giving up after %d attempts: %s: %s", attempts + 1, source, exc)
-            self._hold(title_id, source, "%s (gave up after %d attempts)" % (exc, attempts + 1))
+            text = "%s (gave up after %d attempts)" % (exc, attempts + 1)
+            self._hold(title_id, source, [{"stage": stage, "text": text}])
         else:
             delay = int(self.settings.get("retry_base_delay")) * (2 ** attempts)
             log.warning("transient failure on %s, retrying in %ds: %s", source, delay, exc)
-            self._hold(title_id, source, str(exc), retry_delay=delay)
+            self._hold(title_id, source, [{"stage": stage, "text": str(exc)}], retry_delay=delay)
 
     #----- Holding
     def _hold(self, title_id, source, reasons, retry_delay=None):
@@ -760,66 +764,15 @@ class Orchestrator:
             problem = "no provider configured, cannot resolve a provider ID"
         else:
             fresh = title_id in self._fresh_lookups
-            try:
-                if fresh:
-                    log.info("title %s identification bypasses the provider cache", title_id)
-                    with self.provider.client.fresh():
-                        identity = self.provider.identify(row, container, kind)
-                else:
-                    identity = self.provider.identify(row, container, kind)
-            except providermod.RateLimited as exc:
-                raise RetryLater(str(exc))
-            except providermod.ProviderError as exc:
-                raise RetryLater("provider lookup failed: %s" % exc)
-            problem = "provider ID could not be resolved and must never be guessed"
+            identity, problem = self._lookup(title_id, row, container, kind, fresh)
             self._fresh_lookups.discard(title_id)
-            if identity and identity.get("disagree"):
-                entries = identity["disagree"]
-                rungs = []
-                for e in entries:
-                    if e["rung"] not in rungs:
-                        rungs.append(e["rung"])
-                #----- every entry from one rung is a tie inside that rung.
-                if len(rungs) == 1:
-                    names = ", ".join(
-                        "%s (%s)" % (e.get("qid"), e.get("year") or "no date") for e in entries
-                    )
-                    if len({e.get("reading") for e in entries}) > 1:
-                        cause = "the year in the name reads as either the release year or a title word"
-                    else:
-                        cause = "the file name carries no year to separate them"
-                    problem = (
-                        "the %s resolves to %d entities with equal score, %s; %s; an ID is never "
-                        "guessed" % (rungs[0], len(entries), names, cause)
-                    )
-                else:
-                    problem = "the rungs disagree: %s; an ID is never guessed" % "; ".join(
-                        "%s resolves to %s (%s, %s)" % (
-                            e["rung"], e.get("label"), e.get("qid"), e.get("year") or "no date")
-                        for e in entries
-                    )
-                identity = None
-            elif identity and identity.get("missing"):
-                anchor = "tmdb %s" % identity.get("tmdb") if kind == "movie" else "tvdb %s" % identity.get("tvdb")
-                problem = (
-                    "resolved %s (%s) but %s could not be determined from the Wikidata entity; "
-                    "an ID is never guessed"
-                    % (anchor, identity.get("title") or identity.get("show"), ", ".join(identity["missing"]))
-                )
-                identity = None
-            if identity is None and not row.get("overridden"):
+            #----- a hold never rests on a cached answer:  an unresolved title is looked up once more past the cache.
+            if identity is None and not fresh:
+                log.info("title %s did not resolve, looking again bypassing the provider cache", title_id)
+                identity, problem = self._lookup(title_id, row, container, kind, True)
+            if identity is None:
                 self._store_candidates(title_id, kind)
         if identity is None:
-            if row.get("overridden"):
-                identity = self._unidentified(kind, source)
-                self.store.advance(
-                    title_id,
-                    state.IDENTIFIED,
-                    "unidentified, forced through under its source name %r" % identity["title"],
-                    title=identity["title"],
-                    identity=identity,
-                )
-                return identity, []
             self.store.record(title_id, state.IDENTIFIED, problem)
             return None, [_reason(state.IDENTIFIED, problem)]
         detail = "resolved %s from %s" % (
@@ -849,33 +802,68 @@ class Orchestrator:
             self.store.place(title_id)
         return identity, []
 
+    def _lookup(self, title_id, row, container, kind, fresh):
+        identity = None
+        try:
+            if fresh:
+                log.info("title %s identification bypasses the provider cache", title_id)
+                with self.provider.client.fresh():
+                    identity = self.provider.identify(row, container, kind)
+            else:
+                identity = self.provider.identify(row, container, kind)
+        except providermod.RateLimited as exc:
+            raise RetryLater(str(exc), stage=state.IDENTIFIED)
+        except providermod.ProviderError as exc:
+            raise RetryLater("provider lookup failed: %s" % exc, stage=state.IDENTIFIED)
+        problem = "provider ID could not be resolved and must never be guessed"
+        if identity and identity.get("disagree"):
+            entries = identity["disagree"]
+            rungs = []
+            for e in entries:
+                if e["rung"] not in rungs:
+                    rungs.append(e["rung"])
+            #----- every entry from one rung is a tie inside that rung.
+            if len(rungs) == 1:
+                names = ", ".join(
+                    "%s (%s)" % (e.get("qid"), e.get("year") or "no date") for e in entries
+                )
+                if len({e.get("reading") for e in entries}) > 1:
+                    cause = "the year in the name reads as either the release year or a title word"
+                else:
+                    cause = "the file name carries no year to separate them"
+                problem = (
+                    "the %s resolves to %d entities with equal score, %s; %s; an ID is never "
+                    "guessed" % (rungs[0], len(entries), names, cause)
+                )
+            else:
+                problem = "the rungs disagree: %s; an ID is never guessed" % "; ".join(
+                    "%s resolves to %s (%s, %s)" % (
+                        e["rung"], e.get("label"), e.get("qid"), e.get("year") or "no date")
+                    for e in entries
+                )
+            identity = None
+        elif identity and identity.get("missing"):
+            if identity.get("manual"):
+                problem = "the entered identity lacks %s" % ", ".join(identity["missing"])
+            else:
+                anchor = "tmdb %s" % identity.get("tmdb") if kind == "movie" else "tvdb %s" % identity.get("tvdb")
+                problem = (
+                    "resolved %s (%s) but %s could not be determined from the Wikidata entity; "
+                    "an ID is never guessed"
+                    % (anchor, identity.get("title") or identity.get("show"), ", ".join(identity["missing"]))
+                )
+            identity = None
+        return identity, problem
+
     def _store_candidates(self, title_id, kind):
         try:
-            candidates = self.provider.hold_candidates(kind)
+            with self.provider.client.fresh():
+                candidates = self.provider.hold_candidates(kind)
         except Exception as exc:
-            log.warning("title %s: candidate lists could not be built: %s", title_id, exc)
+            log.warning("title %s: the best match could not be built: %s", title_id, exc)
             return
-        counts = ", ".join(
-            "%d %s" % (len(candidates.get(source) or []), source)
-            for source in ("wikidata", "tvdb", "tmdb", "imdb") if source in candidates
-        )
-        log.info("title %s: candidates for the operator: %s", title_id, counts)
+        log.info("title %s: %d best match entries for the operator", title_id, len(candidates.get("guess") or []))
         self.store.update(title_id, candidates=candidates)
-
-    @staticmethod
-    def _unidentified(kind, source):
-        stem = os.path.splitext(os.path.basename(str(source)))[0]
-        return {
-            "unidentified": True,
-            "title": titles.to_filename(stem),
-            "year": None,
-            "show": None,
-            "season": None,
-            "episode": None,
-            "tmdb": None,
-            "imdb": None,
-            "tvdb": None,
-        }
 
     def _poster_url(self, kind, identity):
         try:
@@ -1416,8 +1404,6 @@ class Orchestrator:
         return current
 
     def _tag_xml(self, identity, kind, carry):
-        if identity.get("unidentified"):
-            return tags.build_unidentified_xml(kind, identity["title"], carry)
         if kind == "movie":
             return tags.build_movie_xml(
                 identity["title"], identity["year"], identity["tmdb"], identity["imdb"], carry
@@ -1450,7 +1436,7 @@ class Orchestrator:
         with self._phase(title_id, "checking readiness"):
             ok, problems = tags.readiness(
                 work, kind, identity["title"], show=identity.get("show"),
-                unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
+                required=tags.movie_required(identity), keep_langs=profile["keep_langs"],
                 subtitle_baseline=probe.get("subtitles"),
             )
         if not ok:
@@ -1631,7 +1617,7 @@ class Orchestrator:
         subtitle_baseline = probe.get("subtitles") or []
         ok, readiness_problems = tags.readiness(
             work, kind, identity["title"], show=identity.get("show"), hdr_baseline=baseline,
-            unidentified=bool(identity.get("unidentified")), keep_langs=profile["keep_langs"],
+            required=tags.movie_required(identity), keep_langs=profile["keep_langs"],
             subtitle_baseline=subtitle_baseline,
         )
         if not ok:
@@ -1651,12 +1637,10 @@ class Orchestrator:
         self.store.advance(title_id, state.VERIFIED, "; ".join(notes))
 
     def _publish(self, title_id, work, identity, kind):
-        if identity.get("unidentified"):
-            outdir = self.layout.completed
-            filename = titles.assert_component("%s.mkv" % identity["title"])
-        elif kind == "movie":
+        manual = bool(identity.get("manual"))
+        if kind == "movie":
             folder = titles.movie_folder(
-                identity["title"], identity["year"], identity["tmdb"], identity["imdb"]
+                identity["title"], identity["year"], identity["tmdb"], identity["imdb"], manual=manual
             )
             filename = titles.movie_filename(
                 identity["title"], identity["year"], edition=identity.get("edition"), folder=folder
@@ -1664,7 +1648,7 @@ class Orchestrator:
             outdir = os.path.join(self.layout.completed, folder)
         else:
             folder = titles.show_folder(
-                identity["show"], identity["show_year"], identity["tvdb"], identity["tmdb"]
+                identity["show"], identity["show_year"], identity["tvdb"], identity["tmdb"], manual=manual
             )
             filename = titles.episode_filename(
                 identity["show"], identity["season"], identity["episode"], identity["title"],

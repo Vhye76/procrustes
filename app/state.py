@@ -33,7 +33,6 @@ PIPELINE = (
 )
 ASSESSMENT = (DETECTED, PROBED, SCREENED, IDENTIFIED, COMPARED)
 COMPLETE = (PUBLISHED, CLEANUP)
-TERMINAL = (CLEANUP, QUARANTINED)
 STOPPED = (HELD, QUARANTINED, FAILED)
 
 DISPLAY_NAMES = {
@@ -68,6 +67,12 @@ def is_complete(stage):
 
 def in_pipeline(stage):
     return stage != QUARANTINED
+
+
+def identification_held(row):
+    if (row or {}).get("stage") != HELD:
+        return False
+    return any((e or {}).get("stage") == IDENTIFIED for e in (row.get("reasons") or []))
 
 
 def files_present(row):
@@ -363,18 +368,6 @@ class Store:
             cur = self._db.execute(query, params)
             return [self._row_to_dict(r) for r in cur.fetchall()]
 
-    def active(self):
-        placeholders = ",".join("?" for _ in STOPPED + TERMINAL)
-        with self._lock:
-            cur = self._db.execute(
-                "SELECT * FROM titles WHERE stage NOT IN (%s) ORDER BY created_at" % placeholders,
-                STOPPED + TERMINAL,
-            )
-            return [self._row_to_dict(r) for r in cur.fetchall()]
-
-    def held(self):
-        return self.all(stage=HELD)
-
     #----- The queue
     def queue_rows(self):
         #----- everything neither stopped nor complete;  a PUBLISHED row is never picked up again.
@@ -453,15 +446,17 @@ class Store:
         summary = "; ".join(e["text"] for e in entries)
         self.advance(title_id, HELD, summary, reason=summary, reasons=entries)
 
-    def hold_for_retry(self, title_id, reason, delay):
+    def hold_for_retry(self, title_id, reasons, delay):
         row = self.get(title_id) or {}
         attempts = (row.get("attempts") or 0) + 1
+        entries = normalise_reasons(reasons)
+        summary = "; ".join(e["text"] for e in entries)
         self.advance(
             title_id,
             HELD,
-            "%s (attempt %d, retrying in %ds)" % (reason, attempts, int(delay)),
-            reason=reason,
-            reasons=normalise_reasons(reason),
+            "%s (attempt %d, retrying in %ds)" % (summary, attempts, int(delay)),
+            reason=summary,
+            reasons=entries,
             attempts=attempts,
             retry_after=time.time() + delay,
         )
@@ -541,10 +536,6 @@ class Store:
                 (title_id, limit),
             )
             return [dict(r) for r in cur.fetchall()]
-
-    def resumable(self):
-        rows = self.active()
-        return [r for r in rows if r["stage"] not in STOPPED]
 
     #----- Library audit
     def _finding_to_dict(self, row):

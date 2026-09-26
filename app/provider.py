@@ -41,10 +41,15 @@ REQUIRED = {
     "movie": ("title", "year", "tmdb", "imdb"),
     "tv": ("show", "show_year", "tvdb", "tmdb"),
 }
+MANUAL_REQUIRED = {
+    "movie": ("title", "year"),
+    "tv": ("show", "show_year", "season", "episode", "episode_title"),
+}
+ABBREVIATION_DROPPED = "abbreviation dropped"
+SUBTITLE_SPLIT = re.compile(r"\s*:\s*|\s+-\s+|\s*[–—]\s*")
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 WIKIDATA_ENTITY = "https://www.wikidata.org/wiki/Special:EntityData/%s.json"
-WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 TMDB_MOVIE = "https://www.themoviedb.org/movie/%s"
 TMDB_TV = "https://www.themoviedb.org/tv/%s"
 
@@ -64,7 +69,6 @@ TVDB_SPECIALS = "https://thetvdb.com/series/%s/seasons/%s/0"
 TVDB_REMOTE_ID = "https://thetvdb.com/api/GetSeriesByRemoteID.php?imdbid=%s"
 TMDB_SEARCH = "https://www.themoviedb.org/search/%s?query=%s"
 IMDB_LINK = "imdb.com/title/%s"
-CANDIDATE_LIMIT = 8
 
 PAGE_TITLE = re.compile(r"<title>\s*(.*?)\s*</title>", re.I | re.S)
 #----- TMDB titles pages 'Name (2015)' for a film and 'Name (TV Series 1984)' for a show;  TVDB 'Name (2003)' or bare.
@@ -287,9 +291,6 @@ class Provider:
 
     def title_cutoff(self):
         return float(self._figure("title_cutoff", TITLE_CUTOFF))
-
-    def candidate_limit(self):
-        return int(self._figure("candidate_limit", CANDIDATE_LIMIT))
 
     def contained_score(self):
         return float(self._figure("contained_score", CONTAINED_SCORE))
@@ -526,7 +527,9 @@ class Provider:
 
     def identify_movie(self, source, container, origin=None, pinned=None):
         resolved = self._identify_from(self.movie_candidates(source, container, origin), "movie", pinned)
-        if resolved is not None:
+        if resolved is not None and resolved.get("manual"):
+            resolved["edition"] = None
+        elif resolved is not None:
             resolved["edition"] = _edition_of(source, origin)
             if resolved["edition"]:
                 log.info("edition %r read from the arrival name", resolved["edition"])
@@ -577,16 +580,18 @@ class Provider:
         resolved = self._identify_walk(rungs, kind, pinned)
         #----- 'hold_candidates' preselects this entity.
         self._local.resolved_qid = (resolved or {}).get("qid")
+        self._local.hold_entries = list((resolved or {}).get("disagree") or (resolved or {}).get("tied") or [])
         return resolved
 
     def _identify_walk(self, rungs, kind, pinned=None):
         self._local.scored = []
         self._local.searched = None
         self._local.resolved_qid = None
+        self._local.hold_entries = []
         if pinned:
             resolved = self._resolve_operator(pinned, kind)
             if resolved is not None:
-                resolved["identified_from"] = "operator"
+                resolved["identified_from"] = "manual" if resolved.get("manual") else "operator"
                 resolved["missing"] = _missing(kind, resolved)
                 log.info(
                     "identified by the operator: %s (%s) %s",
@@ -610,7 +615,7 @@ class Provider:
                 resolved = self._resolve_by_ids(pinned, name, year, kind)
             elif readings:
                 self._local.searched = _searched_record(self._local.searched, rung, readings)
-                resolved = self._search_readings(readings, kind)
+                resolved = self._search_readings(readings, kind, rung)
             else:
                 resolved = None
             if resolved is None:
@@ -703,17 +708,52 @@ class Provider:
         resolved["disagree"] = disagree
         return resolved
 
-    def _search_readings(self, readings, kind):
+    #----- Only a name that finds nothing complete is searched again without its leading abbreviations;
+    #----- subtitle equality applies to that second search alone.
+    def _search_readings(self, readings, kind, rung=None):
+        resolved = self._best_reading(readings, kind)
+        if resolved is not None:
+            resolved.pop("searched_name", None)
+        if resolved is not None and not _missing(kind, resolved):
+            return resolved
+        dropped = []
+        for name, year, _label in readings:
+            short, removed = _drop_abbreviations(name)
+            if short and (short, year) not in [(d[0], d[1]) for d in dropped]:
+                dropped.append((short, year, ABBREVIATION_DROPPED, removed))
+        if not dropped:
+            return resolved
+        self._local.searched = _searched_record(
+            self._local.searched, rung, [(n, y, l) for n, y, l, _r in dropped]
+        )
+        log.info(
+            "no complete identity from the name as read, searching again without %s",
+            ", ".join("%r" % r for _n, _y, _l, r in dropped),
+        )
+        retry = self._best_reading([(n, y, l) for n, y, l, _r in dropped], kind, subtitles=True)
+        if retry is None or _missing(kind, retry):
+            return resolved
+        searched_name = retry.pop("searched_name", None)
+        for name, _year, _label, removed in dropped:
+            if name == searched_name:
+                retry["notes"] = list(retry.get("notes") or []) + [
+                    "searched as %r with %r dropped as an abbreviation" % (name, removed)
+                ]
+                break
+        return retry
+
+    def _best_reading(self, readings, kind, subtitles=False):
         results = []
         for name, year, label in readings:
             self._local.reading = label
             try:
-                score, resolved = self._resolve_by_search(name, year, kind)
+                score, resolved = self._resolve_by_search(name, year, kind, subtitles=subtitles)
             finally:
                 self._local.reading = None
             if resolved is None:
                 continue
             resolved["reading"] = label
+            resolved["searched_name"] = name
             results.append((score, resolved))
         if not results:
             return None
@@ -774,7 +814,7 @@ class Provider:
 
     #----- Prefix hits already matched the whole string, so they are ordered by score but not cut;
     #----- full-text hits matched on any word and must clear the cutoff.
-    def _resolve_by_search(self, title, year, kind):
+    def _resolve_by_search(self, title, year, kind, subtitles=False):
         if kind == "movie":
             terms = _movie_search_terms(title, year)
         else:
@@ -785,6 +825,7 @@ class Provider:
         for term in terms:
             score, resolved = self._resolve_from(
                 term, self.search_entities(term), title, wanted, year, seen, kind, cutoff=0.0,
+                subtitles=subtitles,
             )
             best = _prefer(best, (score, resolved), kind)
             if resolved is not None and not _missing(kind, resolved) and not resolved.get("tied"):
@@ -793,18 +834,21 @@ class Provider:
         if qids:
             score, resolved = self._resolve_from(
                 "text:%s" % title, self.labels(qids), title, wanted, year, seen, kind,
-                cutoff=self.title_cutoff(),
+                cutoff=self.title_cutoff(), subtitles=subtitles,
             )
             best = _prefer(best, (score, resolved), kind)
         return best
 
-    def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None):
+    def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None,
+                      subtitles=False):
         scored = []
         for candidate in candidates:
             if candidate["id"] in seen:
                 continue
             seen.add(candidate["id"])
-            score = _candidate_score(title, wanted, candidate, contained=self.contained_score())
+            score = _candidate_score(
+                title, wanted, candidate, contained=self.contained_score(), subtitles=subtitles,
+            )
             log.debug(
                 "search %r: %s %r scored %.3f", term, candidate["id"],
                 candidate.get("label"), score,
@@ -965,7 +1009,9 @@ class Provider:
     #----- The operator's choice, one selection per source
     def _resolve_operator(self, chosen, kind):
         qid = str(chosen.get("qid") or "").strip()
-        entity = self.entity(qid) if qid else {}
+        if not qid:
+            return _manual_identity(chosen, kind)
+        entity = self.entity(qid)
         ids = self.ids_from_entity(entity, kind=kind)
         label = _label(entity) or chosen.get("name")
         if not label:
@@ -997,120 +1043,97 @@ class Provider:
                            "tvdb_from": "operator" if chosen.get("tvdb") else ("wikidata %s" % P_TVDB if ids["tvdb"] else None)})
         return result
 
-    #----- Candidates per source for a hold the operator has to settle
+    #----- The best match for a hold the operator has to settle
     def hold_candidates(self, kind):
         scored = list(getattr(self._local, "scored", None) or [])
         searched = getattr(self._local, "searched", None) or {}
         resolved_qid = getattr(self._local, "resolved_qid", None)
-        entities, seen = [], set()
-        for c in sorted(scored, key=lambda c: -(c.get("score") or 0.0)):
-            if c["id"] in seen:
-                continue
-            seen.add(c["id"])
-            ids = c.get("ids") or {}
-            entities.append({
-                "qid": c["id"],
-                "label": c.get("label"),
-                "year": ids.get("year"),
-                "tvdb": ids.get("tvdb"),
-                "tmdb": ids.get("tmdb"),
-                "imdb": ids.get("imdb"),
-                "score": round(c.get("score") or 0.0, 3),
-                "outcome": c.get("outcome") or "not evaluated",
-                "term": c.get("term"),
-                "reading": c.get("reading"),
-                "resolved": bool(resolved_qid) and c["id"] == resolved_qid,
-            })
-        entities = entities[:self.candidate_limit()]
-        out = {"searched": searched, "wikidata": entities}
-        names = []
-        for reading in searched.get("readings") or [searched]:
-            name = reading.get("name")
-            if name and name not in names:
-                names.append(name)
+        entries = list(getattr(self._local, "hold_entries", None) or [])
+        out = {"searched": searched, "guess": []}
         try:
-            if kind == "tv":
-                out["tvdb"] = self._tvdb_candidates(entities)
-                out["tmdb"] = self._tmdb_candidates("tv", names, entities, P_TMDB_TV)
-            else:
-                out["tmdb"] = self._tmdb_candidates("movie", names, entities, P_TMDB)
-                out["imdb"] = [
-                    {"id": e["imdb"], "name": e["label"], "year": e["year"],
-                     "origin": "%s %s" % (e["qid"], P_IMDB), "note": None}
-                    for e in entities if e.get("imdb")
+            if entries:
+                out["guess"] = [
+                    _guess_entry(i, kind) for i in (_entry_identity(e, kind) for e in entries)
+                    if _complete_identity(i, kind)
                 ]
+                return out
+            known = {}
+            for candidate in scored:
+                if candidate["id"] not in known:
+                    known[candidate["id"]] = self._seed_identity(candidate["id"], kind)
+            if resolved_qid and _complete_identity(known.get(resolved_qid), kind):
+                out["guess"] = [_guess_entry(known[resolved_qid], kind)]
+                return out
+            prop = P_TMDB if kind == "movie" else P_TMDB_TV
+            carried = {str(i["tmdb"]) for i in known.values() if i.get("tmdb")}
+            for tmdb in self._tmdb_search(kind, _reading_names(searched)):
+                if tmdb in carried:
+                    continue
+                carried.add(tmdb)
+                for qid in self.search_text("haswbstatement:%s=%s" % (prop, tmdb)):
+                    if qid not in known:
+                        known[qid] = self._seed_identity(qid, kind)
+            out["guess"] = self._best_guess(list(known.values()), searched, kind)
         except ProviderError as exc:
-            log.info("candidate lists are incomplete, a provider could not be reached: %s", exc)
+            log.info("the best match is incomplete, a provider could not be reached: %s", exc)
             out["error"] = str(exc)
         return out
 
-    def _tvdb_candidates(self, entities):
-        rows, seen = [], set()
-        limit = self.candidate_limit()
+    def _seed_identity(self, qid, kind):
+        entity = self.entity(qid)
+        ids = self.ids_from_entity(entity, kind=kind)
+        label = _label(entity)
+        identity = {
+            "qid": qid,
+            "title": label,
+            "year": ids.get("year"),
+            "names": _names(entity, label) if label else [],
+            "tmdb": ids.get("tmdb"),
+        }
+        if kind == "movie":
+            identity["imdb"] = ids.get("imdb")
+        else:
+            tvdb = ids.get("tvdb")
+            if not tvdb and ids.get("imdb"):
+                tvdb = (self.tvdb_by_imdb(ids["imdb"]) or {}).get("tvdb")
+            identity["tvdb"] = tvdb
+        return identity
 
-        def add(tvdb, origin, name_hint, year_hint):
-            key = str(tvdb)
-            if key in seen or len(rows) >= limit:
-                return
-            seen.add(key)
-            row = {"id": key, "origin": origin, "name": name_hint, "year": year_hint,
-                   "imdb": None, "tmdb": None, "note": None}
-            body = self.tvdb_page(key)
-            if body is None:
-                row["note"] = "no series page"
-            else:
-                title, _year = _page_identity(body)
-                row["name"] = title or name_hint
-                m = re.search(r"imdb\.com/title/(tt\d+)", body)
-                row["imdb"] = m.group(1) if m else None
-                m = re.search(r"themoviedb\.org/tv/(\d+)", body)
-                row["tmdb"] = m.group(1) if m else None
-                row["note"] = "page found"
-            rows.append(row)
-
-        for e in entities:
-            if e.get("tvdb"):
-                add(e["tvdb"], "%s %s" % (e["qid"], P_TVDB), e.get("label"), e.get("year"))
-        for e in entities:
-            if e.get("tvdb") or not e.get("imdb"):
+    def _best_guess(self, identities, searched, kind):
+        readings = [r for r in (searched.get("readings") or [searched]) if r.get("name")]
+        ranked = []
+        for identity in identities:
+            if not _complete_identity(identity, kind):
                 continue
-            found = self.tvdb_by_imdb(e["imdb"])
-            if found:
-                add(found["tvdb"], "imdb %s through the TVDB remote-id lookup" % e["imdb"],
-                    found.get("name") or e.get("label"), found.get("year"))
-        return rows
+            best = None
+            for reading in readings:
+                year = reading.get("year")
+                if year and abs(int(identity["year"]) - int(year)) > 1:
+                    continue
+                score = _candidate_score(
+                    reading["name"], titles.normalise_for_match(reading["name"]),
+                    {"label": identity["title"], "aliases": identity.get("names") or []},
+                    contained=self.contained_score(),
+                    subtitles=reading.get("label") == ABBREVIATION_DROPPED,
+                )
+                best = score if best is None else max(best, score)
+            if best is not None:
+                ranked.append((best, identity))
+        if not ranked:
+            return []
+        top = max(score for score, _identity in ranked)
+        return [_guess_entry(identity, kind) for score, identity in ranked if score == top]
 
-    def _tmdb_candidates(self, kind, names, entities, prop):
-        rows = {}
-        limit = self.candidate_limit()
+    def _tmdb_search(self, kind, names):
+        found = []
         for name in names:
             status, body = self.client.fetch(TMDB_SEARCH % (kind, urllib.parse.quote_plus(name)))
-            if status == 200:
-                for tmdb, title, date in TMDB_SEARCH_HIT.findall(body):
-                    if tmdb in rows or len(rows) >= limit:
-                        continue
-                    rows[tmdb] = {
-                        "id": tmdb,
-                        "name": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
-                        "year": _year(date),
-                        "origin": "TMDB search",
-                        "note": None,
-                    }
-        for e in entities:
-            tmdb = str(e.get("tmdb") or "")
-            if not tmdb:
+            if status != 200:
                 continue
-            origin = "%s %s" % (e["qid"], prop)
-            if tmdb in rows:
-                rows[tmdb]["origin"] += ", " + origin
-                continue
-            if len(rows) >= limit:
-                break
-            body = self.tmdb_page(kind, tmdb)
-            title, year = _page_identity(body) if body else (None, None)
-            rows[tmdb] = {"id": tmdb, "name": title or e.get("label"), "year": year,
-                          "origin": origin, "note": None if body else "no page"}
-        return list(rows.values())
+            for tmdb, _title, _date in TMDB_SEARCH_HIT.findall(body):
+                if tmdb not in found:
+                    found.append(tmdb)
+        return found
 
     #----- Television catalogue
     def series_slug(self, tvdb_id):
@@ -1184,6 +1207,26 @@ class Provider:
         resolved = self.identify_show(source, row.get("origin_path"), pinned)
         if resolved is None or resolved["missing"]:
             return resolved
+        if resolved.get("manual"):
+            return {
+                "title": resolved["episode_title"],
+                "show": resolved["show"],
+                "show_year": resolved["show_year"],
+                "season": resolved["season"],
+                "episode": resolved["episode"],
+                "episode_last": None,
+                "tvdb": resolved["tvdb"],
+                "tvdb_from": resolved.get("tvdb_from"),
+                "tmdb": resolved["tmdb"],
+                "qid": None,
+                "notes": list(resolved.get("notes") or []),
+                "match_method": "manual",
+                "match_score": None,
+                "order_warnings": [],
+                "identified_from": "manual",
+                "manual": True,
+                "missing": [],
+            }
 
         slug = self.series_slug(resolved["tvdb"])
         catalogue = self.episodes_for_order(slug, "official")
@@ -1348,7 +1391,10 @@ def _page_confirms(body, names, year, what, earlier_ok=False, cutoff=TITLE_CUTOF
 
 
 def _missing(kind, resolved):
-    return [f for f in REQUIRED[kind] if not (resolved or {}).get(f)]
+    resolved = resolved or {}
+    required = MANUAL_REQUIRED[kind] if resolved.get("manual") else REQUIRED[kind]
+    #----- season 0 and episode 0 are values, so only an absent field is missing.
+    return [f for f in required if resolved.get(f) is None or resolved.get(f) == ""]
 
 
 def _readings_tie(best, other, kind):
@@ -1435,13 +1481,112 @@ def _name_score(title, wanted, name, contained=CONTAINED_SCORE):
     return difflib.SequenceMatcher(None, wanted, other).ratio()
 
 
-def _candidate_score(title, wanted, candidate, contained=CONTAINED_SCORE):
+def _candidate_score(title, wanted, candidate, contained=CONTAINED_SCORE, subtitles=False):
     names = [candidate.get("label")]
     names.extend(candidate.get("aliases") or [])
     match = candidate.get("match") or {}
     if match.get("text"):
         names.append(match["text"])
-    return max((_name_score(title, wanted, n, contained) for n in names if n), default=0.0)
+    names = [n for n in names if n]
+    if subtitles:
+        names += [part for n in names for part in _subtitles(n)]
+    best = max((_name_score(title, wanted, n, contained) for n in names), default=0.0)
+    for name in names:
+        expanded = _expand_initials(wanted, name)
+        if expanded:
+            best = max(best, _name_score(expanded, expanded, name, contained))
+    return best
+
+
+def _complete_identity(identity, kind):
+    if not identity or not identity.get("title") or not identity.get("year"):
+        return False
+    return all(identity.get(field) for field, _prop in ID_PROPERTIES[kind])
+
+
+def _entry_identity(entry, kind):
+    ids = entry.get("ids") or {}
+    identity = {"qid": entry.get("qid"), "title": entry.get("label"), "year": entry.get("year")}
+    for field, _prop in ID_PROPERTIES[kind]:
+        identity[field] = ids.get(field)
+    return identity
+
+
+def _guess_entry(identity, kind):
+    entry = {"qid": identity.get("qid"), "title": identity.get("title"), "year": identity.get("year")}
+    for field, _prop in ID_PROPERTIES[kind]:
+        entry[field] = identity.get(field)
+    return entry
+
+
+def _reading_names(searched):
+    names = []
+    for reading in searched.get("readings") or [searched]:
+        name = reading.get("name")
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+#----- Every value of a manual identity is the operator's;  nothing is read from the provider or the file.
+def _manual_identity(chosen, kind):
+    name = str(chosen.get("name") or "").strip() or None
+    year = int(chosen["year"]) if chosen.get("year") else None
+    entered = {k: v for k, v in chosen.items() if v not in (None, "")}
+    notes = ["identity entered by the operator: %s" % _describe(entered)]
+    if kind == "movie":
+        return {
+            "qid": None, "manual": True, "notes": notes,
+            "title": name, "year": year,
+            "tmdb": chosen.get("tmdb") or None, "imdb": chosen.get("imdb") or None,
+        }
+    return {
+        "qid": None, "manual": True, "notes": notes,
+        "show": name, "show_year": year,
+        "tvdb": chosen.get("tvdb") or None, "tmdb": chosen.get("tmdb") or None,
+        "tvdb_from": "operator" if chosen.get("tvdb") else None,
+        "season": chosen.get("season"), "episode": chosen.get("episode"),
+        "episode_title": chosen.get("episode_title") or None,
+    }
+
+
+def _subtitles(name):
+    return [name[m.end():].strip() for m in SUBTITLE_SPLIT.finditer(name) if name[m.end():].strip()]
+
+
+#----- 'lotr' against 'lord of the rings the return of the king' reads as the run of words it spells.
+def _expand_initials(wanted, name):
+    words = (wanted or "").split()
+    other = titles.normalise_for_match(name).split()
+    if not words or not other:
+        return None
+    changed = False
+    out = []
+    for word in words:
+        run = None
+        if word not in other and titles.is_abbreviation(word):
+            size = len(word)
+            for start in range(0, len(other) - size + 1):
+                window = other[start:start + size]
+                if "".join(w[0] for w in window) == word:
+                    run = window
+                    break
+        if run:
+            out.extend(run)
+            changed = True
+        else:
+            out.append(word)
+    return " ".join(out) if changed else None
+
+
+def _drop_abbreviations(name):
+    words = str(name or "").split()
+    count = 0
+    while count < len(words) and titles.is_abbreviation(words[count]):
+        count += 1
+    if count == 0 or count == len(words):
+        return None, None
+    return " ".join(words[count:]), " ".join(words[:count])
 
 
 #----- the edition comes from the arrival name, the parent folder, or a repair copy's origin name.

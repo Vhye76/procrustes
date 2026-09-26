@@ -108,8 +108,6 @@ MEASURED = (
     ("size_bytes", "file size", None),
 )
 
-GATE_BY_ATTRIBUTE = {key: gate for key, _, gate in MEASURED if gate}
-
 
 #----- Measuring one file
 def _mastering_summary(md):
@@ -299,10 +297,6 @@ class Comparison:
         if self.votes:
             return [v["gate"] for v in self.votes]
         return [self.gate] if self.gate else []
-
-    @property
-    def is_win(self):
-        return self.verdict == WIN
 
     @property
     def is_loss(self):

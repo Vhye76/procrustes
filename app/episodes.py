@@ -40,8 +40,6 @@ WORD_NUMBERS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
 }
 
-MOVIE_YEAR = re.compile(r"(?:^|[^0-9])(19\d{2}|20\d{2})(?:[^0-9]|$)")
-
 
 #----- Parsing source names
 def classify(path):

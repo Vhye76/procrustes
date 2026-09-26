@@ -114,12 +114,14 @@ def _movie_naming_rows(path, found):
     name = os.path.basename(path)
     stem = _stem(path)
     parent = os.path.basename(os.path.dirname(path))
-    if not all(found.get(k) for k in ("title", "year", "tmdb", "imdb")):
+    if not all(found.get(k) for k in ("title", "year")):
         return [
             _row("folder name", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
             _row("file name", "(from tag)", TAG_INCOMPLETE, False, REPAIR_NAMING),
         ]
-    folder = _build(titles.movie_folder, found["title"], found["year"], found["tmdb"], found["imdb"])
+    #----- a block without both ids is named in the manual form, absent ids dropped.
+    manual = not (found.get("tmdb") and found.get("imdb"))
+    folder = _build(titles.movie_folder, found["title"], found["year"], found["tmdb"], found["imdb"], manual)
     rows = [_naming_row("folder name", folder, parent)]
     plain = _build(titles.movie_filename, found["title"], found["year"])
     edition_prefix = folder + " - "

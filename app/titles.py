@@ -96,8 +96,19 @@ def _load_release_groups():
     return names, patterns
 
 
+def _load_words():
+    path = os.path.join(DATA_DIR, "words.txt")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return {line.strip() for line in fh if line.strip()}
+    except OSError as exc:
+        log.warning("word list not loaded from %s: %s", path, exc)
+        return set()
+
+
 MEDIA_SOURCES = _load_media_sources()
 RELEASE_GROUPS, RELEASE_GROUP_PATTERNS = _load_release_groups()
+WORDS = _load_words()
 RELEASE_TOKENS = re.compile(
     r"\b(?:%s)\b" % "|".join([HAND_TOKENS] + MEDIA_SOURCES), re.I
 )
@@ -214,6 +225,13 @@ def strip_edition(name):
     return text
 
 
+def is_abbreviation(word):
+    token = str(word).strip(" .,:;!?'\"()[]{}-_")
+    if len(token) < 2 or not token.isalpha():
+        return False
+    return token.lower() not in WORDS
+
+
 #----- Reading ids back out of a name
 def ids_from_name(name):
     s = str(name)
@@ -301,13 +319,23 @@ def _require(**fields):
         raise TitleError("cannot build a name without %s" % ", ".join(missing))
 
 
-def movie_folder(title, year, tmdb, imdb):
-    _require(title=title, year=year, tmdb=tmdb, imdb=imdb)
+def _imdb_id(imdb):
     imdb = str(imdb)
-    if not imdb.startswith("tt"):
-        imdb = "tt%s" % imdb
+    return imdb if imdb.startswith("tt") else "tt%s" % imdb
+
+
+def movie_folder(title, year, tmdb, imdb, manual=False):
+    if manual:
+        _require(title=title, year=year)
+        parts = ["%s (%s)" % (to_filename(title), year)]
+        if tmdb:
+            parts.append("[tmdbid-%s]" % tmdb)
+        if imdb:
+            parts.append("[imdbid-%s]" % _imdb_id(imdb))
+        return assert_component(" ".join(parts))
+    _require(title=title, year=year, tmdb=tmdb, imdb=imdb)
     return assert_component(
-        "%s (%s) [tmdbid-%s] [imdbid-%s]" % (to_filename(title), year, tmdb, imdb)
+        "%s (%s) [tmdbid-%s] [imdbid-%s]" % (to_filename(title), year, tmdb, _imdb_id(imdb))
     )
 
 
@@ -321,7 +349,15 @@ def movie_filename(title, year, edition=None, folder=None):
     return assert_component("%s (%s).mkv" % (to_filename(title), year))
 
 
-def show_folder(show, year, tvdb, tmdb):
+def show_folder(show, year, tvdb, tmdb, manual=False):
+    if manual:
+        _require(show=show, year=year)
+        parts = ["%s (%s)" % (to_filename(show), year)]
+        if tvdb:
+            parts.append("[tvdbid-%s]" % tvdb)
+        if tmdb:
+            parts.append("[tmdbid-%s]" % tmdb)
+        return assert_component(" ".join(parts))
     _require(show=show, year=year, tvdb=tvdb, tmdb=tmdb)
     return assert_component(
         "%s (%s) [tvdbid-%s] [tmdbid-%s]" % (to_filename(show), year, tvdb, tmdb)

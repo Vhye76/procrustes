@@ -130,6 +130,8 @@
            border-radius: 5px; padding: 5px 11px; font-size: 12px; cursor: pointer; }
   button:hover { border-color: var(--accent); color: var(--accent); }
   button.bad:hover { border-color: var(--bad); color: var(--bad); }
+  button:disabled, button:disabled:hover { opacity: .45; cursor: not-allowed;
+                                           border-color: var(--line); color: var(--ink); }
   dialog { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
            border-radius: 8px; padding: 0; max-width: 1100px; width: 92vw; }
   dialog::backdrop { background: rgba(0,0,0,.65); }
@@ -171,9 +173,11 @@
   .idn .h { padding: 10px 16px; font-size: 11px; color: var(--dim); text-transform: uppercase;
             letter-spacing: .06em; border-bottom: 1px solid var(--line); }
   .idn .h.src { background: #191c23; }
-  .idn td.pick { width: 20px; padding-right: 0; }
-  .idn .free { display: flex; gap: 10px; padding: 8px 16px; flex-wrap: wrap; align-items: center;
-               font-size: 12px; color: var(--dim); border-bottom: 1px solid var(--line); }
+  .idn label.opt { display: flex; gap: 12px; padding: 8px 16px; flex-wrap: wrap; align-items: center;
+                   font-size: 12px; border-bottom: 1px solid var(--line); cursor: pointer; }
+  .idn .opt .ttl { font-weight: 600; }
+  .idn .opt .ids { color: var(--dim); white-space: pre; }
+  .idn .opt .man { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--dim); }
   .idn input[type=text] { background: #161a21; color: var(--ink); border: 1px solid var(--line);
                           border-radius: 6px; padding: 4px 8px; font-size: 12px; width: 150px; }
   .idn .go { display: flex; gap: 12px; padding: 10px 16px; align-items: center; font-size: 12px;
@@ -629,13 +633,13 @@ async function showDetail(id) {
   ).join("");
   $("det-body").innerHTML = identifyPanel(t) + `<div class="hist"><div class="h">Stage history</div>${
     hist || '<div class="empty">No history.</div>'}</div>`;
-  if (t.stage === "HELD" && t.candidates) idnEntityChanged();
+  idnChanged();
 
   const acts = [];
   if (t.comparison) acts.push(`<button onclick="showCompare(${t.id})">Compare</button>`);
   if (t.sibling_comparison) acts.push(`<button onclick="showCompare(${t.id},'sibling_comparison')">Compare sibling</button>`);
   if (t.stage === "HELD" || t.stage === "FAILED") {
-    acts.push(`<button onclick="act(${t.id},'retry')">Retry</button>`);
+    if (!t.identification_held) acts.push(`<button onclick="act(${t.id},'retry')">Retry</button>`);
     if (t.forceable) acts.push(`<button onclick="act(${t.id},'override')">Force through</button>`);
     acts.push(`<button class="bad" onclick="act(${t.id},'discard')">Discard</button>`);
   }
@@ -651,7 +655,7 @@ function clock(epoch) {
 }
 
 //----- Quarantined, failed, and expanded show groups
-let LIST_KIND = null, LIST_SHOW = null, LIST_IDS = [];
+let LIST_KIND = null, LIST_SHOW = null, LIST_IDS = [], LIST_FREE = [];
 
 function actionable(t) { return t.stage === "HELD" || t.stage === "FAILED"; }
 
@@ -668,12 +672,15 @@ function showList(kind, show) {
       : "Failed jobs - " + rows.length;
   }
   LIST_IDS = rows.filter(actionable).map(t => t.id);
+  LIST_FREE = rows.filter(t => actionable(t) && !t.identification_held).map(t => t.id);
   $("lst-h").textContent = heading;
 
+  const idHeld = LIST_IDS.length - LIST_FREE.length;
   $("lst-acts").innerHTML = LIST_IDS.length === 0 ? "" :
-    `<span class="lbl">All ${LIST_IDS.length}</span>
-     <button onclick="actAll('retry')">Retry all</button>
-     <button onclick="actAll('override')">Force all through</button>
+    `<span class="lbl">All ${LIST_IDS.length}${idHeld
+      ? `, ${idHeld} held at identification take Discard only` : ""}</span>
+     ${LIST_FREE.length ? `<button onclick="actAll('retry')">Retry all ${LIST_FREE.length}</button>
+     <button onclick="actAll('override')">Force all ${LIST_FREE.length} through</button>` : ""}
      <button class="bad" onclick="actAll('discard')">Discard all</button>`;
   $("lst-acts").style.display = LIST_IDS.length === 0 ? "none" : "";
 
@@ -691,7 +698,7 @@ function showList(kind, show) {
           ${t.comparison ? `<button onclick="$('lst').close();showCompare(${t.id})">Compare</button>` : ""}
           ${t.sibling_comparison ? `<button onclick="$('lst').close();showCompare(${t.id},'sibling_comparison')">Compare sibling</button>` : ""}
           ${actionable(t) ? `
-          <button onclick="actRow(${t.id},'retry')">Retry</button>
+          ${t.identification_held ? "" : `<button onclick="actRow(${t.id},'retry')">Retry</button>`}
           ${t.forceable ? `<button onclick="actRow(${t.id},'override')">Force through</button>` : ""}
           <button class="bad" onclick="actRow(${t.id},'discard')">Discard</button>` : ""}
         </div>
@@ -708,15 +715,21 @@ async function actRow(id, action) {
 
 //----- The whole group, in sequence, then the dialog has nothing left to show
 async function actAll(action) {
-  const ids = LIST_IDS.slice();
+  const ids = (action === "discard" ? LIST_IDS : LIST_FREE).slice();
   for (const id of ids) await decide(id, action);
   $("lst").close();
   refresh();
 }
 
-//----- Identification, one selector per source
-const SOURCES = {tv: ["tvdb", "tmdb"], movie: ["tmdb", "imdb"]};
-const SOURCE_NAMES = {tvdb: "TVDB series", tmdb: "TMDB", imdb: "IMDb"};
+//----- Identification, best match or manual entry
+const ID_FIELDS = {tv: ["tvdb", "tmdb"], movie: ["tmdb", "imdb"]};
+const MANUAL_FIELDS = {
+  movie: [["name", "Title", true, 260], ["year", "Year", true, 70],
+          ["tmdb", "tmdb id", false, 110], ["imdb", "imdb id", false, 110]],
+  tv: [["name", "Show", true, 220], ["year", "Year", true, 70], ["season", "Season", true, 60],
+       ["episode", "Episode", true, 60], ["episode_title", "Episode title", true, 220],
+       ["tvdb", "tvdb id", false, 110], ["tmdb", "tmdb id", false, 110]],
+};
 let IDN = null;
 
 function searchReadings(t) {
@@ -725,103 +738,80 @@ function searchReadings(t) {
   return readings.filter(r => r.name);
 }
 
-function searchKey(t) {
-  return searchReadings(t).map(r => r.name.toLowerCase()).sort().join("\u0000");
-}
-
-function sameSearch(t) {
-  const key = searchKey(t);
-  if (!key) return [t];
-  return Object.values(TITLES).filter(o => o.stage === "HELD" && o.kind === t.kind && searchKey(o) === key);
-}
-
 function identifyPanel(t) {
-  const c = t.candidates;
-  if (t.stage !== "HELD" || !c || !SOURCES[t.kind]) return "";
-  IDN = {id: t.id, kind: t.kind, candidates: c};
-  const ent = c.wikidata || [];
-  const pick = ent.find(e => e.resolved) || null;
+  if (!t.identification_held || !ID_FIELDS[t.kind]) { IDN = null; return ""; }
+  const c = t.candidates || {};
+  const guess = c.guess || [];
+  IDN = {id: t.id, kind: t.kind, guess};
   const searched = c.searched || {};
-  const idsOf = e => [e.tvdb ? "tvdb " + e.tvdb : "", e.tmdb ? "tmdb " + e.tmdb : "",
-                      e.imdb ? "imdb " + e.imdb : ""].filter(Boolean).join("  ");
   const readings = searchReadings(t).map(r => `${esc(r.name)}${r.year ? " (" + esc(r.year) + ")" : ""}`);
   let h = `<div class="idn"><div class="h">Identify${readings.length
     ? ` - searched ${readings.join(" or ")} from the ${esc(searched.rung || "ladder")}` : ""}</div>`;
-  h += `<div class="h src">Wikidata entity - supplies the title and year</div>`;
-  h += ent.length ? `<table><tr><th></th><th>Entity</th><th>Year</th><th>Ids</th><th>Score</th><th>Outcome</th></tr>` +
-    ent.map(e => `<tr class="${e === pick ? "decided" : ""}">
-      <td class="pick"><input type="radio" name="idn-qid" value="${esc(e.qid)}" ${e === pick ? "checked" : ""} onchange="idnEntityChanged()"></td>
-      <td>${esc(e.label || "")}<span class="tag">${esc(e.qid)}</span></td>
-      <td>${esc(e.year || "")}</td><td class="val">${esc(idsOf(e))}</td>
-      <td>${esc(e.score)}</td><td class="gate">${esc(e.outcome || "")}</td></tr>`).join("") + `</table>`
-    : `<div class="empty">No Wikidata entity scored against the name.</div>`;
-  for (const src of SOURCES[t.kind]) {
-    const rows = c[src] || [];
-    h += `<div class="h src">${SOURCE_NAMES[src]} - supplies the ${src} id</div>`;
-    h += rows.length ? `<table><tr><th></th><th>Name</th><th>Year</th><th>Id</th><th>Origin</th><th>Note</th></tr>` +
-      rows.map(r => `<tr>
-        <td class="pick"><input type="radio" name="idn-${src}" value="${esc(r.id)}" onchange="idnChanged()"></td>
-        <td>${esc(r.name || "")}</td><td>${esc(r.year || "")}</td><td class="val">${esc(r.id)}</td>
-        <td class="gate">${esc(r.origin || "")}${r.imdb ? " · links " + esc(r.imdb) : ""}${r.tmdb ? " · links tmdb " + esc(r.tmdb) : ""}</td>
-        <td class="gate">${esc(r.note || "")}</td></tr>`).join("") + `</table>`
-      : `<div class="empty">No ${SOURCE_NAMES[src]} candidate reachable from the entities;  type the id below.</div>`;
-    h += `<div class="free"><span>or a ${src} id found by hand</span>
-      <input type="text" id="idn-free-${src}" placeholder="${src} id" oninput="idnChanged()"></div>`;
-  }
-  const n = sameSearch(t).length;
-  h += `<div class="go">
-    <span>year override</span><input type="text" id="idn-year" placeholder="YYYY" style="width:70px" oninput="idnChanged()">
-    <label><input type="checkbox" id="idn-all" ${n > 1 ? "checked" : ""}> apply to the ${n} held title${n === 1 ? "" : "s"} that searched the same name</label>
-    <button id="idn-go" onclick="identify()" disabled>Identify</button>
-    ${c.error ? `<span class="tag ungated">lists incomplete: ${esc(c.error)}</span>` : ""}
-  </div></div>`;
+  h += `<div class="h src">Best match</div>`;
+  h += guess.length ? guess.map((g, i) => `<label class="opt">
+      <input type="radio" name="idn-pick" value="g${i}" ${guess.length === 1 ? "checked" : ""} onchange="idnChanged()">
+      <span class="ttl">${esc(g.title)} (${esc(g.year)})</span>
+      <span class="ids">${esc(ID_FIELDS[t.kind].map(f => f + " " + g[f]).join("   "))}   ${esc(g.qid)}</span>
+    </label>`).join("")
+    : `<div class="empty">No complete match found.</div>`;
+  if (c.error) h += `<div class="empty">The best match is incomplete, a provider could not be reached: ${esc(c.error)}</div>`;
+  h += `<div class="h src">Enter manually</div><label class="opt">
+      <input type="radio" name="idn-pick" value="manual" onchange="idnChanged()">
+      <span class="man">${MANUAL_FIELDS[t.kind].map(([k, name, required, width]) =>
+        `<span>${esc(name)}${required ? "" : " (optional)"}</span>
+         <input type="text" id="idn-${k}" style="width:${width}px" oninput="idnManual()">`).join("")}</span>
+    </label>`;
+  h += `<div class="go"><button id="idn-go" onclick="identify()" disabled>Confirm and force through</button></div></div>`;
   return h;
 }
 
-function idnValue(src) {
-  const typed = ($(`idn-free-${src}`) || {}).value || "";
-  if (typed.trim()) return typed.trim();
-  const picked = document.querySelector(`input[name="idn-${src}"]:checked`);
+function idnPicked() {
+  const picked = document.querySelector('input[name="idn-pick"]:checked');
   return picked ? picked.value : "";
 }
 
-function idnEntity() {
-  const picked = document.querySelector('input[name="idn-qid"]:checked');
-  if (!picked || !IDN) return null;
-  return (IDN.candidates.wikidata || []).find(e => e.qid === picked.value) || null;
+function idnValue(key) {
+  return (($(`idn-${key}`) || {}).value || "").trim();
 }
 
-function idnEntityChanged() {
-  if (!IDN) return;
-  const e = idnEntity();
-  for (const src of SOURCES[IDN.kind]) {
-    const rows = IDN.candidates[src] || [];
-    let want = null;
-    if (e) {
-      want = rows.find(r => e[src] && String(r.id) === String(e[src])) || null;
-      if (!want && src === "tvdb" && e.imdb) want = rows.find(r => (r.origin || "").indexOf(e.imdb) >= 0) || null;
-    }
-    document.querySelectorAll(`input[name="idn-${src}"]`).forEach(inp => {
-      inp.checked = !!want && inp.value === String(want.id);
-    });
-  }
+function idnManualOk() {
+  if (!IDN) return false;
+  if (!/^(19|20)\d{2}$/.test(idnValue("year"))) return false;
+  const required = MANUAL_FIELDS[IDN.kind].filter(f => f[2]).map(f => f[0]);
+  if (!required.every(k => idnValue(k))) return false;
+  if (IDN.kind === "tv" && !(/^\d+$/.test(idnValue("season")) && /^\d+$/.test(idnValue("episode")))) return false;
+  return true;
+}
+
+function idnManual() {
+  const manual = document.querySelector('input[name="idn-pick"][value="manual"]');
+  if (manual) manual.checked = true;
   idnChanged();
 }
 
 function idnChanged() {
-  if (!IDN) return;
-  const ok = !!idnEntity() && SOURCES[IDN.kind].every(src => idnValue(src));
   const go = $("idn-go");
-  if (go) go.disabled = !ok;
+  if (!go || !IDN) return;
+  const picked = idnPicked();
+  go.disabled = !(picked.startsWith("g") || (picked === "manual" && idnManualOk()));
 }
 
 async function identify() {
   if (!IDN) return;
-  const e = idnEntity();
-  const body = {qid: e ? e.qid : "", apply_to: ($("idn-all") && $("idn-all").checked) ? "same-search" : "title"};
-  for (const src of SOURCES[IDN.kind]) body[src] = idnValue(src);
-  const year = (($("idn-year") || {}).value || "").trim();
-  if (year) body.year = year;
+  const picked = idnPicked();
+  let body = null;
+  if (picked.startsWith("g")) {
+    const g = IDN.guess[Number(picked.slice(1))];
+    body = {qid: g.qid, year: String(g.year || "")};
+    for (const f of ID_FIELDS[IDN.kind]) body[f] = g[f];
+  } else if (picked === "manual" && idnManualOk()) {
+    body = {};
+    for (const [k] of MANUAL_FIELDS[IDN.kind]) {
+      const v = idnValue(k);
+      if (v) body[k] = v;
+    }
+  }
+  if (!body) return;
   await decide(IDN.id, "identify", body);
   $("det").close();
   refresh();

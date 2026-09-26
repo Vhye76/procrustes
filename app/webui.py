@@ -348,18 +348,32 @@ def _chosen_identity(kind, body):
     name = str(body.get("name") or "").strip()
     if name:
         chosen["name"] = name
-    if not chosen.get("qid") and not name:
-        raise ValueError("identify needs a Wikidata entity or a title")
+    if chosen.get("qid"):
+        return chosen
+    #----- With no entity the operator supplies the whole identity.
+    missing = [] if name else ["title" if kind == "movie" else "show"]
+    if not chosen.get("year"):
+        missing.append("year")
+    if kind == "tv":
+        for field in ("season", "episode"):
+            value = str(body.get(field) if body.get(field) is not None else "").strip()
+            if not value:
+                missing.append(field)
+            elif not value.isdigit():
+                raise ValueError("%s %r is not a whole number" % (field, value))
+            else:
+                chosen[field] = int(value)
+        episode_title = str(body.get("episode_title") or "").strip()
+        if episode_title:
+            chosen["episode_title"] = episode_title
+        else:
+            missing.append("episode title")
+    if missing:
+        raise ValueError("a manual identity needs %s" % ", ".join(missing))
     return chosen
 
 
 #----- The server
-def _search_key(row):
-    searched = (row.get("candidates") or {}).get("searched") or {}
-    readings = searched.get("readings") or [searched]
-    names = sorted((r.get("name") or "").strip().lower() for r in readings)
-    return tuple(n for n in names if n)
-
 
 class WebUI:
     def __init__(self, cfg, orchestrator, store, settings, auth, log_path=None):
@@ -468,7 +482,8 @@ class WebUI:
             row["encoder_label"] = row.get("encoder")
         row["complete"] = state.is_complete(row.get("stage"))
         row["poster"] = poster_key(row["poster_url"]) if row.get("poster_url") else None
-        row["forceable"] = row.get("stage") == state.HELD
+        row["identification_held"] = state.identification_held(row)
+        row["forceable"] = row.get("stage") == state.HELD and not row["identification_held"]
         present = state.files_present(row)
         row["output_present"] = present["output"]
         row["source_present"] = present["source"]
@@ -528,6 +543,10 @@ class WebUI:
                 "title is not awaiting a decision, it is at %s" % row["stage"]
             )
 
+        if action in ("keep", "retry", "override") and state.identification_held(row):
+            raise ValueError(
+                "the title is held at identification; confirm an identity or discard it"
+            )
         if action in ("keep", "retry"):
             self.orchestrator.refresh_lookup(title_id)
             self.orchestrator.release_from_hold(title_id)
@@ -555,32 +574,17 @@ class WebUI:
             if row["stage"] != state.HELD:
                 raise ValueError("identify applies to a held title only")
             chosen = _chosen_identity(row.get("kind"), body)
-            rows = [row]
-            if (body.get("apply_to") or "title") == "same-search":
-                rows = self._same_search(row)
-            summary = " ".join("%s=%s" % (k, v) for k, v in chosen.items() if v)
-            for target in rows:
-                self.store.update(target["id"], pinned=chosen)
-                self.orchestrator.release_from_hold(target["id"])
-                self.store.advance(
-                    target["id"], state.DETECTED, "operator identified the title as %s" % summary
-                )
-                self.store.place(target["id"])
-            log.info("operator identified %d title(s) as %s", len(rows), summary)
-            return {"ok": True, "action": "identified and requeued", "titles": [r["id"] for r in rows]}
+            summary = " ".join("%s=%s" % (k, v) for k, v in chosen.items() if v not in (None, ""))
+            self.store.update(title_id, pinned=chosen, overridden=1)
+            self.orchestrator.release_from_hold(title_id)
+            self.store.advance(
+                title_id, state.DETECTED,
+                "operator identified the title as %s and overrode the gates" % summary,
+            )
+            self.store.place(title_id)
+            log.info("operator identified title %s as %s and overrode the gates", title_id, summary)
+            return {"ok": True, "action": "identified, overridden and requeued", "titles": [title_id]}
         raise ValueError("action must be one of keep, retry, override, discard, forget, identify")
-
-    def _same_search(self, row):
-        wanted = _search_key(row)
-        if not wanted:
-            return [row]
-        out = []
-        for other in self.store.held():
-            if other.get("kind") != row.get("kind"):
-                continue
-            if _search_key(other) == wanted:
-                out.append(other)
-        return out or [row]
 
     def start(self):
         context = build_ssl_context(self.cfg)
