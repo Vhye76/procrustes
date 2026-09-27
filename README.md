@@ -400,12 +400,13 @@ GET  /api/status                  version, config, GPU state, encode space, stag
                                   threads per pool, uptime, audit status, whether authentication is
                                   on and who is signed in, and for every running encode its frame,
                                   total_frames, fps and eta_s
-GET  /api/titles                  every title, each with its queue_position, locked and slot
+GET  /api/titles                  up to 1000 titles, newest updated_at first, each with its queue_position,
+                                  locked and slot
 POST /api/queue                   {"order": [{"id": n} | {"show": name}, ...]}, the whole unlocked queue in the
                                   order wanted;  400 when it omits a queued title, repeats one, or names
                                   one a pool thread is working
 GET  /api/titles/<id>             one title with its stage history and comparison table
-GET  /api/held                    the decision queue, held and failed titles together
+GET  /api/held                    the decision queue, up to 1000 held and 1000 failed titles together
 GET  /api/poster/<hash>           cached cover art by the 'poster' hash on a title, 404 when there is none
 GET  /api/logs                    log tail
 GET  /api/settings                every setting with its value, default and source, grouped, plus the pool targets

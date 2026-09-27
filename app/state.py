@@ -356,7 +356,7 @@ class Store:
             )
             return self._row_to_dict(cur.fetchone())
 
-    def all(self, stage=None, limit=500):
+    def all(self, stage=None, limit=1000):
         query = "SELECT * FROM titles"
         params = []
         if stage:
