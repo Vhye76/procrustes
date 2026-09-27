@@ -900,7 +900,7 @@ DOCKER IGNORE PATTERNS ARE PATH-PREFIX MATCHED FROM THE CONTEXT ROOT, NOT gitign
 
 ## 22.  Image and build
 
-Base 'alpine:3.24'.  The image installs GNU 'coreutils', 'findutils' and 'bash', so nothing in the tooling meets busybox.
+Base 'alpine:latest'.  The image installs GNU 'coreutils', 'findutils' and 'bash', so nothing in the tooling meets busybox.
 
 Packages:  ffmpeg, mkvtoolnix, python3, py3-argon2-cffi, py3-qrcode, bash, coreutils, findutils, jq, ca-certificates, tini, su-exec, shadow, libcap, libcap-utils, libva, libva-utils, intel-media-driver, libvpl, onevpl-intel-gpu.  All Alpine packages;  nothing from PyPI.  'py3-qrcode' depends on 'py3-pillow' at the package level;  the SVG path the code uses never imports it.
 

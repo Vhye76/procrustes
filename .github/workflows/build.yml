@@ -19,9 +19,9 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.13"
+          python-version: "3.x"
       - name: The two modules the image installs from Alpine
-        run: pip install argon2-cffi==25.1.0 qrcode==8.2
+        run: pip install argon2-cffi qrcode
       - name: Every module parses
         run: python3 -m compileall -q app
       - name: The package imports

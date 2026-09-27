@@ -71,7 +71,7 @@ app/            the pipeline: one module per concern
   check_names.py  the third source check
   static/         the dashboard, the report, the settings pages and the login form
   data/           FileBot's release-group and media-source lists, CC0, vendored
-Dockerfile      alpine:3.24 plus ffmpeg, mkvtoolnix and the Intel media stack
+Dockerfile      alpine:latest plus ffmpeg, mkvtoolnix and the Intel media stack
 entrypoint.sh   drops to PUID/PGID, joins RENDER_GID for /dev/dri, takes ownership of the writable mount points
 media/          the container icon and dashboard favicon, a placeholder
 ```
@@ -441,7 +441,7 @@ python3 -c "import app.main"
 python3 -m app.check_names
 ```
 
-That is the whole of local validation.  The second needs 'argon2-cffi' and 'qrcode' importable on the workstation, the two modules 'app/auth.py' imports;  a scratch venv with 'pip install argon2-cffi==25.1.0 qrcode==8.2' is enough.  The third reports any name a function loads that its module never defines, which the first two cannot see.  None of the commands executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
+That is the whole of local validation.  The second needs 'argon2-cffi' and 'qrcode' importable on the workstation, the two modules 'app/auth.py' imports;  a scratch venv with 'pip install argon2-cffi qrcode' is enough.  The third reports any name a function loads that its module never defines, which the first two cannot see.  None of the commands executes a pipeline stage, touches a file or opens a socket.  There is no local test suite:  a workstation and this container are different environments, so functionality is validated in the container and nowhere else.
 
 ```
 docker build -t procrustes:local .
@@ -449,7 +449,7 @@ docker build -t procrustes:local .
 
 The image build fails if ffmpeg lacks libx265, libsvtav1, av1_qsv or hevc_qsv, if its libx265 wrapper has no '-dolbyvision' option, or if 'argon2' or 'qrcode' does not import.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
 
-The image is Alpine 3.24, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  The image is tagged with the version in 'app/__init__.py' on the first build of that version.
+The image is the latest Alpine, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  The image is tagged with the version in 'app/__init__.py' on the first build of that version.
 
 Functionality is validated against the built container by hand, measuring outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
 
