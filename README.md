@@ -449,7 +449,7 @@ docker build -t procrustes:local .
 
 The image build fails if ffmpeg lacks libx265, libsvtav1, av1_qsv or hevc_qsv, if its libx265 wrapper has no '-dolbyvision' option, or if 'argon2' or 'qrcode' does not import.  Those checks are deliberate:  they stop the image shipping while claiming encoders or capabilities it does not have.  If one ever fails, change where ffmpeg comes from rather than deleting the check.  The escalation order is av1_vaapi, then a pinned ffmpeg from Alpine's edge community repository.
 
-The image is Alpine 3.24, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  Every build increments the version in 'app/__init__.py', and the image is tagged with it.
+The image is Alpine 3.24, everything from Alpine's own repositories, including the two Python modules the login uses, 'py3-argon2-cffi' and 'py3-qrcode';  the build gate asserts both import.  Those two are the only third-party Python code in the image, and the CI validate job installs the same two from PyPI so 'import app.main' runs on a bare runner.  The image is tagged with the version in 'app/__init__.py' on the first build of that version.
 
 Functionality is validated against the built container by hand, measuring outcome:  files, filenames, tag blocks, track lists, API responses, exit codes and health state.
 
@@ -475,13 +475,13 @@ Copy '.env.example' to '.env', fill in the host paths, the certificate directory
 docker compose up -d
 ```
 
-CI does not build on push.  The workflow is manual only, started from the Actions tab, so a commit or a tag publishes nothing on its own.
+CI builds and publishes the image on every push to main, and on a manual run from the Actions tab.
 
 ## Version
 
-The version is defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.  Every build increments it.
+The version is defined once in 'app/__init__.py' and consumed by the provider User-Agent, the startup log, '/api/status' and the image tag.
 
-'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  Builds are manual runs of the workflow and nothing else triggers one.
+'x.0.0' is a release, '0.x.0' is a minor update or bug fix, and '0.0.x' is a pre-release.  The repository carries no git tags;  the version on the image and its label is the record.  The version tag goes on the first build of a version;  a later build on the same version moves 'latest' and leaves the version tag where it is.
 
 ## Licence
 

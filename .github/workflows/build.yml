@@ -1,8 +1,13 @@
 name: build
 
-#----- Manual only
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: build
+  cancel-in-progress: false
 
 jobs:
 #----- Code validation only, no behaviour is exercised here
@@ -23,7 +28,7 @@ jobs:
         run: python3 -c "import app.main"
       - name: Every name a function loads is defined
         run: python3 -m app.check_names
-#----- The version names the image and its label;  nothing checks it
+#----- The version names the image and its label
       - name: The version
         id: version
         run: |
@@ -46,13 +51,31 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Whether the version tag is already published
+        id: published
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          #----- GHCR takes the base64 of GITHUB_TOKEN as its bearer token
+          #----- without the index types in Accept, GHCR answers 404 for a published multi-platform tag
+          code="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $(printf '%s' "$TOKEN" | base64 -w0)" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/$owner/procrustes/manifests/$VERSION")"
+          case "$code" in
+            200) echo "absent=false" >> "$GITHUB_OUTPUT"; echo "::notice::$VERSION is already published, the version tag is left where it is" ;;
+            404) echo "absent=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::GHCR answered $code for $VERSION"; exit 1 ;;
+          esac
       - id: meta
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/procrustes
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=${{ needs.validate.outputs.version }}
+            type=raw,value=${{ needs.validate.outputs.version }},enable=${{ steps.published.outputs.absent }}
             type=sha,format=short
           labels: |
             org.opencontainers.image.version=${{ needs.validate.outputs.version }}

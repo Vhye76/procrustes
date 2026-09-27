@@ -924,11 +924,11 @@ At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice,
 
 'x.0.0' is a release.  '0.x.0' is the implementation of new features.  '0.0.x' is a bug fix.  The current version is 'VERSION' in 'app/__init__.py'.
 
-EVERY BUILD INCREMENTS THE VERSION.  A build whose 'VERSION' equals the one before it cannot be told apart from it.  NOTHING ENFORCES IT.  The workflow reads 'VERSION' from 'app/__init__.py', tags the image with it and stamps 'org.opencontainers.image.version' from it;  a build on an unincremented version publishes an image whose version tag overwrites the previous one on GHCR.  The repository does not use git tags.
+A VERSION TAG IS APPLIED ONCE, TO THE FIRST BUILD OF THAT VERSION.  The workflow reads 'VERSION' from 'app/__init__.py' and stamps 'org.opencontainers.image.version' from it on every build.  Before tagging it asks GHCR for the version's manifest:  a 404 adds the version tag, a 200 leaves the tag where it is, and any other answer fails the job, so a registry error is never read as an absent tag.  THE REQUEST ACCEPTS THE OCI INDEX AND MANIFEST LIST TYPES, because GHCR answers 404 for a published multi-platform tag without them, which would read every version as absent.  'latest' moves on every build, so a build on an unincremented version is 'latest' carrying the previous build's version label.  Runs share one concurrency group and never overlap, because two runs that both found the tag absent would both push it.  The repository does not use git tags.
 
 'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  Three consumers:  the provider User-Agent, built as 'procrustes/<VERSION> (+<repo url>)', the startup log line, and the 'version' field on '/api/status'.  Wikimedia rejects generic and browser-imitating agents with 403, so a browser User-Agent is not an option.
 
-THE WORKFLOW IS 'workflow_dispatch' ONLY.  Images are published by a manual run from the Actions tab and by nothing else.
+THE WORKFLOW RUNS ON EVERY PUSH TO MAIN, AND ON A MANUAL RUN FROM THE ACTIONS TAB.  GitHub starts one run per push, so a push carrying several commits builds the last of them.
 
 ## 24.  Validation and testing
 
