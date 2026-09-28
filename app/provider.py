@@ -562,7 +562,9 @@ class Provider:
             if ids["tvdb"] or ids["tmdb"]:
                 rungs.append((label, ids, _single(titles.title_before_ids(name), ids["year"])))
 
-        readings = _clean_show_name(stem, "" if self._in_root(source) else parent)
+        readings = _clean_show_name(
+            stem, "" if self._in_root(source) else parent, episodemod.season_from_folder(source),
+        )
         if readings:
             rungs.append(("filename", {}, readings))
 
@@ -1235,7 +1237,7 @@ class Provider:
 
         segment = (container or {}).get("segment_title") if isinstance(container, dict) else None
         entry, how, score = episodemod.match_episode(
-            source, catalogue, cutoff=self.title_cutoff(), extra=segment,
+            source, catalogue, cutoff=self.title_cutoff(), extra=segment, show=resolved["show"],
         )
         max_range_span = self._figure("max_range_span", episodemod.MAX_RANGE_SPAN)
         if entry is None:
@@ -1243,6 +1245,16 @@ class Provider:
             if parsed is None:
                 return None
             listed = _catalogue_entry(catalogue, parsed["season"], parsed["first"])
+            if listed is None and parsed.get("weak"):
+                log.warning(
+                    "no title match for %s, and its bare number S%02dE%02d is not in the catalogue",
+                    os.path.basename(source), parsed["season"], parsed["first"],
+                )
+                return {
+                    "show": resolved["show"],
+                    "tvdb": resolved["tvdb"],
+                    "unlisted": "S%02dE%02d" % (parsed["season"], parsed["first"]),
+                }
             if listed is not None:
                 log.warning(
                     "no title match for %s, falling back to source numbering S%02dE%02d,"
@@ -1656,17 +1668,20 @@ def _clean_movie_name(name):
     return _readings(text)
 
 
-def _clean_show_name(name, parent):
+def _clean_show_name(name, parent, season=None):
     parens = None
     for candidate in (name, parent):
         found = titles.YEAR_IN_PARENS.findall(candidate or "")
         if found:
             parens = int(found[-1])
             break
-    for candidate in (name, parent):
-        if not candidate:
+    for index, candidate in enumerate((name, parent)):
+        if not candidate or (index == 1 and episodemod.SEASON_FOLDER.match(candidate.strip())):
             continue
         cleaned = titles.strip_release_group(candidate)
+        parsed = episodemod.parse_filename(cleaned, default_season=season if index == 0 else None)
+        if parsed is not None and parsed.get("weak"):
+            cleaned = cleaned[: parsed["start"]]
         cleaned = titles.EPISODE_MARK.split(cleaned)[0]
         cleaned = re.split(r"(?:^|[^a-z0-9])\d{1,2}x\d{1,3}", cleaned, flags=re.I)[0]
         readings = _readings(cleaned)

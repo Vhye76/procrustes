@@ -842,6 +842,13 @@ class Orchestrator:
                     for e in entries
                 )
             identity = None
+        elif identity and identity.get("unlisted"):
+            problem = (
+                "resolved tvdb %s (%s) but no episode title matched and the file's bare number %s "
+                "is not in the episode list; an episode is never guessed"
+                % (identity.get("tvdb"), identity.get("show"), identity["unlisted"])
+            )
+            identity = None
         elif identity and identity.get("missing"):
             if identity.get("manual"):
                 problem = "the entered identity lacks %s" % ", ".join(identity["missing"])

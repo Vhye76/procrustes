@@ -160,7 +160,7 @@ def _tv_naming_rows(path, found, max_range_span=None):
     parsed = episodes.parse_filename(stem, max_range_span=max_range_span)
     last = None
     if parsed and parsed["season"] == found["season"] and parsed["first"] == found["episode"]:
-        last = parsed["last"]
+        last = episodes.last_episode(parsed, found["title"])
     file_expected = _build(
         titles.episode_filename, found["show"], found["season"], found["episode"], found["title"], last,
     )
@@ -329,7 +329,8 @@ def _range_candidates(rows, ratio, max_range_span=None):
     for row in rows:
         parsed = episodes.parse_filename(_stem(row["path"]), max_range_span=max_range_span)
         if parsed is not None:
-            coded.append((row, parsed))
+            title = ((row.get("measured") or {}).get("tag") or {}).get("title") or ""
+            coded.append((row, dict(parsed, last=episodes.last_episode(parsed, title))))
     claimed = {n for _row, p in coded for n in range(p["first"], p["last"] + 1)}
     found = []
     for row, parsed in coded:

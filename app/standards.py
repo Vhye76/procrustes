@@ -70,7 +70,8 @@ def looks_like_extra(path):
         if pattern.search(name):
             return "file name carries '%s'" % word
     #----- the text after an episode marker is the title, so "S01E02 - Proof" is an episode.
-    if episodes.parse_filename(name) is None:
+    parsed = episodes.parse_filename(name)
+    if parsed is None or parsed.get("weak"):
         for pattern, word in EXTRAS_SEGMENT_PATTERNS:
             if pattern.search(name):
                 return "file name ends in the segment '%s'" % word
