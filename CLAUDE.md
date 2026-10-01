@@ -121,6 +121,10 @@ THE POOLS RESIZE LIVE.  'orchestrator.Pools' carries a target per pool;  a worke
 
 THE ENDPOINTS.  'GET /api/settings' returns 'Settings.describe()' with the pool snapshot;  'POST /api/settings' takes '{"set": {key: value}}' and '{"reset": [keys]}', returns the same body with 'changed' on success, and 400 with '{"errors": {key: why}}' having written nothing.  The page is 'app/static/settings.html' at '/settings'.
 
+A SETTING CAN BE SECRET, AND THEN ITS VALUE NEVER LEAVES THE STORE.  'banner', 'as_dict' and the change log show 'set' or 'unset' through 'Settings.display';  'describe' carries 'is_set' and an empty value;  'profile' omits it;  the page renders a password field whose empty value changes nothing.  A setting with a 'check' has it run by 'Settings.update' on a changed, non-empty value before the batch is written, and its answer is the key's error.
+
+THE TMDb API KEY IS REQUIRED, AND NOTHING GOES WITHOUT IT.  'tmdb_api_key' is secret, takes the v3 API Key or the Read Access Token per section 11, and its 'check' is 'provider.check_key', a call to '/3/authentication':  a rejected key or an unreachable TMDb refuses the save.  While 'Settings.tmdb_key_set' is false, the watcher poll, the assessment workers, the three pools and the audit sweep wait, a sweep in progress stops without pruning, the decision endpoint and the audit Import answer 409, '/api/status' carries 'tmdb_key_set' false, the dashboard shows 'NO TMDB KEY', and 'Orchestrator.ready' logs each change of state once.  The job reclaim and the queue reorder run regardless.
+
 ### Read outside Config
 
 Read at import time in the module named, NOT validated, absent from the banner and '/api/status';  seams for substituting a binary.
@@ -369,7 +373,7 @@ Multi-part episode      Show - S03E02 - Quarantine, Part 1.mkv
 Two episodes, one file  Show - S05E01-E02 - Kidnapping.mkv
 ```
 
-Multi-part episodes use ', Part 1' rather than the provider's marker.  TVDB uses three marker forms and all three must be handled:  '(1)', '(Part 1)' and '(Part One)'.  The conversion applies to the Matroska EPISODE title and the segment Info title as well as the filename.
+Multi-part episodes use ', Part 1' rather than the provider's marker.  Three marker forms occur and all three must be handled:  '(1)', '(Part 1)' and '(Part One)'.  The conversion applies to the Matroska EPISODE title and the segment Info title as well as the filename.
 
 A file covering two episodes takes the range form and drops the part marker;  naming it as only the first makes Jellyfin report the second as missing.  Its EPISODE PART_NUMBER is the first episode of the range.
 
@@ -386,31 +390,29 @@ Show (Year) [tvdbid-N]/Season NN/Show - SNNENN - Episode Title.mkv
 
 ## 11.  Provider IDs and episode matching
 
-Movies use tmdbid and imdbid.  Television uses tvdbid and tmdbid, because TVDB governs episode titles and numbering.
+Movies use tmdbid and imdbid.  Television uses tvdbid and tmdbid.  TMDb IS THE ONLY PROVIDER THE PROCESS CONTACTS:  identities, ids, release years, episode numbers and titles, and cover art all come from its API, per section 25.
 
-Resolution goes through Wikidata, then verification:  'wbsearchentities', then 'Special:EntityData/<QID>.json', reading P4947 for a film's TMDB id, P4983 for a series' TMDB id, P345 for IMDb, P4835 for TVDB and P577 for release date.  THE TWO TMDB PROPERTIES ARE NOT INTERCHANGEABLE AND NEITHER IS A TVDB ID;  'ids_from_entity' takes the kind.  Requests are spaced about 3 seconds apart.  CHECK THE HTTP STATUS:  a 429 body fails JSON parsing and looks identical to "not found".
+Every call goes to 'https://api.themoviedb.org/3' with 'language=en-US':  '/search/movie' and '/search/tv' for a name, '/movie/<id>' and '/tv/<id>' with 'append_to_response=alternative_titles,external_ids' for a record, '/find/<id>' with 'external_source' 'imdb_id' or 'tvdb_id' for an id that is not TMDb's, and '/tv/<id>/season/<n>' for the episodes.  A 404 is an id TMDb does not know, and the rung falls through.  A 401 is a rejected key and raises 'ProviderError'.  CHECK THE HTTP STATUS:  a 429 body fails JSON parsing and looks identical to "not found".
 
-THE PAGE IS CONFIRMED BY ITS OWN TITLE AND YEAR, AGAINST THE ENTITY'S LABEL AND ALIASES, because a Wikidata provider id can be flat wrong and TMDB spells titles its own way.  '_page_confirms' reads the page's '<title>', 'Name (YYYY)' on TMDB, 'Name (TV Series YYYY)' for a show, 'Name (YYYY)' or bare on TVDB, and scores it against the label and every alias under the section 9 scoring, accepting at 'title_cutoff', with the label-in-body test as the fallback.  A page year more than one off the entity's rejects regardless.
-
-Searching a bare franchise name returns the franchise entity.  Search 'Title (YYYY film)'.
+THE CREDENTIAL IS ON THE REQUEST, NEVER IN THE URL THE CLIENT KEEPS.  'provider._authorised' adds it at send time:  32 hex characters as 'api_key=', anything else as 'Authorization: Bearer'.  The URL that names a cache file, is stored inside it and is logged at debug carries no key.
 
 ### The search is matched under section 9's own rules
 
-'wbsearchentities' IS A PREFIX MATCH THAT STOPS AT PUNCTUATION, so a filename with the colon removed finds nothing for an entity whose labels all carry it.  'provider._resolve_by_search' runs the two prefix searches, then a FULL-TEXT FALLBACK through 'action=query&list=search', with the hits' labels and aliases fetched in one 'wbgetentities' call.  EVERY CANDIDATE IS SCORED THE WAY SECTION 9 SAYS TO COMPARE:  'titles.to_filename' on the label against the name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Full-text hits must clear 'title_cutoff', the one setting the episode matcher and the search share, 0.82 by default;  prefix hits are ordered by score but not cut.  A CANDIDATE WHOSE RELEASE YEAR IS MORE THAN A YEAR FROM THE NAME'S IS SKIPPED.
+TMDb's search matches on any word, so EVERY CANDIDATE IS SCORED THE WAY SECTION 9 SAYS TO COMPARE.  'provider._resolve_by_search' takes the first 'TEXT_SEARCH_LIMIT' hits and fetches each record;  a candidate's names are its en-US title, its original title and its US and GB alternative titles.  Scoring is 'titles.to_filename' on the name against the searched name, then 'normalise_for_match' on both sides, then containment as whole words, then difflib.  Every hit must clear 'title_cutoff', the one setting the episode matcher and the search share, 0.82 by default.  A CANDIDATE WHOSE RELEASE YEAR IS MORE THAN A YEAR FROM THE NAME'S IS SKIPPED.
 
 A WORD LIST DECIDES WHAT IS A WORD.  'app/data/words.txt' is the Moby word list, filtered to entries of lowercase letters, loaded by 'titles' into a set.  An abbreviation is a name word of letters only, two or more long, that the list does not carry.  The list's lowercase entries include a few abbreviations ('tng', 'tpm'), which count as words, and a proper noun or an accented word absent from it ('Tolkien', 'Amélie') counts as an abbreviation.
 
-AN ABBREVIATION IS READ AS INITIALS.  In '_candidate_score' an abbreviation that spells the first letters of a run of the candidate's words is replaced by that run, and the higher of the two scores counts:  'LOTR The Return Of The King' scores 1.0 against 'Lord of the Rings: The Return of the King'.  '_name_score' as '_page_confirms' uses it reads no initials.
+AN ABBREVIATION IS READ AS INITIALS.  In '_candidate_score' an abbreviation that spells the first letters of a run of the candidate's words is replaced by that run, and the higher of the two scores counts:  'LOTR The Return Of The King' scores 1.0 against 'Lord of the Rings: The Return of the King'.  '_name_score' on its own reads no initials.
 
-A LEADING ABBREVIATION IS DROPPED WHEN THE NAME FINDS NOTHING COMPLETE.  '_search_readings' then searches each reading again with its leading run of abbreviations removed and its year kept, labelled 'abbreviation dropped', and names the dropped words in the IDENTIFIED detail.  That search alone scores the part of a label after each ':', ' - ', en dash or em dash as a name in its own right, so 'The Return Of The King' scores 1.0 against the 1980 film and the 2003 film alike:  a year separates them, and without one the tie rule below holds the title with both listed.  The cutoff, the year check, the page confirmation and the tie hold apply unchanged.
+A LEADING ABBREVIATION IS DROPPED WHEN THE NAME FINDS NOTHING COMPLETE.  '_search_readings' then searches each reading again with its leading run of abbreviations removed and its year kept, labelled 'abbreviation dropped', and names the dropped words in the IDENTIFIED detail.  That search alone scores the part of a name after each ':', ' - ', en dash or em dash as a name in its own right, so 'The Return Of The King' scores 1.0 against the 1980 film and the 2003 film alike:  a year separates them, and without one the tie rule below holds the title with both listed.  The cutoff, the year check and the tie hold apply unchanged.
 
-A TIE AT THE TOP SCORE IS A HOLD, NOT A PICK.  '_resolve_from' on a name search collects every top-scored candidate that verifies complete;  two or more come back as an identity carrying 'tied', each outcome reading 'tied at 1.00 with Q…', and the ladder holds with both named under the disagreement rule below.  A year in the name settles it first;  an id rung takes the first entity carrying the id that verifies.
+A TIE AT THE TOP SCORE IS A HOLD, NOT A PICK.  '_resolve_from' on a name search collects every top-scored candidate that is complete;  two or more come back as an identity carrying 'tied', each outcome reading 'tied at 1.00 with tmdb N', and the ladder holds with both named under the disagreement rule below.  A year in the name settles it first;  an id rung takes the first complete record carrying the id.
 
 A YEAR INSIDE A TITLE IS NOT THE RELEASE YEAR:  'Blade Runner 2049 (2017)'.  Take the LAST match, with a lookahead rather than a consumed delimiter, since in 'Blade.Runner.2049.2017.1080p' one dot serves both.
 
 ### The identity ladder
 
-EVERY RUNG RUNS, AND A COMPLETE IDENTITY IS A VOTE.  'provider.movie_candidates' and 'provider.show_candidates' build the rungs and 'provider._identify_from' walks all of them.  A rung's identity votes only when it is complete;  one vote wins, and 'identified_from' names every rung that agreed.  Votes for different entities are a disagreement:  the identity carries 'disagree', one entry per rung and entity, and the orchestrator holds naming each, every entity on the operator's list.  A tie inside one rung is votes for different entities and holds the same way.  A title identified by its provider ids does not lose to a name rung:  when every complete identity from a rung that carried ids names one entity, only those votes count.  An incomplete identity never votes and never blocks a vote from another rung;  it holds only when no rung produced a complete identity, on the first rung that produced one.
+EVERY RUNG RUNS, AND A COMPLETE IDENTITY IS A VOTE.  'provider.movie_candidates' and 'provider.show_candidates' build the rungs and 'provider._identify_from' walks all of them.  A rung's identity votes only when it is complete;  one vote wins, and 'identified_from' names every rung that agreed.  Votes for different TMDb records are a disagreement:  the identity carries 'disagree', one entry per rung and record, and the orchestrator holds naming each, every record on the operator's list.  A tie inside one rung is votes for different records and holds the same way.  A title identified by its provider ids does not lose to a name rung:  when every complete identity from a rung that carried ids names one record, only those votes count.  An incomplete identity never votes and never blocks a vote from another rung;  it holds only when no rung produced a complete identity, on the first rung that produced one.
 
 ```
 MOVIES
@@ -431,29 +433,27 @@ SHOWS
 
 Rung 6 is skipped for a file directly in 'import/' or 'hold/'.  RUNG 3a EXISTS BECAUSE THE AUDIT COPY LANDS FLAT in 'import/';  the row stores 'origin_path'.
 
-A RUNG SUPPLIES IDS AND A NAME;  THE PROVIDER SUPPLIES THE IDENTITY.  An id rung fetches the entities carrying that id statement, 'haswbstatement:P4947=11' through the full-text search;  a name rung searches by name.  Every candidate goes through '_accept_movie_hit' or '_accept_show_hit':  ids from the entity, the year check on a name search, the page confirmed, and the LABEL as the title.  An id rung's entity must carry that id;  two entities on one id are ordered by the section 9 score.  Nothing from the disk enters the identity except the ids that led to it, because disk text as the title is a filename wearing a tag, which the audit cannot catch;  an id Wikidata does not know falls to the next rung.  So every identification touches Wikidata, rung 1 included, and a tag TITLE that differs from the label is rewritten to the label.
+A RUNG SUPPLIES IDS AND A NAME;  TMDb SUPPLIES THE IDENTITY.  An id rung fetches the record by its TMDB id, or finds it through '/find' by an IMDb or tvdb id;  a name rung searches by name.  Every candidate goes through '_accept_movie_hit' or '_accept_show_hit':  ids from the record, the year check on a name search, and the record's title as the title.  A record that carries a different value for an id the rung read is skipped;  an id the record lacks is taken from the rung, with a note.  Two records on one id are ordered by the section 9 score.  Nothing from the disk enters the identity except the ids that led to it, because disk text as the title is a filename wearing a tag, which the audit cannot catch;  an id TMDb does not know falls to the next rung.  So every identification touches TMDb, rung 1 included, and a tag TITLE that differs from TMDb's title is rewritten to it.
 
-AN INCOMPLETE IDENTITY HOLDS, IT DOES NOT PUBLISH.  A movie needs title, year, TMDB and IMDB;  a show needs show, year, TVDB and TMDB.  Neither acceptance rejects an entity for lacking an id, because a lower-scored entity carrying the id would then win;  the identity carries a 'missing' list and the orchestrator holds with the field named.  A complete hit displaces an incomplete one at the same score, never at a lower one.  'titles.movie_folder', 'movie_filename', 'show_folder' and 'episode_filename' raise 'TitleError' on a None, a manual identity's absent ids excepted per section 10.
+AN INCOMPLETE IDENTITY HOLDS, IT DOES NOT PUBLISH.  A movie needs title, year, TMDB and IMDB;  a show needs show, year, TVDB and TMDB.  Neither acceptance rejects a record for lacking an id, because a lower-scored record carrying the id would then win;  the identity carries a 'missing' list and the orchestrator holds with the field named.  A complete hit displaces an incomplete one at the same score, never at a lower one.  'titles.movie_folder', 'movie_filename', 'show_folder' and 'episode_filename' raise 'TitleError' on a None, a manual identity's absent ids excepted per section 10.
 
-A MISSING TVDB ID IS LOOKED UP THROUGH THE IMDb ID, AND CONFIRMED BY THE ROUND TRIP.  'https://thetvdb.com/api/GetSeriesByRemoteID.php?imdbid=<id>' answers with no key.  'provider.tvdb_from_imdb' takes that id only when the dereferenced series page carries the same IMDb id back and confirms the entity's names, recorded as 'tvdb_from'.  The endpoint is TVDB's legacy v1 API;  should it stop answering, the show holds incomplete for the operator selection below.
+A SHOW'S TVDB ID IS TMDb'S MAPPING, 'external_ids.tvdb_id'.  It fills the '[tvdbid-N]' folder component and the COLLECTION block's TVDB value, whose forms are fixed by sections 10 and 12.  A show reached by a name rung that TMDb maps to no tvdb id holds incomplete for the operator selection below.  A movie's IMDb id is the record's 'imdb_id'.
 
-A TVDB PAGE IS NAMED BY ITS ENGLISH TRANSLATION, NOT ITS '<title>':  '_page_identity' reads the 'change_translation_text' element with 'data-language="eng"' first.  THE EPISODE CATALOGUE IS READ IN ENGLISH FOR A NON-ENGLISH-ORIGINAL SERIES:  the 'allseasons' listing serves original-language titles whatever is sent, so 'episodes_for_order' reads the series page's 'Original Language' field and, when it is not English, fetches each episode page for its English title.
+THE YEAR IS THE RECORD'S:  a movie's 'release_date', a show's 'first_air_date'.  TITLES ARE READ IN ENGLISH because every call asks for 'en-US';  a series with no English translation on TMDb carries its original-language titles.
 
-A SHOW'S TMDB PAGE MAY DATE IT BY ITS ORIGINAL, AND THAT IS ACCEPTED IN ONE DIRECTION.  TMDB dates a dubbed adaptation by the original's air date, and an adaptation cannot air before its original, so '_page_confirms' accepts a show's own P4983 id when the page title scores 1.0 against the label and the page year is earlier by any amount, writing the discrepancy into the IDENTIFIED detail;  later by more than one rejects.  The folder year stays Wikidata's.  Residual risk, accepted:  a wrong P4983 pointing at a same-titled EARLIER show passes, and only the '[tmdbid-N]' component is then wrong.
-
-A stale or hand-edited tag cannot inject a wrong ID:  the entity's page has to confirm it.  The rung that produced an identity is recorded in the stage detail.  'verify_tvdb' dereferences the id to its series page;  a 404 is "not confirmed" and a network failure is transient.  A TMDB id on a show entity that its page does not confirm is dropped rather than rejecting the entity.
+The rung that produced an identity is recorded in the stage detail.
 
 ### Operator selection:  best match or manual entry
 
 THE BACKSTOP FOR EVERY CASE THE RUNGS CANNOT SETTLE, AND THE ONLY WAY PAST AN IDENTIFICATION HOLD.  A held title whose reasons carry an IDENTIFIED entry, a provider failure included ('RetryLater' carries the stage it was raised at), shows 'Best match', 'Enter manually', one button, 'Confirm and force through', and Discard.  'webui.annotate' marks it 'identification_held' and not 'forceable';  the decision endpoint refuses 'override', 'retry' and 'keep' on it, and the list dialog's bulk Retry and Force act only on the other rows.
 
-THE BEST MATCH IS BUILT WHEN THE HOLD IS WRITTEN, inside 'Client.fresh', by 'provider.hold_candidates', and stored in 'candidates_json' as 'guess' beside the rung and names searched.  Its seeds are every entity the ladder scored plus the entities carrying each TMDB search hit's id, found through 'haswbstatement', each fetched for its label, year and ids, uncapped.  One entry is the pipeline's resolved entity when it is complete, otherwise the complete identity scoring highest against the searched readings within a year of the reading's year, preselected when it stands alone.  A disagreement or tie lists every complete entity it named, none preselected.  A provider that cannot be reached leaves the list empty, never fails the hold.
+THE BEST MATCH IS BUILT WHEN THE HOLD IS WRITTEN, inside 'Client.fresh', by 'provider.hold_candidates', and stored in 'candidates_json' as 'guess' beside the rung and names searched.  Its seeds are every record the ladder scored plus the TMDb search hits on the searched readings, each fetched for its title, year and ids, uncapped.  One entry is the pipeline's resolved record when it is complete, otherwise the complete identity scoring highest against the searched readings within a year of the reading's year, preselected when it stands alone.  A disagreement or tie lists every complete record it named, none preselected.  A provider that cannot be reached leaves the list empty, never fails the hold.
 
 MANUAL ENTRY TAKES THE WHOLE IDENTITY FROM THE OPERATOR.  A movie needs title and year, a show its name, year, season, episode and episode title;  the ids are optional.  The episode catalogue is not read for a manual show.
 
-THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'qid', the id fields for the kind and 'year' for a best match, or 'name' and the manual fields;  a manual decision missing a required field answers 400.  The choice is stored as 'pinned_json', the row gets 'overridden', the history records both, and the row requeues to DETECTED.  A top rung 'operator' fires on a pinned row:  the entity is fetched by qid, the ids come from the selections, each page is still fetched and its confirmation written into the IDENTIFIED detail, but an operator-selected id is not rejected by the page or year check.  A pinned row with no qid is the manual identity as entered, 'identified_from' 'manual'.
+THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'match', the chosen record's TMDB id, the id fields for the kind and 'year' for a best match, or 'name' and the manual fields;  a manual decision missing a required field answers 400.  The choice is stored as 'pinned_json', the row gets 'overridden', the history records both, and the row requeues to DETECTED.  A top rung 'operator' fires on a pinned row:  the record is fetched by 'match', the ids come from the selections, an operator-entered id that differs from TMDb's is kept and noted in the IDENTIFIED detail, and no year check applies.  A pinned row with no 'match' is the manual identity as entered, 'identified_from' 'manual'.
 
-TVDB'S 'allseasons' PAGE OMITS SEASON 0;  'episodes_for_order' reads '/seasons/official/0' as well when the order carries no specials.  A special TVDB does not list falls back to source numbering, with the warning.
+THE EPISODE CATALOGUE IS ONE '/tv/<id>/season/<n>' CALL PER SEASON THE SERIES RECORD LISTS, SEASON 0 INCLUDED.  A special TMDb does not list falls back to source numbering, with the warning.
 
 ### Finding the incumbent, in complete/ and in the library
 
@@ -463,29 +463,21 @@ THE LOOKUP KEYS ON THE PROVIDER ID, NOT ON THE TITLE.  Section 10 puts '[tmdbid-
 
 A MISS AND A GENUINELY NEW TITLE MUST NOT LOG THE SAME SENTENCE.  The COMPARED detail separates the outcomes per root, 'complete' and 'library':  not mounted, a folder count scanned with nothing matched, a match by provider ID, and a match by folder name.
 
-### Scraped text carries HTML entities
-
-DECODE THEM, AND DO IT AFTER STRIPPING TAGS.  'titles.normalise_for_match' expands '&' to ' and ' before stripping punctuation, so '&#039;' becomes ' and 039 ', and a title with one entity still matches and writes the corrupt string into the store, the tag, the segment title and the filename.  'html.unescape', applied AFTER the tag strip;  reversed, an escaped '&lt;i&gt;' becomes a real tag.  The one call site is 'episodes_for_order'.
-
 ### Cover art
 
-THE POSTER COMES OFF THE PAGE 'verify_tmdb' ALREADY FETCHES:  the first 'og:image' meta tag on 'https://www.themoviedb.org/movie/<id>', the SECOND being the backdrop.  'provider.tmdb_poster' re-requests the same URL, a cache hit.  NO TMDB API KEY, DELIBERATELY.
+THE POSTER IS THE RECORD'S 'poster_path' UNDER 'https://image.tmdb.org/t/p/original'.  'provider.poster' reads it from the same record call the identification made, a cache hit.
 
 TWO TRAPS IN SERVING IT, BOTH IN 'webui'.  'ProviderClient.fetch' CANNOT CARRY IMAGE BYTES, since it ends in 'response.read().decode("utf-8", "replace")';  posters use 'webui.fetch_poster_bytes'.  THE POSTER FETCH MUST NOT SHARE THE PROVIDER THROTTLE:  'fetch' calls '_wait' against one shared timestamp, and posters come from an image CDN.
 
-TELEVISION FALLS BACK TO TVDB.  'provider.tvdb_poster' fetches 'https://thetvdb.com/series/<slug>' from 'series_slug' and takes the first URL under '/banners/posters/';  a wrong poster is cosmetic.  MEMOISE THE RESULT PER SHOW, INCLUDING THE FAILURES:  'Client.final_url' is not cached and calls '_wait', '_poster_url' runs once per title, and 'tvdb_poster' catches broadly, since 'final_url' lets urllib's HTTPError escape unwrapped.
-
 Posters are cached under 'config/cache/posters' keyed by a hash of the URL and served from '/api/poster/<hash>' with a long cache header.  THE URL IS THE HASH, NOT THE TITLE ID:  'immutable' is only honest on a URL whose content can never change, and a row id is not that after a store wipe.  The row carries it as 'poster' beside 'poster_url'.
 
-### Choosing the release year
-
-P577 IS NOT A SINGLE VALUE.  A film carries several release claims in no meaningful order, and a year-only placeholder can precede them.  'provider._best_date' selects:  drop deprecated rank, prefer preferred rank, then the highest precision, then the earliest date.
+### Caching
 
 Lookups are cached on disk under 'config/cache'.  EVERY HTTP 200 IS CACHED WITHOUT EXPIRY, AND AN EMPTY SEARCH RESULT IS A 200, so a title held for "could not be resolved" would hold again identically.  A hold therefore never rests on a cached answer:  a title that does not resolve is identified once more inside 'Client.fresh', a thread-local context the orchestrator enters around 'provider.identify', before it holds, and the best match is built inside it too.  Retry on any other hold runs its identification the same way, and counts as the fresh pass.  The fresh answers overwrite the cache.  INTERNET ACCESS IS REQUIRED:  a provider that cannot be reached raises ProviderError, treated as transient, retried five times over roughly 62 minutes with exponential backoff, then held with the reason written.
 
 ### Episode order
 
-AIRED ORDER, AUTOMATICALLY, FOR EVERY SHOW.  No per-show decision and no held gate.  Accepted risk:  a show whose disk content is genuinely in DVD order will be numbered as aired.  Where per-season counts disagree with aired order the mismatch is surfaced as a warning.
+TMDb'S SEASON ORDER, AUTOMATICALLY, FOR EVERY SHOW.  No per-show decision and no held gate.  Accepted risk:  a show whose disk content is in another order is numbered as TMDb numbers it.
 
 ### Matching
 
@@ -836,7 +828,7 @@ A TITLE THAT APPEARS TO DIFFER FROM ITS FILENAME.  If the title contains a comma
 
 A TAG TITLE THAT DIFFERS FROM ITS FILENAME BY AN UNSAFE CHARACTER.  Apply the transform to the tag before comparing.  Comparing mkvextract's raw output against a decoded filename also falsely flags an ampersand, because '&amp;' is legitimate XML encoding.
 
-SEASON 00 WITH GAPS IN ITS NUMBERING.  Specials are numbered per TVDB and a library normally holds only some.  Any gap check must exempt season 0.
+SEASON 00 WITH GAPS IN ITS NUMBERING.  Specials are numbered per TMDb and a library normally holds only some.  Any gap check must exempt season 0.
 
 A FILE THAT GREW AFTER A LANGUAGE STRIP.  See section 13.
 
@@ -943,7 +935,7 @@ At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice,
 
 A VERSION TAG IS APPLIED ONCE, TO THE FIRST BUILD OF THAT VERSION.  The workflow reads 'VERSION' from 'app/__init__.py' and stamps 'org.opencontainers.image.version' from it on every build.  Before tagging it asks GHCR for the version's manifest:  a 404 adds the version tag, a 200 leaves the tag where it is, and any other answer fails the job, so a registry error is never read as an absent tag.  THE REQUEST ACCEPTS THE OCI INDEX AND MANIFEST LIST TYPES, because GHCR answers 404 for a published multi-platform tag without them, which would read every version as absent.  'latest' moves on every build, so a build on an unincremented version is 'latest' carrying the previous build's version label.  Runs share one concurrency group and never overlap, because two runs that both found the tag absent would both push it.  The repository does not use git tags.
 
-'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  Three consumers:  the provider User-Agent, built as 'procrustes/<VERSION> (+<repo url>)', the startup log line, and the 'version' field on '/api/status'.  Wikimedia rejects generic and browser-imitating agents with 403, so a browser User-Agent is not an option.
+'VERSION' IN 'app/__init__.py' IS THE SINGLE DEFINITION.  Three consumers:  the provider User-Agent, built as 'procrustes/<VERSION> (+<repo url>)', the startup log line, and the 'version' field on '/api/status'.
 
 THE WORKFLOW RUNS ON EVERY PUSH TO MAIN, AND ON A MANUAL RUN FROM THE ACTIONS TAB.  GitHub starts one run per push, so a push carrying several commits builds the last of them.
 
@@ -986,6 +978,10 @@ The old pipeline stopped for a human before encoding.  It is automatic and holds
 ### Television is processed automatically in aired order
 
 Chosen over a per-show held decision.  The protection is section 11's title match, not the order:  the number is derived from the match, so release-group renumbering cannot propagate.
+
+### TMDb is the only provider
+
+Jellyfin titles and numbers from TMDb by default, so identification, episode numbering and titles come from TMDb's API alone.  The tvdb id in folder names and tags is TMDb's mapping;  the name and tag forms are unchanged.
 
 ### No third-party Python dependencies beyond the two named
 

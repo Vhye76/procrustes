@@ -1,6 +1,5 @@
 import difflib
 import hashlib
-import html
 import json
 import logging
 import os
@@ -10,7 +9,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 
 from . import VERSION
 from . import episodes as episodemod
@@ -20,23 +18,16 @@ from . import titles
 log = logging.getLogger("provider")
 
 USER_AGENT = "procrustes/%s (+https://github.com/Vhye76/procrustes)" % VERSION
-THROTTLE_SECONDS = 3.0
+THROTTLE_SECONDS = 0.25
 TIMEOUT = 30
 TITLE_CUTOFF = episodemod.FUZZY_CUTOFF
 CONTAINED_SCORE = 0.9
 TEXT_SEARCH_LIMIT = 10
 
-P_TMDB = "P4947"
-P_IMDB = "P345"
-P_TVDB = "P4835"
-P_TMDB_TV = "P4983"
-P_RELEASE = "P577"
-P_START = "P580"
-ID_PROPERTIES = {
-    "movie": (("tmdb", P_TMDB), ("imdb", P_IMDB)),
-    "tv": (("tvdb", P_TVDB), ("tmdb", P_TMDB_TV)),
+ID_FIELDS = {
+    "movie": ("tmdb", "imdb"),
+    "tv": ("tvdb", "tmdb"),
 }
-#----- A show's tmdb is required for its folder name but is not a condition of accepting the entity.
 REQUIRED = {
     "movie": ("title", "year", "tmdb", "imdb"),
     "tv": ("show", "show_year", "tvdb", "tmdb"),
@@ -48,55 +39,15 @@ MANUAL_REQUIRED = {
 ABBREVIATION_DROPPED = "abbreviation dropped"
 SUBTITLE_SPLIT = re.compile(r"\s*:\s*|\s+-\s+|\s*[–—]\s*")
 
-WIKIDATA_API = "https://www.wikidata.org/w/api.php"
-WIKIDATA_ENTITY = "https://www.wikidata.org/wiki/Special:EntityData/%s.json"
-TMDB_MOVIE = "https://www.themoviedb.org/movie/%s"
-TMDB_TV = "https://www.themoviedb.org/tv/%s"
-
-TVDB_POSTER = re.compile(
-    r"https://artworks\.thetvdb\.com/banners/posters/[^\"'\s>]+"
-)
-
-OG_IMAGE = re.compile(
-    r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-    re.I,
-)
-TVDB_ROOT = "https://thetvdb.com/"
-TVDB_DEREFERRER = "https://thetvdb.com/dereferrer/series/%s"
-TVDB_SERIES = "https://thetvdb.com/series/%s"
-TVDB_SEASONS = "https://thetvdb.com/series/%s/allseasons/%s"
-TVDB_SPECIALS = "https://thetvdb.com/series/%s/seasons/%s/0"
-TVDB_REMOTE_ID = "https://thetvdb.com/api/GetSeriesByRemoteID.php?imdbid=%s"
-TMDB_SEARCH = "https://www.themoviedb.org/search/%s?query=%s"
-IMDB_LINK = "imdb.com/title/%s"
-
-PAGE_TITLE = re.compile(r"<title>\s*(.*?)\s*</title>", re.I | re.S)
-#----- TMDB titles pages 'Name (2015)' for a film and 'Name (TV Series 1984)' for a show;  TVDB 'Name (2003)' or bare.
-PAGE_YEAR = re.compile(r"\s*\((?:TV Series\s+)?(\d{4})\)\s*$")
-#----- TMDB's separator arrives as '&#8212;', an em dash once unescaped;  TVDB's is a hyphen.
-SITE_SUFFIX = re.compile(r"\s+(?:\u2014|-)\s+(?:The Movie Database \(TMDB\)|TheTVDB\.com)\s*$")
-TVDB_ENG_TITLE = re.compile(
-    r'class="change_translation_text"[^>]*data-language="eng"[^>]*data-title="([^"]*)"',
-    re.I,
-)
-TVDB_ORIGINAL_LANGUAGE = re.compile(
-    r"<strong>\s*Original Language\s*</strong>\s*<span>\s*([^<]*)", re.I
-)
-TMDB_SEARCH_HIT = re.compile(
-    r'data-media-type="(?:tv|movie)"[^>]*href="/(?:tv|movie)/(\d+)[^"]*"[^>]*>\s*'
-    r"<h2[^>]*>\s*(?:<span>)?\s*(.*?)\s*(?:</span>)?\s*</h2>\s*</a>"
-    r'(?:\s*<span class="release_date[^"]*">\s*([^<]*))?',
-    re.I | re.S,
-)
-
-EPISODE_LABEL = re.compile(
-    r'episode-label">S(\d{1,2})E(\d{1,3})</span>.*?<a[^>]*href="([^"]*)"[^>]*>\s*(.*?)\s*</a>',
-    re.I | re.S,
-)
-SPECIAL_ROW = re.compile(
-    r'<td>\s*S(\d{1,2})E(\d{1,3})\s*</td>\s*<td>\s*<a[^>]*href="([^"]*)"[^>]*>\s*(.*?)\s*</a>',
-    re.I | re.S,
-)
+TMDB_API = "https://api.themoviedb.org/3"
+TMDB_HOST = "api.themoviedb.org"
+TMDB_IMAGE = "https://image.tmdb.org/t/p/original"
+TMDB_LANGUAGE = "en-US"
+TMDB_KIND = {"movie": "movie", "tv": "tv"}
+API_KEY_V3 = re.compile(r"^[0-9a-f]{32}$", re.I)
+ALIAS_COUNTRIES = ("US", "GB")
+FIND_SOURCES = {"imdb": "imdb_id", "tvdb": "tvdb_id"}
+FIND_RESULTS = {"movie": "movie_results", "tv": "tv_results"}
 
 
 class ProviderError(RuntimeError):
@@ -105,6 +56,36 @@ class ProviderError(RuntimeError):
 
 class RateLimited(ProviderError):
     pass
+
+
+def _authorised(url, key):
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    if key and urllib.parse.urlsplit(url).netloc == TMDB_HOST:
+        if API_KEY_V3.match(key):
+            url += ("&" if "?" in url else "?") + urllib.parse.urlencode({"api_key": key})
+        else:
+            headers["Authorization"] = "Bearer %s" % key
+    return urllib.request.Request(url, headers=headers)
+
+
+def check_key(key, timeout=TIMEOUT):
+    key = str(key or "").strip()
+    if not key:
+        return None
+    try:
+        with urllib.request.urlopen(_authorised(TMDB_API + "/authentication", key), timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            return "TMDb rejected the key"
+        return "TMDb answered HTTP %d" % exc.code
+    except urllib.error.URLError as exc:
+        return "TMDb could not be reached: %s" % exc.reason
+    except (OSError, ValueError) as exc:
+        return "TMDb could not be reached: %s" % exc
+    if not body.get("success"):
+        return "TMDb rejected the key"
+    return None
 
 
 #----- The HTTP client, throttled and cached
@@ -166,7 +147,7 @@ class Client:
         throttle = float(self._figure("provider_throttle_s", self.throttle))
         elapsed = time.time() - self._last
         if elapsed < throttle:
-            log.debug("throttling %.1fs before the next request", throttle - elapsed)
+            log.debug("throttling %.2fs before the next request", throttle - elapsed)
             time.sleep(throttle - elapsed)
         self._last = time.time()
 
@@ -182,7 +163,7 @@ class Client:
 
         self._wait()
         log.debug("GET %s", url)
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        request = _authorised(url, str(self._figure("tmdb_api_key", "") or "").strip())
         try:
             with urllib.request.urlopen(request, timeout=self._timeout()) as response:
                 status = response.getcode()
@@ -190,6 +171,8 @@ class Client:
         except urllib.error.HTTPError as exc:
             status = exc.code
             body = exc.read().decode("utf-8", "replace") if exc.fp else ""
+            if status == 401:
+                raise ProviderError("TMDb rejected the API key on %s" % url)
             if status == 429:
                 raise RateLimited("rate limited by %s" % url)
             if status >= 500:
@@ -211,63 +194,6 @@ class Client:
         except ValueError as exc:
             raise ProviderError("%s did not return JSON: %s" % (url, exc))
 
-    def final_url(self, url):
-        self._wait()
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=self._timeout()) as response:
-            return response.geturl()
-
-
-#----- Wikidata claim readers
-def _claims(entity, prop):
-    values = []
-    for claim in (entity.get("claims") or {}).get(prop, []):
-        snak = (claim.get("mainsnak") or {}).get("datavalue") or {}
-        value = snak.get("value")
-        if isinstance(value, dict):
-            value = value.get("time") or value.get("id")
-        if value is not None:
-            values.append(value)
-    return values
-
-
-RANK_ORDER = {"preferred": 2, "normal": 1}
-
-
-def _dated_claims(entity, prop):
-    rows = []
-    for claim in (entity.get("claims") or {}).get(prop, []):
-        if claim.get("rank") == "deprecated":
-            continue
-        value = ((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value")
-        if not isinstance(value, dict) or not value.get("time"):
-            continue
-        rows.append(
-            {
-                "time": value["time"],
-                "precision": int(value.get("precision") or 0),
-                "rank": RANK_ORDER.get(claim.get("rank"), 1),
-            }
-        )
-    return rows
-
-
-def _best_date(entity, prop):
-    rows = _dated_claims(entity, prop)
-    if not rows:
-        return None
-    top_rank = max(r["rank"] for r in rows)
-    rows = [r for r in rows if r["rank"] == top_rank]
-    top_precision = max(r["precision"] for r in rows)
-    candidates = [r for r in rows if r["precision"] == top_precision]
-    chosen = sorted(candidates, key=lambda r: r["time"])[0]
-    log.debug(
-        "%s: chose %s from %d claim(s) at rank %d precision %d",
-        prop, chosen["time"], len(_dated_claims(entity, prop)),
-        chosen["rank"], chosen["precision"],
-    )
-    return chosen["time"]
-
 
 def _year(value):
     m = re.search(r"(\d{4})", str(value or ""))
@@ -280,7 +206,6 @@ class Provider:
         self.client = client
         self.roots = {os.path.normpath(str(root)) for root in roots if root}
         self.settings = settings
-        self._tvdb_posters = {}
         self._local = threading.local()
 
     #----- Matching figures, read per call so a settings change reaches the next identification
@@ -295,191 +220,68 @@ class Provider:
     def contained_score(self):
         return float(self._figure("contained_score", CONTAINED_SCORE))
 
-    def search_entities(self, term, limit=20):
-        url = "%s?%s" % (
-            WIKIDATA_API,
-            urllib.parse.urlencode(
-                {
-                    "action": "wbsearchentities",
-                    "search": term,
-                    "language": "en",
-                    "format": "json",
-                    "limit": limit,
-                }
-            ),
-        )
-        return self.client.fetch_json(url).get("search") or []
-
-    def search_text(self, term, limit=TEXT_SEARCH_LIMIT):
-        url = "%s?%s" % (
-            WIKIDATA_API,
-            urllib.parse.urlencode(
-                {
-                    "action": "query",
-                    "list": "search",
-                    "srsearch": term,
-                    "srlimit": limit,
-                    "format": "json",
-                }
-            ),
-        )
-        hits = (self.client.fetch_json(url).get("query") or {}).get("search") or []
-        return [h["title"] for h in hits if str(h.get("title", "")).startswith("Q")]
-
-    def labels(self, qids):
-        if not qids:
-            return []
-        url = "%s?%s" % (
-            WIKIDATA_API,
-            urllib.parse.urlencode(
-                {
-                    "action": "wbgetentities",
-                    "ids": "|".join(qids),
-                    "props": "labels|aliases",
-                    "languages": "en",
-                    "format": "json",
-                }
-            ),
-        )
-        entities = self.client.fetch_json(url).get("entities") or {}
-        out = []
-        for qid in qids:
-            entity = entities.get(qid) or {}
-            label = ((entity.get("labels") or {}).get("en") or {}).get("value")
-            aliases = [a.get("value") for a in (entity.get("aliases") or {}).get("en") or []]
-            out.append({"id": qid, "label": label, "aliases": [a for a in aliases if a]})
-        return out
-
-    def entity(self, qid):
-        data = self.client.fetch_json(WIKIDATA_ENTITY % qid)
-        return (data.get("entities") or {}).get(qid) or {}
-
-    #----- P4983 is TMDB's series id, not a TVDB id;  TVDB comes from P4835 alone.
-    def ids_from_entity(self, entity, kind="movie"):
-        tmdb = _claims(entity, P_TMDB if kind == "movie" else P_TMDB_TV)
-        imdb = _claims(entity, P_IMDB)
-        tvdb = _claims(entity, P_TVDB)
-        released = _best_date(entity, P_RELEASE) or _best_date(entity, P_START)
-        return {
-            "tmdb": tmdb[0] if tmdb else None,
-            "imdb": imdb[0] if imdb else None,
-            "tvdb": tvdb[0] if tvdb else None,
-            "year": _year(released) if released else None,
-        }
-
-    def tmdb_page(self, kind, tmdb_id):
-        url = (TMDB_MOVIE if kind == "movie" else TMDB_TV) % tmdb_id
+    def _api(self, path, **params):
+        params.setdefault("language", TMDB_LANGUAGE)
+        url = "%s%s?%s" % (TMDB_API, path, urllib.parse.urlencode(params))
         status, body = self.client.fetch(url)
-        return body if status == 200 else None
-
-    def verify_tmdb(self, kind, tmdb_id, names, year=None, own_claim=False):
-        body = self.tmdb_page(kind, tmdb_id)
-        if body is None:
-            return False, None
-        return _page_confirms(
-            body, names, year, "tmdb %s" % tmdb_id,
-            earlier_ok=bool(own_claim and kind == "tv"),
-            cutoff=self.title_cutoff(), contained=self.contained_score(),
-        )
-
-    def tvdb_page(self, tvdb_id):
-        try:
-            status, body = self.client.fetch(TVDB_SERIES % self.series_slug(tvdb_id))
-        except urllib.error.HTTPError as exc:
-            log.info("tvdb %s does not dereference: HTTP %s", tvdb_id, exc.code)
-            return None
-        except urllib.error.URLError as exc:
-            raise ProviderError("could not reach thetvdb for %s: %s" % (tvdb_id, exc))
-        except ProviderError as exc:
-            log.info("tvdb %s does not lead to a series page: %s", tvdb_id, exc)
-            return None
-        return body if status == 200 else None
-
-    def verify_tvdb(self, tvdb_id, names, year=None):
-        body = self.tvdb_page(tvdb_id)
-        if body is None:
-            return False, None
-        return _page_confirms(
-            body, names, year, "tvdb %s" % tvdb_id,
-            cutoff=self.title_cutoff(), contained=self.contained_score(),
-        )
-
-    def tvdb_by_imdb(self, imdb_id):
-        status, body = self.client.fetch(TVDB_REMOTE_ID % imdb_id)
-        if status != 200 or not body.strip():
-            return None
-        try:
-            root = ET.fromstring(body.strip())
-        except ET.ParseError as exc:
-            log.debug("tvdb remote-id lookup for %s did not parse: %s", imdb_id, exc)
-            return None
-        series = root.find("Series")
-        if series is None:
-            return None
-        tvdb = (series.findtext("seriesid") or "").strip()
-        if not tvdb:
-            return None
-        return {
-            "tvdb": tvdb,
-            "name": (series.findtext("SeriesName") or "").strip() or None,
-            "year": _year(series.findtext("FirstAired")),
-        }
-
-    def tvdb_from_imdb(self, imdb_id, names, year=None):
-        found = self.tvdb_by_imdb(imdb_id)
-        if not found:
-            log.info("tvdb has no series for imdb %s", imdb_id)
-            return None
-        body = self.tvdb_page(found["tvdb"])
-        if body is None:
-            return None
-        if (IMDB_LINK % imdb_id) not in body:
-            log.info("tvdb %s from imdb %s does not link that id back, skipping", found["tvdb"], imdb_id)
-            return None
-        ok, _note = _page_confirms(
-            body, names, year, "tvdb %s" % found["tvdb"],
-            cutoff=self.title_cutoff(), contained=self.contained_score(),
-        )
-        if not ok:
-            log.info("tvdb %s from imdb %s did not confirm %r, skipping", found["tvdb"], imdb_id, names[0] if names else None)
-            return None
-        return found["tvdb"]
-
-    def tmdb_poster(self, kind, tmdb_id):
-        if not tmdb_id:
-            return None
-        url = (TMDB_MOVIE if kind == "movie" else TMDB_TV) % tmdb_id
-        try:
-            status, body = self.client.fetch(url)
-        except ProviderError as exc:
-            log.debug("poster lookup failed for %s: %s", url, exc)
+        if status == 404:
             return None
         if status != 200:
-            return None
-        match = OG_IMAGE.search(body)
-        if not match:
-            log.debug("no og:image on %s", url)
-            return None
-        return match.group(1)
-
-    def tvdb_poster(self, tvdb_id):
-        if not tvdb_id:
-            return None
-        key = str(tvdb_id)
-        if key in self._tvdb_posters:
-            return self._tvdb_posters[key]
-        url = None
+            raise ProviderError("%s returned HTTP %d" % (url, status))
         try:
-            status, body = self.client.fetch(TVDB_SERIES % self.series_slug(key))
-            if status == 200:
-                match = TVDB_POSTER.search(body)
-                url = match.group(0) if match else None
-                if url is None:
-                    log.debug("no poster artwork on the tvdb page for %s", key)
-        except Exception as exc:
-            log.debug("tvdb poster lookup failed for %s: %s", key, exc)
-        self._tvdb_posters[key] = url
-        return url
+            return json.loads(body)
+        except ValueError as exc:
+            raise ProviderError("%s did not return JSON: %s" % (url, exc))
+
+    def search(self, kind, term):
+        data = self._api("/search/%s" % TMDB_KIND[kind], query=term, include_adult="false") or {}
+        found = []
+        for hit in data.get("results") or []:
+            tmdb = str(hit.get("id") or "")
+            if tmdb and tmdb not in found:
+                found.append(tmdb)
+        return found[:TEXT_SEARCH_LIMIT]
+
+    def details(self, kind, tmdb_id):
+        return self._api(
+            "/%s/%s" % (TMDB_KIND[kind], tmdb_id),
+            append_to_response="alternative_titles,external_ids",
+        )
+
+    def find(self, kind, field, value):
+        data = self._api(
+            "/find/%s" % urllib.parse.quote(str(value)), external_source=FIND_SOURCES[field],
+        ) or {}
+        return [str(hit["id"]) for hit in data.get(FIND_RESULTS[kind]) or [] if hit.get("id")]
+
+    def season(self, tmdb_id, number):
+        return self._api("/tv/%s/season/%s" % (tmdb_id, number))
+
+    def candidate(self, kind, tmdb_id):
+        found = self.details(kind, tmdb_id)
+        if not found or not found.get("id"):
+            log.info("tmdb %s %s does not exist", kind, tmdb_id)
+            return None
+        return {
+            "id": str(found["id"]),
+            "label": _label(kind, found),
+            "aliases": _aliases(kind, found),
+            "details": found,
+        }
+
+    def poster(self, kind, tmdb_id):
+        if not tmdb_id:
+            return None
+        try:
+            found = self.details(kind, tmdb_id)
+        except ProviderError as exc:
+            log.debug("poster lookup failed for tmdb %s %s: %s", kind, tmdb_id, exc)
+            return None
+        path = (found or {}).get("poster_path")
+        if not path:
+            log.debug("tmdb %s %s has no poster", kind, tmdb_id)
+            return None
+        return TMDB_IMAGE + path
 
     #----- The movie identity ladder
     def movie_candidates(self, source, container, origin=None):
@@ -581,14 +383,14 @@ class Provider:
     def _identify_from(self, rungs, kind, pinned=None):
         resolved = self._identify_walk(rungs, kind, pinned)
         #----- 'hold_candidates' preselects this entity.
-        self._local.resolved_qid = (resolved or {}).get("qid")
+        self._local.resolved_tmdb = (resolved or {}).get("tmdb")
         self._local.hold_entries = list((resolved or {}).get("disagree") or (resolved or {}).get("tied") or [])
         return resolved
 
     def _identify_walk(self, rungs, kind, pinned=None):
         self._local.scored = []
         self._local.searched = None
-        self._local.resolved_qid = None
+        self._local.resolved_tmdb = None
         self._local.hold_entries = []
         if pinned:
             resolved = self._resolve_operator(pinned, kind)
@@ -599,7 +401,7 @@ class Provider:
                     "identified by the operator: %s (%s) %s",
                     resolved.get("title") or resolved.get("show"),
                     resolved.get("year") or resolved.get("show_year"),
-                    " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
+                    " ".join("%s=%s" % (f, resolved.get(f)) for f in ID_FIELDS[kind]),
                 )
                 return resolved
         results = []
@@ -607,7 +409,7 @@ class Provider:
         for rung, ids, readings in rungs:
             pinned = {
                 field: (ids or {}).get(field)
-                for field, _prop in ID_PROPERTIES[kind]
+                for field in ID_FIELDS[kind]
                 if (ids or {}).get(field)
             }
             readings = [r for r in readings if r[0]]
@@ -626,34 +428,34 @@ class Provider:
             resolved["identified_from"] = rung
             resolved["missing"] = _missing(kind, resolved)
             if resolved["missing"]:
-                log.debug("rung %s resolved %s lacking %s, no vote", rung,
-                          resolved.get("qid"), ", ".join(resolved["missing"]))
+                log.debug("rung %s resolved tmdb %s lacking %s, no vote", rung,
+                          resolved.get("tmdb"), ", ".join(resolved["missing"]))
             elif resolved.get("tied"):
                 log.debug("rung %s tied between %s", rung,
-                          ", ".join(t.get("qid") or "?" for t in resolved["tied"]))
+                          ", ".join(t.get("tmdb") or "?" for t in resolved["tied"]))
             else:
-                log.debug("rung %s resolved %s", rung, resolved.get("qid"))
+                log.debug("rung %s resolved tmdb %s", rung, resolved.get("tmdb"))
             results.append((rung, resolved))
 
-        #----- (rung, qid, the tied entry or None, resolved)
+        #----- (rung, tmdb, the tied entry or None, resolved)
         votes = []
         for rung, resolved in results:
             if resolved["missing"]:
                 continue
             if resolved.get("tied"):
-                votes.extend((rung, t["qid"], t, resolved) for t in resolved["tied"])
+                votes.extend((rung, t["tmdb"], t, resolved) for t in resolved["tied"])
             else:
-                votes.append((rung, resolved.get("qid"), None, resolved))
+                votes.append((rung, resolved.get("tmdb"), None, resolved))
         id_votes = [v for v in votes if v[0] in id_rungs]
         if id_votes and len({v[1] for v in id_votes}) == 1:
-            for rung, qid, _entry, _resolved in votes:
-                if rung not in id_rungs and qid != id_votes[0][1]:
-                    log.debug("rung %s reached %s, the id rungs settle on %s", rung, qid, id_votes[0][1])
+            for rung, tmdb, _entry, _resolved in votes:
+                if rung not in id_rungs and tmdb != id_votes[0][1]:
+                    log.debug("rung %s reached tmdb %s, the id rungs settle on %s", rung, tmdb, id_votes[0][1])
             votes = id_votes
         distinct = []
-        for _rung, qid, _entry, _resolved in votes:
-            if qid not in distinct:
-                distinct.append(qid)
+        for _rung, tmdb, _entry, _resolved in votes:
+            if tmdb not in distinct:
+                distinct.append(tmdb)
 
         if not distinct:
             for rung, resolved in results:
@@ -661,7 +463,7 @@ class Provider:
                     "identified from %s: %s (%s) %s, lacking %s",
                     rung, resolved.get("title") or resolved.get("show"),
                     resolved.get("year") or resolved.get("show_year"),
-                    " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
+                    " ".join("%s=%s" % (f, resolved.get(f)) for f in ID_FIELDS[kind]),
                     ", ".join(resolved["missing"]),
                 )
                 return resolved
@@ -669,7 +471,7 @@ class Provider:
 
         if len(distinct) == 1:
             rungs_agreeing = []
-            for rung, _qid, _entry, _resolved in votes:
+            for rung, _tmdb, _entry, _resolved in votes:
                 if rung not in rungs_agreeing:
                     rungs_agreeing.append(rung)
             resolved = votes[0][3]
@@ -678,31 +480,26 @@ class Provider:
                 "identified from %s: %s (%s) %s",
                 resolved["identified_from"], resolved.get("title") or resolved.get("show"),
                 resolved.get("year") or resolved.get("show_year"),
-                " ".join("%s=%s" % (f, resolved.get(f)) for f, _p in ID_PROPERTIES[kind]),
+                " ".join("%s=%s" % (f, resolved.get(f)) for f in ID_FIELDS[kind]),
             )
             return resolved
 
         disagree = []
-        for rung, qid, entry, resolved in votes:
+        for rung, tmdb, entry, resolved in votes:
             if entry is None:
-                entry = {
-                    "qid": qid,
-                    "label": resolved.get("title") or resolved.get("show"),
-                    "year": resolved.get("year") or resolved.get("show_year"),
-                    "ids": {f: resolved.get(f) for f, _p in ID_PROPERTIES[kind]},
-                }
+                entry = _hold_entry(resolved, kind)
             disagree.append(dict(entry, rung=rung))
         for candidate in getattr(self._local, "scored", None) or []:
             for entry in disagree:
-                if candidate["id"] == entry["qid"] and (candidate.get("outcome") or "").startswith("accepted"):
+                if candidate["id"] == entry["tmdb"] and (candidate.get("outcome") or "").startswith("accepted"):
                     candidate["outcome"] = "resolved from %s, disagrees with %s" % (
                         entry["rung"],
-                        ", ".join(e["qid"] for e in disagree if e["qid"] != entry["qid"]),
+                        ", ".join("tmdb %s" % e["tmdb"] for e in disagree if e["tmdb"] != entry["tmdb"]),
                     )
                     break
         log.info(
             "the rungs disagree: %s",
-            "; ".join("%s resolves to %s (%s, %s)" % (e["rung"], e["label"], e["qid"], e["year"] or "no date")
+            "; ".join("%s resolves to %s (tmdb %s, %s)" % (e["rung"], e["label"], e["tmdb"], e["year"] or "no date")
                       for e in disagree),
         )
         resolved = dict(votes[0][3])
@@ -771,75 +568,50 @@ class Provider:
         score = best[0]
         entries = []
         for _score, resolved in (best, other):
-            entries.append({
-                "qid": resolved.get("qid"),
-                "label": resolved.get("title") or resolved.get("show"),
-                "year": resolved.get("year") or resolved.get("show_year"),
-                "ids": {f: resolved.get(f) for f, _p in ID_PROPERTIES[kind]},
-                "reading": resolved.get("reading"),
-            })
+            entries.append(dict(_hold_entry(resolved, kind), reading=resolved.get("reading")))
         for entry in entries:
             others = ", ".join(
-                "%s (%s)" % (e["qid"], e["reading"]) for e in entries if e is not entry
+                "tmdb %s (%s)" % (e["tmdb"], e["reading"]) for e in entries if e is not entry
             )
             for candidate in getattr(self._local, "scored", None) or []:
-                if candidate["id"] == entry["qid"] and candidate.get("reading") == entry["reading"]:
+                if candidate["id"] == entry["tmdb"] and candidate.get("reading") == entry["reading"]:
                     candidate["outcome"] = "tied at %.2f with %s" % (score, others)
         log.info(
             "the name resolves to %d entities at score %.2f across its readings: %s",
             len(entries), score,
-            "; ".join("%s (%s, %s)" % (e["qid"], e["year"], e["reading"]) for e in entries),
+            "; ".join("tmdb %s (%s, %s)" % (e["tmdb"], e["year"], e["reading"]) for e in entries),
         )
         tied = dict(best[1])
         tied["tied"] = entries
         return tied
 
-    #----- Wikidata search paths
     def _resolve_by_ids(self, pinned, name, year, kind):
-        qids = []
-        for field, prop in ID_PROPERTIES[kind]:
-            if not pinned.get(field):
+        found = []
+        if pinned.get("tmdb"):
+            found.append(str(pinned["tmdb"]))
+        for field in ID_FIELDS[kind]:
+            if field == "tmdb" or not pinned.get(field):
                 continue
-            #----- CirrusSearch matches a statement directly, so an id finds its entity without a name.
-            for qid in self.search_text("haswbstatement:%s=%s" % (prop, pinned[field])):
-                if qid not in qids:
-                    qids.append(qid)
-        if not qids:
-            log.info("no Wikidata entity carries %s", _describe(pinned))
+            for tmdb in self.find(kind, field, pinned[field]):
+                if tmdb not in found:
+                    found.append(tmdb)
+        candidates = [c for c in (self.candidate(kind, tmdb) for tmdb in found) if c]
+        if not candidates:
+            log.info("TMDb has no %s carrying %s", kind, _describe(pinned))
             return None
         name = name or ""
         _score, resolved = self._resolve_from(
-            "ids:%s" % _describe(pinned), self.labels(qids), name,
+            "ids:%s" % _describe(pinned), candidates, name,
             titles.normalise_for_match(name), year, set(), kind, cutoff=0.0, pinned=pinned,
         )
         return resolved
 
-    #----- Prefix hits already matched the whole string, so they are ordered by score but not cut;
-    #----- full-text hits matched on any word and must clear the cutoff.
     def _resolve_by_search(self, title, year, kind, subtitles=False):
-        if kind == "movie":
-            terms = _movie_search_terms(title, year)
-        else:
-            terms = ("%s (TV series)" % title, title)
-        wanted = titles.normalise_for_match(title)
-        seen = set()
-        best = (None, None)
-        for term in terms:
-            score, resolved = self._resolve_from(
-                term, self.search_entities(term), title, wanted, year, seen, kind, cutoff=0.0,
-                subtitles=subtitles,
-            )
-            best = _prefer(best, (score, resolved), kind)
-            if resolved is not None and not _missing(kind, resolved) and not resolved.get("tied"):
-                return score, resolved
-        qids = [q for q in self.search_text(title) if q not in seen]
-        if qids:
-            score, resolved = self._resolve_from(
-                "text:%s" % title, self.labels(qids), title, wanted, year, seen, kind,
-                cutoff=self.title_cutoff(), subtitles=subtitles,
-            )
-            best = _prefer(best, (score, resolved), kind)
-        return best
+        candidates = [c for c in (self.candidate(kind, tmdb) for tmdb in self.search(kind, title)) if c]
+        return self._resolve_from(
+            "search:%s" % title, candidates, title, titles.normalise_for_match(title), year, set(), kind,
+            cutoff=self.title_cutoff(), subtitles=subtitles,
+        )
 
     def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None,
                       subtitles=False):
@@ -852,7 +624,7 @@ class Provider:
                 title, wanted, candidate, contained=self.contained_score(), subtitles=subtitles,
             )
             log.debug(
-                "search %r: %s %r scored %.3f", term, candidate["id"],
+                "search %r: tmdb %s %r scored %.3f", term, candidate["id"],
                 candidate.get("label"), score,
             )
             candidate["score"] = score
@@ -888,17 +660,12 @@ class Provider:
             tied = []
             for tie_score, tie_resolved, tie_candidate in complete:
                 tie_candidate["outcome"] = "tied at %.2f with %s" % (
-                    tie_score, ", ".join(c["id"] for _s, _r, c in complete if c is not tie_candidate))
-                tied.append({
-                    "qid": tie_resolved.get("qid"),
-                    "label": tie_resolved.get("title") or tie_resolved.get("show"),
-                    "year": tie_resolved.get("year") or tie_resolved.get("show_year"),
-                    "ids": {f: tie_resolved.get(f) for f, _p in ID_PROPERTIES[kind]},
-                })
+                    tie_score, ", ".join("tmdb %s" % c["id"] for _s, _r, c in complete if c is not tie_candidate))
+                tied.append(_hold_entry(tie_resolved, kind))
             log.info(
                 "title %r resolves to %d entities at score %.2f on search %r: %s",
                 title, len(complete), score, term,
-                "; ".join("%s (%s)" % (t["qid"], t["year"]) for t in tied),
+                "; ".join("tmdb %s (%s)" % (t["tmdb"], t["year"]) for t in tied),
             )
             resolved = dict(resolved)
             resolved["tied"] = tied
@@ -919,137 +686,89 @@ class Provider:
             scored.append(candidate)
 
     def _accept_movie_hit(self, candidate, title, year, pinned=None):
-        entity = self.entity(candidate["id"])
-        ids = self.ids_from_entity(entity)
+        ids = _ids_of("movie", candidate["details"])
         candidate["ids"] = ids
         if not _carries(ids, pinned, candidate):
             candidate["outcome"] = "does not carry %s" % _describe(pinned)
             return None
-        #----- A pinned id outranks a year read off the disk;  the page check still applies.
+        #----- A pinned id outranks a year read off the disk.
         if not pinned and year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
             log.info(
-                "%s %r is a %s release, not %s, skipping",
+                "tmdb %s %r is a %s release, not %s, skipping",
                 candidate["id"], candidate.get("label"), ids["year"], year,
             )
             candidate["outcome"] = "released %s, not %s" % (ids["year"], year)
             return None
-        label = _label(entity) or title
-        names = _names(entity, label)
-        notes = []
-        if ids["tmdb"]:
-            ok, note = self.verify_tmdb("movie", ids["tmdb"], names, ids["year"])
-            if not ok:
-                log.info("tmdb %s did not confirm %r, skipping", ids["tmdb"], label)
-                candidate["outcome"] = "tmdb %s did not confirm the title" % ids["tmdb"]
-                return None
-            if note:
-                notes.append(note)
+        notes = _filled(ids, pinned, "movie")
         candidate["outcome"] = _accepted_outcome("movie", ids)
         return {
-            "title": label,
+            "title": candidate.get("label") or title,
             "year": ids["year"] or year,
             "tmdb": ids["tmdb"],
             "imdb": ids["imdb"],
-            "qid": candidate["id"],
             "notes": notes,
         }
 
     def _accept_show_hit(self, candidate, name, year, pinned=None):
-        entity = self.entity(candidate["id"])
-        ids = self.ids_from_entity(entity, kind="tv")
+        ids = _ids_of("tv", candidate["details"])
         candidate["ids"] = ids
         if not _carries(ids, pinned, candidate):
             candidate["outcome"] = "does not carry %s" % _describe(pinned)
             return None
         if not pinned and year and ids["year"] and abs(int(ids["year"]) - int(year)) > 1:
             log.info(
-                "%s %r started in %s, not %s, skipping",
+                "tmdb %s %r started in %s, not %s, skipping",
                 candidate["id"], candidate.get("label"), ids["year"], year,
             )
             candidate["outcome"] = "started in %s, not %s" % (ids["year"], year)
             return None
-        label = _label(entity) or name
-        names = _names(entity, label)
-        notes = []
-        tvdb = ids["tvdb"]
-        tvdb_from = "wikidata %s" % P_TVDB if tvdb else None
-        if tvdb:
-            ok, note = self.verify_tvdb(tvdb, names, ids["year"])
-            if not ok:
-                log.info("tvdb %s did not confirm show %r, skipping", tvdb, label)
-                candidate["outcome"] = "tvdb %s did not confirm the show" % tvdb
-                return None
-            if note:
-                notes.append(note)
-        elif ids["imdb"]:
-            tvdb = self.tvdb_from_imdb(ids["imdb"], names, ids["year"])
-            if tvdb:
-                tvdb_from = "imdb %s through the TVDB remote-id lookup" % ids["imdb"]
-                notes.append("tvdb %s found through %s" % (tvdb, tvdb_from))
-                candidate["ids"] = dict(ids, tvdb=tvdb)
-        tmdb = ids["tmdb"]
-        if tmdb:
-            ok, note = self.verify_tmdb("tv", tmdb, names, ids["year"], own_claim=True)
-            if not ok:
-                log.info("tmdb %s did not confirm show %r, dropped", tmdb, label)
-                notes.append("tmdb %s did not confirm the show and was dropped" % tmdb)
-                tmdb = None
-            elif note:
-                notes.append(note)
-        candidate["outcome"] = _accepted_outcome("tv", dict(ids, tvdb=tvdb, tmdb=tmdb))
+        tvdb_from = "tmdb external ids" if ids["tvdb"] else None
+        notes = _filled(ids, pinned, "tv")
+        if not tvdb_from and ids["tvdb"]:
+            tvdb_from = "the rung's own id"
+        candidate["outcome"] = _accepted_outcome("tv", ids)
         return {
-            "show": label,
+            "show": candidate.get("label") or name,
             "show_year": ids["year"] or year,
-            "tvdb": tvdb,
+            "tvdb": ids["tvdb"],
             "tvdb_from": tvdb_from,
-            "tmdb": tmdb,
-            "qid": candidate["id"],
+            "tmdb": ids["tmdb"],
             "notes": notes,
         }
 
-
     #----- The operator's choice, one selection per source
     def _resolve_operator(self, chosen, kind):
-        qid = str(chosen.get("qid") or "").strip()
-        if not qid:
+        match = str(chosen.get("match") or "").strip()
+        if not match:
             return _manual_identity(chosen, kind)
-        entity = self.entity(qid)
-        ids = self.ids_from_entity(entity, kind=kind)
-        label = _label(entity) or chosen.get("name")
+        candidate = self.candidate(kind, match)
+        found = (candidate or {}).get("details") or {}
+        ids = _ids_of(kind, found) if found else {f: None for f in ID_FIELDS[kind]}
+        label = (candidate or {}).get("label") or chosen.get("name")
         if not label:
-            log.info("operator choice %s names no entity and no title", qid or "(none)")
+            log.info("operator choice tmdb %s names no entity and no title", match)
             return None
-        names = _names(entity, label) or [label]
-        year = chosen.get("year") or ids["year"]
+        year = chosen.get("year") or ids.get("year")
         notes = ["identity chosen by the operator: %s" % _describe(
             {k: v for k, v in chosen.items() if v and k not in ("apply_to",)})]
-        result = {"qid": qid or None, "notes": notes}
-        for field, prop in ID_PROPERTIES[kind]:
+        result = {"notes": notes}
+        for field in ID_FIELDS[kind]:
             value = chosen.get(field) or ids.get(field)
             result[field] = str(value) if value else None
-            if not value:
-                continue
-            if chosen.get(field) and str(chosen.get(field)) != str(ids.get(field)):
-                notes.append("%s %s supplied by the operator, the entity carries %s" % (field, value, ids.get(field)))
-            if field == "imdb":
-                continue
-            if field == "tvdb":
-                ok, _note = self.verify_tvdb(value, names, None)
-            else:
-                ok, _note = self.verify_tmdb(kind, value, names, None)
-            notes.append("%s %s %s by its page" % (field, value, "confirmed" if ok else "not confirmed"))
+            if chosen.get(field) and ids.get(field) and str(chosen.get(field)) != str(ids.get(field)):
+                notes.append("%s %s supplied by the operator, TMDb carries %s" % (field, value, ids.get(field)))
         if kind == "movie":
             result.update({"title": label, "year": year})
         else:
             result.update({"show": label, "show_year": year,
-                           "tvdb_from": "operator" if chosen.get("tvdb") else ("wikidata %s" % P_TVDB if ids["tvdb"] else None)})
+                           "tvdb_from": "operator" if chosen.get("tvdb") else ("tmdb external ids" if ids.get("tvdb") else None)})
         return result
 
     #----- The best match for a hold the operator has to settle
     def hold_candidates(self, kind):
         scored = list(getattr(self._local, "scored", None) or [])
         searched = getattr(self._local, "searched", None) or {}
-        resolved_qid = getattr(self._local, "resolved_qid", None)
+        resolved_tmdb = getattr(self._local, "resolved_tmdb", None)
         entries = list(getattr(self._local, "hold_entries", None) or [])
         out = {"searched": searched, "guess": []}
         try:
@@ -1062,44 +781,22 @@ class Provider:
             known = {}
             for candidate in scored:
                 if candidate["id"] not in known:
-                    known[candidate["id"]] = self._seed_identity(candidate["id"], kind)
-            if resolved_qid and _complete_identity(known.get(resolved_qid), kind):
-                out["guess"] = [_guess_entry(known[resolved_qid], kind)]
+                    known[candidate["id"]] = _seed_identity(candidate, kind)
+            if resolved_tmdb and _complete_identity(known.get(resolved_tmdb), kind):
+                out["guess"] = [_guess_entry(known[resolved_tmdb], kind)]
                 return out
-            prop = P_TMDB if kind == "movie" else P_TMDB_TV
-            carried = {str(i["tmdb"]) for i in known.values() if i.get("tmdb")}
-            for tmdb in self._tmdb_search(kind, _reading_names(searched)):
-                if tmdb in carried:
-                    continue
-                carried.add(tmdb)
-                for qid in self.search_text("haswbstatement:%s=%s" % (prop, tmdb)):
-                    if qid not in known:
-                        known[qid] = self._seed_identity(qid, kind)
+            for name in _reading_names(searched):
+                for tmdb in self.search(kind, name):
+                    if tmdb in known:
+                        continue
+                    candidate = self.candidate(kind, tmdb)
+                    if candidate:
+                        known[tmdb] = _seed_identity(candidate, kind)
             out["guess"] = self._best_guess(list(known.values()), searched, kind)
         except ProviderError as exc:
             log.info("the best match is incomplete, a provider could not be reached: %s", exc)
             out["error"] = str(exc)
         return out
-
-    def _seed_identity(self, qid, kind):
-        entity = self.entity(qid)
-        ids = self.ids_from_entity(entity, kind=kind)
-        label = _label(entity)
-        identity = {
-            "qid": qid,
-            "title": label,
-            "year": ids.get("year"),
-            "names": _names(entity, label) if label else [],
-            "tmdb": ids.get("tmdb"),
-        }
-        if kind == "movie":
-            identity["imdb"] = ids.get("imdb")
-        else:
-            tvdb = ids.get("tvdb")
-            if not tvdb and ids.get("imdb"):
-                tvdb = (self.tvdb_by_imdb(ids["imdb"]) or {}).get("tvdb")
-            identity["tvdb"] = tvdb
-        return identity
 
     def _best_guess(self, identities, searched, kind):
         readings = [r for r in (searched.get("readings") or [searched]) if r.get("name")]
@@ -1126,79 +823,26 @@ class Provider:
         top = max(score for score, _identity in ranked)
         return [_guess_entry(identity, kind) for score, identity in ranked if score == top]
 
-    def _tmdb_search(self, kind, names):
-        found = []
-        for name in names:
-            status, body = self.client.fetch(TMDB_SEARCH % (kind, urllib.parse.quote_plus(name)))
-            if status != 200:
-                continue
-            for tmdb, _title, _date in TMDB_SEARCH_HIT.findall(body):
-                if tmdb not in found:
-                    found.append(tmdb)
-        return found
-
     #----- Television catalogue
-    def series_slug(self, tvdb_id):
-        final = self.client.final_url(TVDB_DEREFERRER % tvdb_id)
-        m = re.search(r"/series/([^/?#]+)", final)
-        if not m:
-            raise ProviderError("could not resolve a slug for tvdbid %s" % tvdb_id)
-        return m.group(1)
-
-    def episodes_for_order(self, slug, order="official"):
-        status, body = self.client.fetch(TVDB_SEASONS % (slug, order))
-        if status != 200:
-            return []
-        found = _catalogue_entries(EPISODE_LABEL.findall(body))
-        #----- allseasons omits season 0;  the specials sit on their own page as a plain table.
-        if not any(e["season"] == 0 for e in found):
-            status, body = self.client.fetch(TVDB_SPECIALS % (slug, order))
-            if status == 200:
-                specials = _catalogue_entries(SPECIAL_ROW.findall(body))
-                if specials:
-                    log.debug("%s %s: %d special(s) from the season 0 page", slug, order, len(specials))
-                found.extend(specials)
-        if found and not self._english_original(slug):
-            self._translate_titles(slug, order, found)
-        for entry in found:
-            entry.pop("href", None)
-        return found
-
-    def _english_original(self, slug):
-        status, body = self.client.fetch(TVDB_SERIES % slug)
-        if status != 200:
-            return True
-        m = TVDB_ORIGINAL_LANGUAGE.search(body)
-        if not m:
-            return True
-        return html.unescape(m.group(1)).strip().lower().startswith("english")
-
-    def _translate_titles(self, slug, order, entries):
-        translated = 0
-        for entry in entries:
-            href = entry.get("href")
-            if not href:
-                continue
-            status, body = self.client.fetch(urllib.parse.urljoin(TVDB_ROOT, href))
-            if status != 200:
-                continue
-            m = TVDB_ENG_TITLE.search(body)
-            title = html.unescape(m.group(1)).strip() if m else ""
-            if title:
-                entry["title"] = title
-                translated += 1
-        log.info(
-            "%s %s: %d of %d episode titles read from the English translation",
-            slug, order, translated, len(entries),
-        )
-
-    def all_orders(self, slug):
-        orders = {}
-        for order in ("official", "dvd", "absolute", "alternate"):
-            found = self.episodes_for_order(slug, order)
-            if found:
-                orders[order] = found
-        return orders
+    def episode_catalogue(self, tmdb_id):
+        found = self.details("tv", tmdb_id) or {}
+        numbers = sorted({
+            int(s["season_number"]) for s in found.get("seasons") or []
+            if s.get("season_number") is not None
+        })
+        catalogue = []
+        for number in numbers:
+            season = self.season(tmdb_id, number) or {}
+            for episode in season.get("episodes") or []:
+                if episode.get("episode_number") is None:
+                    continue
+                catalogue.append({
+                    "season": int(episode.get("season_number", number)),
+                    "episode": int(episode["episode_number"]),
+                    "title": str(episode.get("name") or "").strip(),
+                })
+        log.debug("tmdb %s: %d episode(s) across %d season(s)", tmdb_id, len(catalogue), len(numbers))
+        return catalogue
 
     def identify(self, row, container, kind):
         source = row["source_path"]
@@ -1220,7 +864,6 @@ class Provider:
                 "tvdb": resolved["tvdb"],
                 "tvdb_from": resolved.get("tvdb_from"),
                 "tmdb": resolved["tmdb"],
-                "qid": None,
                 "notes": list(resolved.get("notes") or []),
                 "match_method": "manual",
                 "match_score": None,
@@ -1230,8 +873,7 @@ class Provider:
                 "missing": [],
             }
 
-        slug = self.series_slug(resolved["tvdb"])
-        catalogue = self.episodes_for_order(slug, "official")
+        catalogue = self.episode_catalogue(resolved["tmdb"])
         if not catalogue:
             return None
 
@@ -1252,7 +894,7 @@ class Provider:
                 )
                 return {
                     "show": resolved["show"],
-                    "tvdb": resolved["tvdb"],
+                    "tmdb": resolved["tmdb"],
                     "unlisted": "S%02dE%02d" % (parsed["season"], parsed["first"]),
                 }
             if listed is not None:
@@ -1275,7 +917,6 @@ class Provider:
                 }
             how = "fallback-numbering"
 
-        warnings = self._order_warning(slug, catalogue)
         episode_last, episode_title, shared = episodemod.episode_range(source, entry, catalogue, max_range_span)
         notes = list(resolved.get("notes") or [])
         if not shared:
@@ -1293,32 +934,13 @@ class Provider:
             "tvdb": resolved["tvdb"],
             "tvdb_from": resolved.get("tvdb_from"),
             "tmdb": resolved["tmdb"],
-            "qid": resolved.get("qid"),
             "notes": notes,
             "match_method": how,
             "match_score": score,
-            "order_warnings": warnings,
+            "order_warnings": [],
             "identified_from": resolved.get("identified_from"),
             "missing": [],
         }
-
-    def _order_warning(self, slug, aired):
-        try:
-            orders = self.all_orders(slug)
-        except ProviderError:
-            return []
-        aired_counts = episodemod.season_counts(aired)
-        notes = []
-        for order, catalogue in orders.items():
-            if order == "official":
-                continue
-            counts = episodemod.season_counts(catalogue)
-            if counts != aired_counts:
-                notes.append(
-                    "%s order has per-season counts %s against aired %s"
-                    % (order, counts, aired_counts)
-                )
-        return notes
 
 
 #----- the trailing delimiter is a lookahead so two adjacent years both match.
@@ -1329,18 +951,6 @@ TITLE_WORD = "title word"
 
 
 #----- Name cleaning
-def _catalogue_entries(rows):
-    return [
-        {
-            "season": int(season),
-            "episode": int(episode),
-            "href": href,
-            "title": html.unescape(re.sub(r"<[^>]+>", "", title)).strip(),
-        }
-        for season, episode, href, title in rows
-    ]
-
-
 def _catalogue_entry(catalogue, season, episode):
     for entry in catalogue:
         if entry["season"] == season and entry["episode"] == episode:
@@ -1353,53 +963,67 @@ def _describe(ids):
     return " ".join("%s=%s" % (k, v) for k, v in ids.items())
 
 
-def _label(entity):
-    return ((entity.get("labels") or {}).get("en") or {}).get("value")
+def _label(kind, found):
+    if kind == "movie":
+        return found.get("title") or found.get("original_title")
+    return found.get("name") or found.get("original_name")
 
 
-def _names(entity, label):
-    aliases = [a.get("value") for a in (entity.get("aliases") or {}).get("en") or []]
-    return [n for n in [label] + aliases if n]
+def _aliases(kind, found):
+    label = _label(kind, found)
+    original = found.get("original_title" if kind == "movie" else "original_name")
+    alternative = (found.get("alternative_titles") or {}).get("titles" if kind == "movie" else "results") or []
+    out = []
+    for name in [original] + [a.get("title") for a in alternative if a.get("iso_3166_1") in ALIAS_COUNTRIES]:
+        if name and name != label and name not in out:
+            out.append(name)
+    return out
 
 
-def _page_identity(body):
-    m = PAGE_TITLE.search(body)
-    text = SITE_SUFFIX.sub("", html.unescape(m.group(1))) if m else ""
-    year = None
-    ym = PAGE_YEAR.search(text)
-    if ym:
-        year = int(ym.group(1))
-        text = text[: ym.start()]
-    eng = TVDB_ENG_TITLE.search(body)
-    if eng and html.unescape(eng.group(1)).strip():
-        text = html.unescape(eng.group(1))
-    return text.strip() or None, year
+def _ids_of(kind, found):
+    external = found.get("external_ids") or {}
+    if kind == "movie":
+        return {
+            "tmdb": str(found["id"]),
+            "imdb": found.get("imdb_id") or external.get("imdb_id") or None,
+            "year": _year(found.get("release_date")),
+        }
+    tvdb = external.get("tvdb_id")
+    return {
+        "tmdb": str(found["id"]),
+        "tvdb": str(tvdb) if tvdb else None,
+        "year": _year(found.get("first_air_date")),
+    }
 
 
-def _page_confirms(body, names, year, what, earlier_ok=False, cutoff=TITLE_CUTOFF, contained=CONTAINED_SCORE):
-    names = [n for n in names if n]
-    if not names:
-        return False, None
-    page_title, page_year = _page_identity(body)
-    best = 0.0
-    if page_title:
-        wanted = titles.normalise_for_match(page_title)
-        best = max(_name_score(page_title, wanted, n, contained) for n in names)
-        log.debug("%s page title %r scored %.3f against %s", what, page_title, best, names[0])
-    if year and page_year and abs(int(year) - page_year) > 1:
-        if earlier_ok and page_year < int(year) and best >= 1.0:
-            note = "%s is titled %r and first aired %s on its page against %s on Wikidata" % (
-                what, page_title, page_year, year)
-            log.info(note)
-            return True, note
-        log.info("%s is titled %r from %s, not %s", what, page_title, page_year, year)
-        return False, None
-    if best >= cutoff:
-        return True, None
-    #----- The body fallback uses the label alone;  a short alias like 'TFA' is found somewhere in any page.
-    needle = re.sub(r"[^a-z0-9]+", "", names[0].lower())
-    haystack = re.sub(r"[^a-z0-9]+", "", body.lower())
-    return needle in haystack, None
+def _filled(ids, pinned, kind):
+    notes = []
+    for field, value in (pinned or {}).items():
+        if field in ID_FIELDS[kind] and not ids.get(field):
+            ids[field] = str(value)
+            notes.append("%s %s from the rung, TMDb lists none" % (field, value))
+    return notes
+
+
+def _hold_entry(resolved, kind):
+    return {
+        "tmdb": resolved.get("tmdb"),
+        "label": resolved.get("title") or resolved.get("show"),
+        "year": resolved.get("year") or resolved.get("show_year"),
+        "ids": {f: resolved.get(f) for f in ID_FIELDS[kind]},
+    }
+
+
+def _seed_identity(candidate, kind):
+    ids = _ids_of(kind, candidate["details"])
+    identity = {
+        "title": candidate.get("label"),
+        "year": ids.get("year"),
+        "names": [n for n in [candidate.get("label")] + list(candidate.get("aliases") or []) if n],
+    }
+    for field in ID_FIELDS[kind]:
+        identity[field] = ids.get(field)
+    return identity
 
 
 def _missing(kind, resolved):
@@ -1416,7 +1040,7 @@ def _readings_tie(best, other, kind):
         return False
     if _missing(kind, best[1]) or _missing(kind, other[1]):
         return False
-    return best[1].get("qid") != other[1].get("qid")
+    return best[1].get("tmdb") != other[1].get("tmdb")
 
 
 def _searched_record(record, rung, readings):
@@ -1452,31 +1076,21 @@ def _prefer(best, other, kind):
 
 
 def _accepted_outcome(kind, ids):
-    lacking = [f for f, _p in ID_PROPERTIES[kind] if not ids.get(f)]
+    lacking = [f for f in ID_FIELDS[kind] if not ids.get(f)]
     if not ids.get("year"):
         lacking.append("year")
     return "accepted" if not lacking else "accepted, lacks %s" % ", ".join(lacking)
 
 
 def _carries(ids, pinned, candidate):
-    if not pinned:
-        return True
-    for field, value in pinned.items():
-        if str(ids.get(field)) != str(value):
+    for field, value in (pinned or {}).items():
+        if ids.get(field) and str(ids[field]) != str(value):
             log.info(
                 "%s %r carries %s=%s, not %s, skipping",
                 candidate["id"], candidate.get("label"), field, ids.get(field), value,
             )
             return False
     return True
-
-
-def _movie_search_terms(title, year):
-    terms = []
-    if year:
-        terms.append("%s (%s film)" % (title, year))
-    terms.append(title)
-    return terms
 
 
 def _name_score(title, wanted, name, contained=CONTAINED_SCORE):
@@ -1496,9 +1110,6 @@ def _name_score(title, wanted, name, contained=CONTAINED_SCORE):
 def _candidate_score(title, wanted, candidate, contained=CONTAINED_SCORE, subtitles=False):
     names = [candidate.get("label")]
     names.extend(candidate.get("aliases") or [])
-    match = candidate.get("match") or {}
-    if match.get("text"):
-        names.append(match["text"])
     names = [n for n in names if n]
     if subtitles:
         names += [part for n in names for part in _subtitles(n)]
@@ -1513,20 +1124,20 @@ def _candidate_score(title, wanted, candidate, contained=CONTAINED_SCORE, subtit
 def _complete_identity(identity, kind):
     if not identity or not identity.get("title") or not identity.get("year"):
         return False
-    return all(identity.get(field) for field, _prop in ID_PROPERTIES[kind])
+    return all(identity.get(field) for field in ID_FIELDS[kind])
 
 
 def _entry_identity(entry, kind):
     ids = entry.get("ids") or {}
-    identity = {"qid": entry.get("qid"), "title": entry.get("label"), "year": entry.get("year")}
-    for field, _prop in ID_PROPERTIES[kind]:
+    identity = {"title": entry.get("label"), "year": entry.get("year")}
+    for field in ID_FIELDS[kind]:
         identity[field] = ids.get(field)
     return identity
 
 
 def _guess_entry(identity, kind):
-    entry = {"qid": identity.get("qid"), "title": identity.get("title"), "year": identity.get("year")}
-    for field, _prop in ID_PROPERTIES[kind]:
+    entry = {"title": identity.get("title"), "year": identity.get("year")}
+    for field in ID_FIELDS[kind]:
         entry[field] = identity.get(field)
     return entry
 
@@ -1548,12 +1159,12 @@ def _manual_identity(chosen, kind):
     notes = ["identity entered by the operator: %s" % _describe(entered)]
     if kind == "movie":
         return {
-            "qid": None, "manual": True, "notes": notes,
+            "manual": True, "notes": notes,
             "title": name, "year": year,
             "tmdb": chosen.get("tmdb") or None, "imdb": chosen.get("imdb") or None,
         }
     return {
-        "qid": None, "manual": True, "notes": notes,
+        "manual": True, "notes": notes,
         "show": name, "show_year": year,
         "tvdb": chosen.get("tvdb") or None, "tmdb": chosen.get("tmdb") or None,
         "tvdb_from": "operator" if chosen.get("tvdb") else None,

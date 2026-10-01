@@ -238,6 +238,8 @@ class Handler(BaseHTTPRequestHandler):
                 finding_id = int(m[3])
             except ValueError:
                 return self._json(400, {"error": "bad finding id"})
+            if not self.app.settings.tmdb_key_set():
+                return self._json(409, {"error": KEY_WAIT})
             try:
                 result = self.app.orchestrator.import_finding(finding_id)
             except ValueError as exc:
@@ -248,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
                 title_id = int(m[3])
             except ValueError:
                 return self._json(400, {"error": "bad title id"})
+            if not self.app.settings.tmdb_key_set():
+                return self._json(409, {"error": KEY_WAIT})
             action = (body.get("action") or "").lower()
             try:
                 result = self.app.decide(title_id, action, body)
@@ -324,14 +328,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, fh.read(), content_type, cache=cache)
 
 
+KEY_WAIT = "the pipeline waits for a TMDb API key"
+
 ID_SHAPES = {
-    "qid": re.compile(r"^Q\d+$"),
+    "match": re.compile(r"^\d+$"),
     "tvdb": re.compile(r"^\d+$"),
     "tmdb": re.compile(r"^\d+$"),
     "imdb": re.compile(r"^tt\d+$"),
     "year": re.compile(r"^(19|20)\d{2}$"),
 }
-ID_FIELDS = {"movie": ("qid", "tmdb", "imdb", "year"), "tv": ("qid", "tvdb", "tmdb", "year")}
+ID_FIELDS = {"movie": ("match", "tmdb", "imdb", "year"), "tv": ("match", "tvdb", "tmdb", "year")}
 
 
 def _chosen_identity(kind, body):
@@ -348,7 +354,7 @@ def _chosen_identity(kind, body):
     name = str(body.get("name") or "").strip()
     if name:
         chosen["name"] = name
-    if chosen.get("qid"):
+    if chosen.get("match"):
         return chosen
     #----- With no entity the operator supplies the whole identity.
     missing = [] if name else ["title" if kind == "movie" else "show"]
@@ -424,7 +430,8 @@ class WebUI:
         if not body.get("reset") and not body.get("set"):
             raise ValueError("nothing to change, pass set or reset")
         for key, old, new in changed:
-            log.info("setting %s changed %s -> %s by %s", key, old, new, actor)
+            log.info("setting %s changed %s -> %s by %s", key,
+                     self.settings.display(key, old), self.settings.display(key, new), actor)
         self.orchestrator.apply_settings(changed)
         view = self.settings_view()
         view["changed"] = [k for k, _o, _n in changed]

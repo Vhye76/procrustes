@@ -160,6 +160,8 @@ class Orchestrator:
         self._imports = {}
         self._imports_lock = threading.Lock()
         self._fresh_lookups = set()
+        self._ready_seen = None
+        self._ready_lock = threading.Lock()
         self.auditor = audit.Auditor(cfg, layout, store, self.stop_event, settings=settings)
 
     #----- Lifecycle
@@ -419,16 +421,28 @@ class Orchestrator:
         log.info("operator reordered the queue: %s", ", ".join(str(i) for i in ordered))
         return ordered
 
+    def ready(self):
+        ready = self.settings.tmdb_key_set()
+        with self._ready_lock:
+            if ready != self._ready_seen:
+                self._ready_seen = ready
+                if ready:
+                    log.info("TMDb API key set, the pipeline runs")
+                else:
+                    log.warning("no TMDb API key set, the pipeline waits;  set it on the Application Settings page")
+        return ready
+
     def _watch(self):
         while not self.stop_event.is_set():
-            try:
-                self.scan()
-            except Exception:
-                log.exception("import scan failed")
-            try:
-                self.requeue_retries()
-            except Exception:
-                log.exception("retry sweep failed")
+            if self.ready():
+                try:
+                    self.scan()
+                except Exception:
+                    log.exception("import scan failed")
+                try:
+                    self.requeue_retries()
+                except Exception:
+                    log.exception("retry sweep failed")
             if time.time() - self._reclaimed_at >= self.settings.get("job_reclaim_interval"):
                 try:
                     self.reclaim_jobs()
@@ -577,6 +591,9 @@ class Orchestrator:
     def _assess_worker(self, index=0):
         #----- the target is checked between titles, so a shrink never interrupts one.
         while not self.stop_event.is_set() and self.pools.wanted(ASSESS, index):
+            if not self.ready():
+                self.stop_event.wait(1)
+                continue
             title_id = self._claim(ASSESS)
             if title_id is None:
                 self.stop_event.wait(1)
@@ -589,6 +606,9 @@ class Orchestrator:
 
     def _work_worker(self, pool, index=0):
         while not self.stop_event.is_set() and self.pools.wanted(pool, index):
+            if not self.ready():
+                self.stop_event.wait(1)
+                continue
             title_id = self._claim(pool)
             if title_id is None:
                 self.stop_event.wait(1)
@@ -825,7 +845,7 @@ class Orchestrator:
             #----- every entry from one rung is a tie inside that rung.
             if len(rungs) == 1:
                 names = ", ".join(
-                    "%s (%s)" % (e.get("qid"), e.get("year") or "no date") for e in entries
+                    "tmdb %s (%s)" % (e.get("tmdb"), e.get("year") or "no date") for e in entries
                 )
                 if len({e.get("reading") for e in entries}) > 1:
                     cause = "the year in the name reads as either the release year or a title word"
@@ -837,25 +857,25 @@ class Orchestrator:
                 )
             else:
                 problem = "the rungs disagree: %s; an ID is never guessed" % "; ".join(
-                    "%s resolves to %s (%s, %s)" % (
-                        e["rung"], e.get("label"), e.get("qid"), e.get("year") or "no date")
+                    "%s resolves to %s (tmdb %s, %s)" % (
+                        e["rung"], e.get("label"), e.get("tmdb"), e.get("year") or "no date")
                     for e in entries
                 )
             identity = None
         elif identity and identity.get("unlisted"):
             problem = (
-                "resolved tvdb %s (%s) but no episode title matched and the file's bare number %s "
+                "resolved tmdb %s (%s) but no episode title matched and the file's bare number %s "
                 "is not in the episode list; an episode is never guessed"
-                % (identity.get("tvdb"), identity.get("show"), identity["unlisted"])
+                % (identity.get("tmdb"), identity.get("show"), identity["unlisted"])
             )
             identity = None
         elif identity and identity.get("missing"):
             if identity.get("manual"):
                 problem = "the entered identity lacks %s" % ", ".join(identity["missing"])
             else:
-                anchor = "tmdb %s" % identity.get("tmdb") if kind == "movie" else "tvdb %s" % identity.get("tvdb")
+                anchor = "tmdb %s" % identity.get("tmdb")
                 problem = (
-                    "resolved %s (%s) but %s could not be determined from the Wikidata entity; "
+                    "resolved %s (%s) but %s could not be determined from TMDb; "
                     "an ID is never guessed"
                     % (anchor, identity.get("title") or identity.get("show"), ", ".join(identity["missing"]))
                 )
@@ -874,11 +894,7 @@ class Orchestrator:
 
     def _poster_url(self, kind, identity):
         try:
-            url = self.provider.tmdb_poster(kind, identity.get("tmdb"))
-            if url:
-                return url
-            if kind == "tv":
-                return self.provider.tvdb_poster(identity.get("tvdb"))
+            return self.provider.poster(kind, identity.get("tmdb"))
         except Exception as exc:
             log.debug("poster url lookup failed: %s", exc)
         return None
@@ -1876,6 +1892,7 @@ class Orchestrator:
                 "free_bytes": self.layout.encode_free_bytes(),
             },
             "libraries_mounted": bool(self.layout.libraries),
+            "tmdb_key_set": self.settings.tmdb_key_set(),
             "audit": self.auditor.status(),
             "config": self.cfg.as_dict(),
             "settings": self.settings.as_dict(),

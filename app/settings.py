@@ -43,7 +43,8 @@ class SettingsError(ValueError):
 
 class Setting:
     def __init__(self, key, group, label, help, type, default, per_kind=False,
-                 minimum=None, maximum=None, choices=None, pattern=None, step=None):
+                 minimum=None, maximum=None, choices=None, pattern=None, step=None,
+                 secret=False, check=None):
         self.key = key
         self.group = group
         self.label = label
@@ -56,6 +57,8 @@ class Setting:
         self.choices = choices
         self.pattern = pattern
         self.step = step
+        self.secret = secret
+        self.check = check
 
     def storage_keys(self):
         if self.per_kind:
@@ -81,6 +84,7 @@ class Setting:
             "choices": list(self.choices) if self.choices else None,
             "pattern": self.pattern,
             "step": self.step,
+            "secret": self.secret,
         }
 
 
@@ -311,9 +315,12 @@ SETTINGS = (
     Setting("range_duration_ratio", "matching", "Range duration ratio",
             "A single-numbered library episode this many times its season's median length, with no next episode beside it, is listed as two episodes in one file.",
             "float", audit.RANGE_DURATION_RATIO, minimum=1.2, maximum=3.0, step=0.1),
+    Setting("tmdb_api_key", "matching", "TMDb API key",
+            "The API Key or the API Read Access Token from a TMDb account;  nothing in the pipeline runs without it.",
+            "str", "", secret=True, check=providermod.check_key),
     Setting("provider_throttle_s", "matching", "Provider throttle",
-            "Seconds between requests to Wikidata, TMDB and TVDB.",
-            "float", providermod.THROTTLE_SECONDS, minimum=0.0, maximum=60.0, step=0.5),
+            "Seconds between requests to TMDb.",
+            "float", providermod.THROTTLE_SECONDS, minimum=0.0, maximum=60.0, step=0.05),
     Setting("provider_timeout_s", "matching", "Provider timeout",
             "Seconds a provider request may take before it counts as unreachable.",
             "int", providermod.TIMEOUT, minimum=5, maximum=300),
@@ -524,9 +531,21 @@ class Settings:
                 return self._values[storage_key]
         return setting.default_for(kind)
 
+    def tmdb_key_set(self):
+        return bool(str(self.get("tmdb_api_key") or "").strip())
+
+    def display(self, storage_key, value):
+        key, _kind = _split(storage_key)
+        setting = BY_KEY.get(key)
+        if setting is not None and setting.secret:
+            return "set" if value else "unset"
+        return value
+
     def _resolved(self, kind):
         out = {}
         for setting in SETTINGS:
+            if setting.secret:
+                continue
             out[setting.key] = self.get(setting.key, kind if setting.per_kind else None)
         return out
 
@@ -581,6 +600,14 @@ class Settings:
                     staged[key] = _coerce(setting, value)
                 except ValueError as exc:
                     errors[key] = str(exc)
+        if errors:
+            raise SettingsError(errors)
+        for storage_key, value in staged.items():
+            setting = BY_KEY[_split(storage_key)[0]]
+            if setting.check and value and value != self._values.get(storage_key):
+                problem = setting.check(value)
+                if problem:
+                    errors[storage_key] = problem
         if errors:
             raise SettingsError(errors)
 
@@ -660,6 +687,10 @@ class Settings:
                         kind: "stored" if "%s.%s" % (setting.key, kind) in stored else "default"
                         for kind in KINDS
                     }
+                elif setting.secret:
+                    row["value"] = ""
+                    row["is_set"] = bool(stored.get(setting.key))
+                    row["source"] = "stored" if setting.key in stored else "default"
                 else:
                     row["value"] = stored.get(setting.key, setting.default)
                     row["source"] = "stored" if setting.key in stored else "default"
@@ -673,7 +704,7 @@ class Settings:
             if setting.per_kind:
                 out[setting.key] = {kind: self.get(setting.key, kind) for kind in KINDS}
             else:
-                out[setting.key] = self.get(setting.key)
+                out[setting.key] = self.display(setting.key, self.get(setting.key))
         return out
 
     def banner(self):
@@ -690,7 +721,7 @@ class Settings:
                     lines.append("%-*s %s %s" % (width, storage_key, mark, _fmt(self.get(setting.key, kind))))
             else:
                 mark = "*" if setting.key in stored else " "
-                lines.append("%-*s %s %s" % (width, setting.key, mark, _fmt(self.get(setting.key))))
+                lines.append("%-*s %s %s" % (width, setting.key, mark, _fmt(self.display(setting.key, self.get(setting.key)))))
         return "\n".join(lines)
 
 

@@ -424,8 +424,14 @@ class Auditor:
         with self._lock:
             self._status.update(fields)
 
+    def _ready(self):
+        return self.settings is None or self.settings.tmdb_key_set()
+
     def _run(self):
         while not self.stop_event.is_set():
+            if not self._ready():
+                self.stop_event.wait(5)
+                continue
             self._wake.clear()
             try:
                 self._sweep()
@@ -456,7 +462,7 @@ class Auditor:
         seen = []
         assessed = 0
         for kind, path in files:
-            if self.stop_event.is_set() or self._restart.is_set():
+            if self.stop_event.is_set() or self._restart.is_set() or not self._ready():
                 break
             seen.append(path)
             try:
@@ -490,7 +496,7 @@ class Auditor:
             if self.stop_event.wait(self.cfg.audit_interval):
                 break
         #----- an interrupted pass has not seen every file, so it must not prune the ones it missed.
-        interrupted = self.stop_event.is_set() or self._restart.is_set()
+        interrupted = self.stop_event.is_set() or self._restart.is_set() or not self._ready()
         removed = self.store.audit_forget_missing(seen) if not interrupted else 0
         listed = self._folder_phase() if not interrupted else 0
         self._set(running=False, finished_at=time.time(), current=None)

@@ -209,6 +209,7 @@
   <h1>procrustes</h1>
   <span class="pill" id="dry"></span>
   <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
+  <span class="pill warn" id="nokey" style="display:none">NO TMDB KEY</span>
   <div id="menu">
     <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
@@ -559,6 +560,7 @@ async function refresh() {
           s.libraries_mounted ? "" : "warn");
   pill($("dry"), s.config.DRY_RUN ? "DRY RUN" : "", s.config.DRY_RUN ? "warn" : "");
   $("dry").style.display = s.config.DRY_RUN ? "" : "none";
+  $("nokey").style.display = s.tmdb_key_set ? "none" : "";
   authPill(s);
 
   const prog = s.progress || {};
@@ -751,7 +753,7 @@ function identifyPanel(t) {
   h += guess.length ? guess.map((g, i) => `<label class="opt">
       <input type="radio" name="idn-pick" value="g${i}" ${guess.length === 1 ? "checked" : ""} onchange="idnChanged()">
       <span class="ttl">${esc(g.title)} (${esc(g.year)})</span>
-      <span class="ids">${esc(ID_FIELDS[t.kind].map(f => f + " " + g[f]).join("   "))}   ${esc(g.qid)}</span>
+      <span class="ids">${esc(ID_FIELDS[t.kind].map(f => f + " " + g[f]).join("   "))}</span>
     </label>`).join("")
     : `<div class="empty">No complete match found.</div>`;
   if (c.error) h += `<div class="empty">The best match is incomplete, a provider could not be reached: ${esc(c.error)}</div>`;
@@ -802,7 +804,7 @@ async function identify() {
   let body = null;
   if (picked.startsWith("g")) {
     const g = IDN.guess[Number(picked.slice(1))];
-    body = {qid: g.qid, year: String(g.year || "")};
+    body = {match: g.tmdb, year: String(g.year || "")};
     for (const f of ID_FIELDS[IDN.kind]) body[f] = g[f];
   } else if (picked === "manual" && idnManualOk()) {
     body = {};
