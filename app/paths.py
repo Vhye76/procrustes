@@ -11,7 +11,7 @@ log = logging.getLogger("paths")
 RECLAIM_PREFIX = ".reclaim-"
 
 
-#----- Every size a person reads is GB to two decimals;  the API and the store keep bytes.
+#----- A size in a log line or an error message is GB to two decimals;  the API and the store keep bytes.
 def gb(n):
     return "%.2f GB" % (float(n or 0) / 1e9)
 
@@ -149,6 +149,12 @@ class Layout:
 
     def root_free_bytes(self):
         return shutil.disk_usage(self.media_root).free
+
+    def library_free_bytes(self, kind):
+        try:
+            return shutil.disk_usage(self.libraries[kind]).free
+        except OSError:
+            return None
 
     def has_headroom(self, source_bytes, headroom):
         need = int(source_bytes * float(headroom))

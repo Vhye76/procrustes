@@ -1892,6 +1892,10 @@ class Orchestrator:
                 "free_bytes": self.layout.encode_free_bytes(),
             },
             "libraries_mounted": bool(self.layout.libraries),
+            "libraries": {
+                kind: {"path": root, "free_bytes": self.layout.library_free_bytes(kind)}
+                for kind, root in self.layout.libraries.items()
+            },
             "tmdb_key_set": self.settings.tmdb_key_set(),
             "audit": self.auditor.status(),
             "config": self.cfg.as_dict(),

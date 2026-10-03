@@ -170,7 +170,7 @@ stat -c %g /dev/dri/renderD128
 
 ## Settings
 
-Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard (the Access group on the User Settings page, and the Minimum standards group on the Minimum Standards page, instead), read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
+Everything that is not a deployment detail is a setting:  stored in a 'settings' table in 'state.db', edited on the Application Settings page under the menu at the top right of the dashboard (the Access group on the User Settings page, and the Media standards group on the Media Standards page, instead), read by the pipeline at the point of use, and echoed into the log at startup with a mark on every stored value.  A setting nobody has changed is its default, and the defaults are the standards this pipeline was built on, so a fresh 'state.db' runs exactly as the reference configuration does.
 
 Every setting under Encoding except the passthrough codec list and the Dolby Vision VBV figure has one value for movies and one for television, and so do the grain threshold and the display and runtime floors.  The rest are global.
 
@@ -206,11 +206,11 @@ Every setting under Encoding except the passthrough codec list and the Dolby Vis
 | Probes | crop_sample_count, crop_sample_seconds, crop_sample_attempts | 6, 2, 12 | cropdetect sampling |
 | Probes | crop_black_level_factor, crop_black_level_cap | 1.5, 0.13 | the cropdetect limit from the measured black |
 | Probes | crop_secondary_share | 0.06 | share of samples at which a second geometry is a variable aspect |
-| Minimum standards | every rule | see Minimum Standards below | on the Minimum Standards page |
-| Minimum standards | class_720_width, class_720_height | 1100, 700 | display width or height at which a file is at least 720p;  below every class it is SD |
-| Minimum standards | class_1080_width, class_1080_height | 1600, 900 | the same for 1080p |
-| Minimum standards | class_2160_width, class_2160_height | 3200, 1800 | the same for 2160p |
-| Minimum standards | keep_langs | eng, en, und | audio and subtitle languages kept at ingest |
+| Media standards | every rule | see Minimum Standards below | on the Media Standards page |
+| Media standards | class_720_width, class_720_height | 1100, 700 | display width or height at which a file is at least 720p;  below every class it is SD |
+| Media standards | class_1080_width, class_1080_height | 1600, 900 | the same for 1080p |
+| Media standards | class_2160_width, class_2160_height | 3200, 1800 | the same for 2160p |
+| Media standards | keep_langs | eng, en, und | audio and subtitle languages kept at ingest |
 | Comparison | pixel_tolerance, bitrate_tolerance | 0.05, 0.25 | below these differences gates 2, 3 and 6 cast no vote |
 | Comparison | codec_efficiency | h264 1.0, hevc 1.7, av1 2.2, vc1 0.9, mpeg4 0.7, mpeg2video 0.45 | bitrate weighting per codec |
 | Comparison | edition_runtime_tolerance_s | 30 | runtime difference under which a name-claimed edition is the same cut |
@@ -228,7 +228,7 @@ The page posts every changed value in one request and nothing is written unless 
 
 ## Minimum Standards
 
-Every column of the Library Quality Report can carry a rule, and the rules are the Minimum Standards page under the menu.  Each rule is one row:  what it measures, how the file's figure is compared with the standard (fixed per rule), the standard itself, and an Ignore box.  An ignored rule still has its figure measured and shown;  it only stops highlighting and gating.  Rules apply to movies and television alike, except the display and runtime floors, which are named rows per kind.
+Every column of the Library Quality Report can carry a rule, and the rules are the Media Standards page under the menu.  Each rule is one row:  what it measures, how the file's figure is compared with the standard (fixed per rule), the standard itself, and an Ignore box.  An ignored rule still has its figure measured and shown;  it only stops highlighting and gating.  Rules apply to movies and television alike, except the display and runtime floors, which are named rows per kind.
 
 A rule is either repairable or not.  A repairable rule is one the pipeline corrects on the way through without an encode, so a library file that breaks it is red in the report and carries an Import action.  Every other rule is a standard:  a library file that breaks it is yellow, and a new arrival that breaks it holds at SCREENED, forceable like any other hold.
 
@@ -275,7 +275,7 @@ An HDR source that reaches an encoder carries its colour, mastering display and 
 
 Gate 5 is the one that can produce an encoder the table does not name.  At startup 'vainfo' must report VAProfileAV1Profile0 with the encode entrypoint, and records VAProfileHEVCMain10 beside it;  a failed probe does not crash the container, it marks the GPU degraded, gate 5 then routes to libsvtav1 on the CPU instead of av1_qsv, and gates 6 and 7 fall back to the CPU when the HEVC profile is missing.  At the hevc default a degraded GPU changes nothing at all, which is the point:  the GPU cannot break the pipeline.  Every encode logs which encoder actually ran, so a GPU that has quietly stopped being used is visible rather than silent.
 
-SD is the resolution class below 720p on the Minimum Standards page:  a display width under 'class_720_width' and a display height under 'class_720_height', computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions, and a 720p source wider than 16:9 is HD.
+SD is the resolution class below 720p on the Media Standards page:  a display width under 'class_720_width' and a display height under 'class_720_height', computed from width times SAR over height, so an anamorphic PAL DVD rip is classified on what it actually displays rather than on its stored dimensions, and a 720p source wider than 16:9 is HD.
 
 Passthrough means no video re-encode.  It does not mean no processing.  A passthrough title is still remuxed to Matroska, language stripped, flag corrected, tagged and given track statistics.  An SD AVI rip arriving in 'complete/' still as an .avi would be a bug.
 
@@ -379,7 +379,7 @@ A login in front of everything.  The first visit to a fresh store asks 'Require 
 ```
 GET  /                            dashboard, or the login form without a session
 GET  /settings                    Application Settings, likewise
-GET  /standards                   Minimum Standards, likewise
+GET  /standards                   Media Standards, likewise
 GET  /report                      the Library Quality Report, likewise
 GET  /account                     User Settings, likewise
 GET  /api/health                  {ok, version}, the only status readable without a session;  the Docker healthcheck
@@ -402,7 +402,7 @@ GET  /api/status                  version, config, GPU state, encode space, stag
                                   the assessment queue and each encoder pool's queue, active
                                   threads per pool, uptime, audit status, whether authentication is
                                   on and who is signed in, and for every running encode its frame,
-                                  total_frames, fps and eta_s
+                                  total_frames, fps and eta_s, and free space per mounted library
 GET  /api/titles                  up to 1000 titles, newest updated_at first, each with its queue_position,
                                   locked and slot
 POST /api/queue                   {"order": [{"id": n} | {"show": name}, ...]}, the whole unlocked queue in the
@@ -421,7 +421,7 @@ POST /api/audit/<id>/import       copy that file into import/ for repair, in the
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-A menu at the top right, behind a hamburger, carries the output codec per kind, the GPU state, free space in the encode area and whether a library is mounted, then Application Settings, Minimum Standards, User Settings and Sign out;  each page's menu links the others.  A DRY_RUN badge stays in the header itself, and an AUTH OFF badge beside it while authentication is off.
+The header on every page carries two groups of pills.  Left, after the page name:  the output codec per kind, the GPU state, free space in the encode area, whether a library is mounted, and free space on the movie library and the TV library, each shown only while that library is mounted.  Right, beside the menu button:  DRY RUN while DRY_RUN is set, NO TMDB KEY on the dashboard while no key is saved, and AUTH OFF while authentication is off.  A size on a page is whole GB, rounded down.  The menu behind the hamburger carries Application Settings, User Settings, Media Standards and Sign out;  each page's menu links the others.
 
 User Settings opens with the Access group:  the authentication switch, which asks for the current password or a fresh code before it turns off, and the session lifetime.  Below it, for the signed-in account:  the login mode as three options with any option the account cannot satisfy yet greyed out and the reason beside it, a password change, the authenticator with Enrol (a QR code and the secret as text, confirmed by the first code) or Remove, and the user list with Add and Remove.
 

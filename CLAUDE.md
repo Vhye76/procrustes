@@ -80,7 +80,7 @@ Admission control requires roughly 'encode_headroom' times the source size free 
 
 ## 5.  Configuration
 
-TWO SURFACES, BY WHAT THEY DESCRIBE.  The environment is the deployment surface, read once at startup, validated, and echoed into the log and onto '/api/status'.  Everything the pipeline decides with is a setting:  stored in the 'settings' table in 'state.db', edited on the Application Settings or Minimum Standards page, read at the point of use, and echoed into the log at startup with a mark on every stored value.
+TWO SURFACES, BY WHAT THEY DESCRIBE.  The environment is the deployment surface, read once at startup, validated, and echoed into the log and onto '/api/status'.  Everything the pipeline decides with is a setting:  stored in the 'settings' table in 'state.db', edited on the Application Settings or Media Standards page, read at the point of use, and echoed into the log at startup with a mark on every stored value.
 
 ```
 MEDIA_ROOT           /media            required rw, the one mount everything derives from
@@ -111,7 +111,7 @@ ELEVEN VARIABLES ARE NOT READ FROM THE ENVIRONMENT AT ALL.  'config.REMOVED' nam
 
 'app/settings.py' IS THE ONE REGISTRY.  'SETTINGS' declares every setting once:  key, group, label, one sentence of help, type (int, float, bool, str, choice, list, table), default, whether it is per kind, and its bounds, choices or pattern.  The default of a setting that replaced a module constant is that constant.  README.md carries the table.
 
-A GROUP NAMES THE PAGE THAT RENDERS IT.  Each 'GROUPS' entry carries a page, 'settings', 'standards' or 'account', and 'describe()' emits it.  'settings.html' serves both '/settings' and '/standards' and filters groups by the page its path names.  The Minimum standards group renders on Minimum Standards only, as section 7's rule rows.  The Access group ('auth_enabled', 'session_hours') renders on User Settings only.  'auth_enabled' has one write route, 'POST /api/account/auth';  'Settings.update' and 'reset' refuse it from '/api/settings' with 'set from the User Settings page', and 'Auth' writes it with 'internal=True'.
+A GROUP NAMES THE PAGE THAT RENDERS IT.  Each 'GROUPS' entry carries a page, 'settings', 'standards' or 'account', and 'describe()' emits it.  'settings.html' serves both '/settings' and '/standards' and filters groups by the page its path names.  The Media standards group renders on Media Standards only, as section 7's rule rows.  The Access group ('auth_enabled', 'session_hours') renders on User Settings only.  'auth_enabled' has one write route, 'POST /api/account/auth';  'Settings.update' and 'reset' refuse it from '/api/settings' with 'set from the User Settings page', and 'Auth' writes it with 'internal=True'.
 
 A PER-KIND SETTING HAS ONE VALUE FOR MOVIES AND ONE FOR TELEVISION, stored as 'key.movie' and 'key.tv'.  Everything under Encoding is per kind except 'passthrough_codecs' and 'x265_dv_vbv_kbps', and so are the grain threshold and the display and runtime floors.  'Settings.profile(kind)' resolves one kind into a flat dict, adds the derived 'threads_per_job', and is what the orchestrator hands to 'encode', 'standards', 'compare', 'media', 'probe' and 'tags', which take the figures as parameters and never read the settings object.  'provider.Provider' and 'provider.Client' hold the settings object and read per call.
 
@@ -873,7 +873,7 @@ EVERY MODULE LOGS WHAT IT DOES, and that is not shaped by testing.  Two tiers, s
 - 'info', the default.  What happened.  One line per meaningful action naming the title, the stage and the outcome, and why when a stage fails or degrades.  No command lines, no arithmetic, no per-gate working, no chatter for steps that cannot fail.
 - 'debug'.  Why.  Full command lines, per-gate comparisons, candidate scoring, measured figures against their thresholds, derived geometry, raw tool output.
 
-Logs go to stdout and to 'config/logs/procrustes.log', and the tail is served at '/api/logs'.  Every log line carries the title id where one exists.  A SIZE A PERSON READS IS GB TO TWO DECIMALS, in a log line, an error message or a page, through 'paths.gb' server side and the pages' 'gb()';  the API and the store carry bytes.
+Logs go to stdout and to 'config/logs/procrustes.log', and the tail is served at '/api/logs'.  Every log line carries the title id where one exists.  A SIZE A PERSON READS IN A LOG LINE OR AN ERROR MESSAGE IS GB TO TWO DECIMALS, through 'paths.gb';  A SIZE ON A PAGE IS WHOLE GB ROUNDED DOWN, through the pages' 'gb()';  the API and the store carry bytes.
 
 A POLL THAT FINDS NOTHING NEW IS NOT AN ACTION.  The watcher's 'already claims this path' line is a debug line.  ENCODED and VERIFIED each emit an info line carrying the same outcome text they write into the stage history.
 

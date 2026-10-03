@@ -15,7 +15,7 @@ GROUPS = (
     ("pipeline", "Pipeline", "settings"),
     ("encoding", "Encoding", "settings"),
     ("probes", "Probes", "settings"),
-    ("standards", "Minimum standards", "standards"),
+    ("standards", "Media standards", "standards"),
     ("comparison", "Comparison", "settings"),
     ("matching", "Matching and provider", "settings"),
     ("access", "Access", "account"),
