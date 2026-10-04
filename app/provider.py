@@ -37,6 +37,7 @@ MANUAL_REQUIRED = {
     "tv": ("show", "show_year", "season", "episode", "episode_title"),
 }
 ABBREVIATION_DROPPED = "abbreviation dropped"
+TRAILING_DROPPED = "trailing words dropped"
 SUBTITLE_SPLIT = re.compile(r"\s*:\s*|\s+-\s+|\s*[–—]\s*")
 
 TMDB_API = "https://api.themoviedb.org/3"
@@ -332,7 +333,8 @@ class Provider:
         if resolved is not None and resolved.get("manual"):
             resolved["edition"] = None
         elif resolved is not None:
-            resolved["edition"] = _edition_of(source, origin)
+            resolved["edition"] = _edition_of(
+                source, origin, removed=resolved.get("reading") == EDITION_REMOVED)
             if resolved["edition"]:
                 log.info("edition %r read from the arrival name", resolved["edition"])
         return resolved
@@ -515,13 +517,19 @@ class Provider:
             resolved.pop("searched_name", None)
         if resolved is not None and not _missing(kind, resolved):
             return resolved
+        retry = self._abbreviations_dropped(readings, kind, rung)
+        if retry is None:
+            retry = self._trailing_dropped(readings, kind, rung)
+        return retry if retry is not None else resolved
+
+    def _abbreviations_dropped(self, readings, kind, rung=None):
         dropped = []
         for name, year, _label in readings:
             short, removed = _drop_abbreviations(name)
             if short and (short, year) not in [(d[0], d[1]) for d in dropped]:
                 dropped.append((short, year, ABBREVIATION_DROPPED, removed))
         if not dropped:
-            return resolved
+            return None
         self._local.searched = _searched_record(
             self._local.searched, rung, [(n, y, l) for n, y, l, _r in dropped]
         )
@@ -530,16 +538,40 @@ class Provider:
             ", ".join("%r" % r for _n, _y, _l, r in dropped),
         )
         retry = self._best_reading([(n, y, l) for n, y, l, _r in dropped], kind, subtitles=True)
-        if retry is None or _missing(kind, retry):
-            return resolved
-        searched_name = retry.pop("searched_name", None)
-        for name, _year, _label, removed in dropped:
-            if name == searched_name:
-                retry["notes"] = list(retry.get("notes") or []) + [
-                    "searched as %r with %r dropped as an abbreviation" % (name, removed)
-                ]
-                break
-        return retry
+        return _dropped_outcome(retry, dropped, kind, "searched as %r with %r dropped as an abbreviation")
+
+    def _trailing_dropped(self, readings, kind, rung=None):
+        if kind != "movie":
+            return None
+        by_drop = {}
+        seen = set()
+        for name, year, _label in readings:
+            #----- the year check is the only guard against a shorter title's namesake.
+            if not year:
+                continue
+            words = name.split()
+            for keep in range(len(words) - 1, max(1, -(-len(words) // 2)) - 1, -1):
+                short = " ".join(words[:keep])
+                if (short.lower(), year) in seen or _article_only(short):
+                    continue
+                seen.add((short.lower(), year))
+                by_drop.setdefault(len(words) - keep, []).append(
+                    (short, year, TRAILING_DROPPED, " ".join(words[keep:]))
+                )
+        for drop in sorted(by_drop):
+            group = by_drop[drop]
+            searched = [(n, y, l) for n, y, l, _r in group]
+            self._local.searched = _searched_record(self._local.searched, rung, searched)
+            log.info(
+                "no complete identity from the name as read, searching again without its last %d word(s): %s",
+                drop, ", ".join("%r" % n for n, _y, _l in searched),
+            )
+            retry = _dropped_outcome(
+                self._best_reading(searched, kind), group, kind, "searched as %r with %r dropped from the end"
+            )
+            if retry is not None:
+                return retry
+        return None
 
     def _best_reading(self, readings, kind, subtitles=False):
         results = []
@@ -948,6 +980,7 @@ YEAR_IN_NAME = re.compile(r"(?:^|[.\s(\[_-])(19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
 JUNK = titles.RELEASE_TOKENS
 RELEASE_YEAR = "release year"
 TITLE_WORD = "title word"
+EDITION_REMOVED = "edition words removed"
 
 
 #----- Name cleaning
@@ -1055,6 +1088,25 @@ def _searched_record(record, rung, readings):
     record = dict(record)
     record["readings"] = list(record.get("readings") or []) + entries
     return record
+
+
+#----- a bare article scores as contained in nearly every title.
+ARTICLES = {"the", "a", "an"}
+
+
+def _article_only(name):
+    return titles.normalise_for_match(name) in ARTICLES
+
+
+def _dropped_outcome(retry, dropped, kind, note):
+    if retry is None or _missing(kind, retry):
+        return None
+    searched_name = retry.pop("searched_name", None)
+    for name, _year, _label, removed in dropped:
+        if name == searched_name:
+            retry["notes"] = list(retry.get("notes") or []) + [note % (name, removed)]
+            break
+    return retry
 
 
 def _single(name, year):
@@ -1213,7 +1265,7 @@ def _drop_abbreviations(name):
 
 
 #----- the edition comes from the arrival name, the parent folder, or a repair copy's origin name.
-def _edition_of(source, origin=None):
+def _edition_of(source, origin=None, removed=False):
     stem = os.path.splitext(os.path.basename(source))[0]
     parent = os.path.basename(os.path.dirname(source))
     candidates = [stem, parent]
@@ -1221,6 +1273,8 @@ def _edition_of(source, origin=None):
         candidates.append(os.path.splitext(os.path.basename(origin))[0])
     for candidate in candidates:
         label, _matched = titles.edition_from_name(candidate)
+        if not label and removed:
+            _rewritten, label = titles.strip_edition_phrases(candidate)
         if label:
             return label
     return None
@@ -1275,8 +1329,19 @@ def _readings(text):
 
 
 def _clean_movie_name(name):
-    text = titles.strip_release_tag(titles.strip_release_group(titles.strip_edition(name)))
-    return _readings(text)
+    text = titles.strip_release_tag(titles.strip_release_group(
+        titles.strip_edition(titles.strip_leading_fields(name))))
+    readings = _readings(text)
+    #----- the full-name readings stay first, so an equal score for one record keeps the full name and no label.
+    rewritten, _label = titles.strip_edition_phrases(text)
+    if rewritten:
+        seen = {r[0].lower() for r in readings}
+        for found, year, label in _readings(rewritten):
+            if label == TITLE_WORD or not found or found.lower() in seen or _article_only(found):
+                continue
+            seen.add(found.lower())
+            readings.append((found, year, EDITION_REMOVED))
+    return readings
 
 
 def _clean_show_name(name, parent, season=None):

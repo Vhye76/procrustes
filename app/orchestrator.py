@@ -356,17 +356,16 @@ class Orchestrator:
             self._claims.pop(title_id, None)
 
     def queue_view(self):
-        #----- pool-held rows come first in claim order;  an assessment claim is in progress but movable.
+        #----- every claimed row is held in claim order and cannot move;  the waiting rows are numbered from 1.
         with self._claims_lock:
             claims = dict(self._claims)
-        locked = sorted(
-            ((claimed_at, title_id) for title_id, (pool, claimed_at) in claims.items() if pool != ASSESS),
-        )
+        held = sorted((claimed_at, title_id) for title_id, (_pool, claimed_at) in claims.items())
         view = {}
+        for index, (_at, title_id) in enumerate(held, 1):
+            view[title_id] = {
+                "position": None, "locked": True, "slot": claims[title_id][0], "processing": index,
+            }
         position = 0
-        for _at, title_id in locked:
-            position += 1
-            view[title_id] = {"position": position, "locked": True, "slot": claims[title_id][0]}
         for row in self.store.queue_rows():
             if row["id"] in view:
                 continue
@@ -375,7 +374,7 @@ class Orchestrator:
         return view
 
     def reorder(self, units):
-        #----- all or nothing:  the whole unlocked queue, each row once, nothing a pool thread holds.
+        #----- all or nothing:  the whole unlocked queue, each row once, nothing a worker holds.
         if not isinstance(units, list):
             raise ValueError("order must be a list")
         view = self.queue_view()
@@ -797,8 +796,10 @@ class Orchestrator:
             return None, [_reason(state.IDENTIFIED, problem)]
         detail = "resolved %s from %s" % (
             identity.get("title"), identity.get("identified_from") or "provider search")
-        if identity.get("reading"):
+        if identity.get("reading") in (providermod.RELEASE_YEAR, providermod.TITLE_WORD):
             detail += " with the year read as the %s" % identity["reading"]
+        elif identity.get("reading"):
+            detail += " from the %s reading" % identity["reading"]
         for note in identity.get("notes") or []:
             detail += "; " + note
         self.store.advance(
@@ -847,8 +848,12 @@ class Orchestrator:
                 names = ", ".join(
                     "tmdb %s (%s)" % (e.get("tmdb"), e.get("year") or "no date") for e in entries
                 )
-                if len({e.get("reading") for e in entries}) > 1:
+                readings = {e.get("reading") for e in entries}
+                if readings == {providermod.RELEASE_YEAR, providermod.TITLE_WORD}:
                     cause = "the year in the name reads as either the release year or a title word"
+                elif len(readings) > 1:
+                    cause = "the name's readings (%s) resolve to different titles" % ", ".join(
+                        sorted(r or "as read" for r in readings))
                 else:
                     cause = "the file name carries no year to separate them"
                 problem = (

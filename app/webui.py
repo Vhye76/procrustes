@@ -466,6 +466,7 @@ class WebUI:
         row["queue_position"] = place.get("position")
         row["locked"] = bool(place.get("locked"))
         row["slot"] = place.get("slot")
+        row["processing_position"] = place.get("processing")
         row["display_stage"] = state.display_name(row.get("stage"))
         decision = row.get("decision") or {}
         if row.get("stage") == state.ROUTED and decision.get("action") == "passthrough":

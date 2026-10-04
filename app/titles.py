@@ -225,6 +225,61 @@ def strip_edition(name):
     return text
 
 
+_LEADING_BRACKET = re.compile(r"^[\s._-]*[(\[]([^()\[\]]*)[)\]][\s._-]*")
+_BARE_YEAR = re.compile(r"^\s*(?:19|20)\d{2}\s*$")
+_SITE_TLD = r"(?:com|org|net|info|biz|io|to|me|mx|cc|tv|ws|se|nu|ru|in|co|uk|eu|ch|am|tw|is|ag|li|lol|xyz|pw|bz|nz)"
+_SITE_PREFIX = re.compile(
+    r"^[\s._-]*(?:www\.[\w-]+\.%s(?:\.[a-z]{2})?[\s._-]+|[\w-]+\.%s(?:\.[a-z]{2})?\s+-\s+)"
+    % (_SITE_TLD, _SITE_TLD),
+    re.I,
+)
+_LEADING_SEP = re.compile(r"^[\s._-]+")
+
+
+def strip_leading_fields(text):
+    text = str(text)
+    while True:
+        before = text
+        m = _LEADING_BRACKET.match(text)
+        if m and not _BARE_YEAR.match(m.group(1)):
+            text = text[m.end():]
+        #----- a domain needs 'www.' or a following ' - ', so a dotted title such as 'The.Net.1995' is not one.
+        m = _SITE_PREFIX.match(text)
+        if m:
+            text = text[m.end():]
+        start = _LEADING_SEP.match(text)
+        offset = start.end() if start else 0
+        m = RELEASE_TOKENS.match(text, offset)
+        #----- only a token carrying a digit;  a word token such as 'Dual' or 'Complete' can start a title.
+        if m and re.search(r"\d", m.group(0)):
+            text = text[m.end():]
+        text = _LEADING_SEP.sub("", text)
+        if text == before or not text:
+            return text if text else before
+
+
+def strip_edition_phrases(name):
+    text = str(name)
+    years = list(_LAST_YEAR.finditer(text))
+    end = years[-1].start() if years else len(text)
+    region, rest = text[:end], text[end:]
+    label = None
+    removed = False
+    for patterns, cut in ((_EDITION_PATTERNS, True), (_NOISE_PATTERNS, False)):
+        for pattern, found in patterns:
+            while True:
+                m = pattern.search(region)
+                if not m:
+                    break
+                region = region[: m.start(1)] + " " + region[m.end(1):]
+                removed = True
+                if cut and label is None:
+                    label = found
+    if not removed or not region.strip(" ._-()[]"):
+        return None, None
+    return _collapse(region) + (" " + rest.lstrip() if rest else ""), label
+
+
 def is_abbreviation(word):
     token = str(word).strip(" .,:;!?'\"()[]{}-_")
     if len(token) < 2 or not token.isalpha():

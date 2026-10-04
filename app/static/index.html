@@ -56,8 +56,8 @@
   .box .fill { flex: 1 1 auto; overflow-y: auto; padding: 12px 14px; min-height: 0; }
 
   #b-queue  { grid-column: 1; grid-row: 1 / span 2; }
-  #a-enc    { grid-column: 2; grid-row: 1; }
-  #b-enc    { grid-column: 3; grid-row: 1; }
+  #a-proc   { grid-column: 2; grid-row: 1; }
+  #b-proc   { grid-column: 3; grid-row: 1; }
   #a-held   { grid-column: 2; grid-row: 2; }
   #b-held   { grid-column: 3; grid-row: 2; }
   #a-ready  { grid-column: 4; grid-row: 1; }
@@ -104,9 +104,6 @@
               border-radius: 4px; background: rgba(12, 14, 18, .82); color: var(--ink);
               font-size: 11px; font-weight: 600; letter-spacing: .02em;
               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .tile.locked .art .pos { color: var(--accent); }
-  .tile.locked { cursor: default; border-color: #2c313c; }
-  .tile.locked:hover { border-color: #2c313c; }
   .tile[draggable="true"] { cursor: grab; }
   .tile.dragging { opacity: .35; }
 
@@ -241,11 +238,11 @@
     <div class="fill"><div class="tiles" id="t-queue"></div></div>
   </section>
 
-  <div class="arrow" id="a-enc">&#8594;</div>
+  <div class="arrow" id="a-proc">&#8594;</div>
 
-  <section class="box" id="b-enc">
-    <h2>Encoding <span class="n" id="n-enc">0</span></h2>
-    <div class="fill"><div class="tiles" id="t-enc"></div></div>
+  <section class="box" id="b-proc">
+    <h2>Processing <span class="n" id="n-proc">0</span></h2>
+    <div class="fill"><div class="tiles" id="t-proc"></div></div>
   </section>
 
   <div class="arrow" id="a-held"><span>&#8594;</span><span>&#8592;</span></div>
@@ -321,9 +318,6 @@ function authPill(s) {
 const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-const QUEUE_STAGES = ["DETECTED", "PROBED", "SCREENED", "IDENTIFIED", "COMPARED", "ROUTED",
-                      "STAGED", "REMUXED", "TAGGED", "READY"];
-const ENC_STAGES = ["ENCODING", "ENCODED", "VERIFIED"];
 const READY_STAGES = ["PUBLISHED", "CLEANUP"];
 
 let TITLES = {};
@@ -427,7 +421,7 @@ document.addEventListener("click", (ev) => {
   else if (el.dataset.id !== undefined) showDetail(Number(el.dataset.id));
 });
 
-//----- The queue in processing order:  slot holders first and locked, then the numbered order
+//----- Processing and queue tiles
 function encodeSub(t, prog) {
   const p = prog[t.id];
   const bits = [t.encoder_label || t.encoder || t.display_stage || ""];
@@ -435,7 +429,9 @@ function encodeSub(t, prog) {
   const line = esc(bits.filter(Boolean).join("   "));
   if (p && p.phase) {
     if (p.copied_bytes == null || !p.total_bytes)
-      return `<div class="s">${line}</div><div class="s">${esc(p.phase)}</div>`;
+      return p.phase === bits[0]
+        ? `<div class="s">${line}</div>`
+        : `<div class="s">${line}</div><div class="s">${esc(p.phase)}</div>`;
     const c = Math.max(0, Math.min(100, 100 * p.copied_bytes / p.total_bytes));
     return `<div class="s">${line}</div>
     <div class="bar"><i style="width:${c}%"></i></div>
@@ -457,7 +453,6 @@ function queueSub(t) {
 function queueUnits(list) {
   const units = [], shows = new Map();
   for (const t of list) {
-    if (t.locked) { units.push({ items: [t], locked: true }); continue; }
     if (t.kind === "tv" && t.show) {
       let g = shows.get(t.show);
       if (!g) { g = { show: t.show, items: [] }; shows.set(t.show, g); units.push(g); }
@@ -469,33 +464,31 @@ function queueUnits(list) {
   return units;
 }
 
-function queueTile(u, prog) {
+function queueTile(u) {
   const head = u.items[0];
   const many = u.items.length > 1;
   const name = many ? u.show : label(head);
   const positions = u.items.map(t => t.queue_position).filter(n => n != null);
   const lo = Math.min(...positions), hi = Math.max(...positions);
-  const badge = u.locked ? (head.display_stage || head.stage)
-    : positions.length === 0 ? "" : lo === hi ? String(lo) : lo + "-" + hi;
+  const badge = positions.length === 0 ? "" : lo === hi ? String(lo) : lo + "-" + hi;
   const second = many
     ? `<div class="s">${esc(u.items.length)} episodes</div>`
-    : u.locked ? encodeSub(head, prog) : queueSub(head);
+    : queueSub(head);
   const target = many ? `data-show="${esc(u.show)}"` : `data-id="${esc(head.id)}"`;
-  const drag = u.locked ? "" : `draggable="true"`;
-  return `<div class="tile${u.locked ? " locked" : ""}" ${target} ${drag}>
+  return `<div class="tile" ${target} draggable="true">
       ${art(head, many ? u.show : null, badge)}
       <div class="tt"><div class="n">${esc(name)}</div>${second}</div>
     </div>`;
 }
 
-function paintQueue(list, prog) {
+function paintQueue(list) {
   $("n-queue").textContent = list.length;
   //----- the periodic refresh must not rebuild the grid under the pointer mid-drag.
   if (DRAGGING) return;
   const units = queueUnits(list);
   const html = units.length === 0
     ? `<div class="empty">Nothing waiting.</div>`
-    : units.map(u => queueTile(u, prog)).join("");
+    : units.map(u => queueTile(u)).join("");
   if (SIG["t-queue"] !== html) { SIG["t-queue"] = html; $("t-queue").innerHTML = html; }
 }
 
@@ -537,8 +530,8 @@ QBOX.addEventListener("dragend", async () => {
   refresh();
 });
 
-function paint(boxId, countId, list, sub, emptyText) {
-  const groups = group(list);
+function paint(boxId, countId, list, sub, emptyText, single) {
+  const groups = single ? list.map(t => ({ items: [t] })) : group(list);
   const html = groups.length === 0
     ? `<div class="empty">${esc(emptyText)}</div>`
     : groups.map(g => tile(g, sub)).join("");
@@ -575,21 +568,21 @@ async function refresh() {
   TITLES = {};
   titles.forEach(t => { TITLES[t.id] = t; });
 
-  const inStage = (set) => titles.filter(t => set.includes(t.stage));
-
-  const queued = inStage(QUEUE_STAGES.concat(ENC_STAGES))
-    .filter(t => t.queue_position != null)
+  const idle = titles.filter(t => t.slot == null);
+  const processing = titles.filter(t => t.slot != null)
+    .sort((a, b) => a.processing_position - b.processing_position);
+  const queued = titles.filter(t => t.queue_position != null)
     .sort((a, b) => a.queue_position - b.queue_position);
-  paintQueue(queued, prog);
+  paintQueue(queued);
 
-  paint("t-enc", "n-enc", inStage(ENC_STAGES), (t) => encodeSub(t, prog), "Nothing encoding.");
+  paint("t-proc", "n-proc", processing, (t) => encodeSub(t, prog), "Nothing processing.", true);
 
-  paint("t-held", "n-held", titles.filter(t => t.stage === "HELD"),
+  paint("t-held", "n-held", idle.filter(t => t.stage === "HELD"),
         (t) => `<div class="s warn">${esc((t.reasons && t.reasons.length > 1)
           ? t.reasons.length + " reasons - " + t.reasons[0].text : (t.reason || "needs a decision"))}</div>`,
         "Nothing is waiting on you.");
 
-  paint("t-ready", "n-ready", inStage(READY_STAGES),
+  paint("t-ready", "n-ready", idle.filter(t => READY_STAGES.includes(t.stage)),
         (t) => `<div class="s">${esc(base(t.output_path) || "ready to collect")}</div>`,
         "Nothing to collect.");
 
