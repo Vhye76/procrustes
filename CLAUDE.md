@@ -443,7 +443,7 @@ AN INCOMPLETE IDENTITY HOLDS, IT DOES NOT PUBLISH.  A movie needs title, year, T
 
 A SHOW'S TVDB ID IS TMDb'S MAPPING, 'external_ids.tvdb_id'.  It fills the '[tvdbid-N]' folder component and the COLLECTION block's TVDB value, whose forms are fixed by sections 10 and 12.  A show reached by a name rung that TMDb maps to no tvdb id holds incomplete for the operator selection below.  A movie's IMDb id is the record's 'imdb_id'.
 
-THE YEAR IS THE RECORD'S:  a movie's 'release_date', a show's 'first_air_date'.  TITLES ARE READ IN ENGLISH because every call asks for 'en-US';  a series with no English translation on TMDb carries its original-language titles.
+THE YEAR IS THE RECORD'S:  a movie's 'release_date', a show's 'first_air_date'.  A record with neither has no year and never takes the name's, so it is incomplete, never votes and never ties;  a tie whose records share one year says so in the hold reason.  TITLES ARE READ IN ENGLISH because every call asks for 'en-US';  a series with no English translation on TMDb carries its original-language titles.
 
 The rung that produced an identity is recorded in the stage detail.
 

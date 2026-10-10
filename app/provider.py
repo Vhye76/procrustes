@@ -735,7 +735,7 @@ class Provider:
         candidate["outcome"] = _accepted_outcome("movie", ids)
         return {
             "title": candidate.get("label") or title,
-            "year": ids["year"] or year,
+            "year": ids["year"],
             "tmdb": ids["tmdb"],
             "imdb": ids["imdb"],
             "notes": notes,
@@ -761,7 +761,7 @@ class Provider:
         candidate["outcome"] = _accepted_outcome("tv", ids)
         return {
             "show": candidate.get("label") or name,
-            "show_year": ids["year"] or year,
+            "show_year": ids["year"],
             "tvdb": ids["tvdb"],
             "tvdb_from": tvdb_from,
             "tmdb": ids["tmdb"],

@@ -849,11 +849,14 @@ class Orchestrator:
                     "tmdb %s (%s)" % (e.get("tmdb"), e.get("year") or "no date") for e in entries
                 )
                 readings = {e.get("reading") for e in entries}
+                years = {e.get("year") for e in entries}
                 if readings == {providermod.RELEASE_YEAR, providermod.TITLE_WORD}:
                     cause = "the year in the name reads as either the release year or a title word"
                 elif len(readings) > 1:
                     cause = "the name's readings (%s) resolve to different titles" % ", ".join(
                         sorted(r or "as read" for r in readings))
+                elif len(years) == 1 and None not in years:
+                    cause = "every entry is a %s release" % next(iter(years))
                 else:
                     cause = "the file name carries no year to separate them"
                 problem = (
