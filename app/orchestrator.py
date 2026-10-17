@@ -185,18 +185,28 @@ class Orchestrator:
         with self._workers_lock:
             for index in self.pools.missing(ASSESS):
                 t = threading.Thread(
-                    target=self._assess_worker, args=(index,), name="assess-%d" % index, daemon=True
+                    target=self._guarded, args=(self._assess_worker, index), name="assess-%d" % index,
+                    daemon=True,
                 )
                 self.pools.register(ASSESS, index, t)
                 t.start()
             for name in POOLS:
                 for index in self.pools.missing(name):
                     t = threading.Thread(
-                        target=self._work_worker, args=(name, index), name="%s-%d" % (name, index),
-                        daemon=True,
+                        target=self._guarded, args=(self._work_worker, name, index),
+                        name="%s-%d" % (name, index), daemon=True,
                     )
                     self.pools.register(name, index, t)
                     t.start()
+
+    def _guarded(self, worker, *args):
+        try:
+            worker(*args)
+        except Exception:
+            log.exception(
+                "worker %s stopped on an unexpected error, restarted on the next poll",
+                threading.current_thread().name,
+            )
 
     def apply_settings(self, changed):
         keys = {key.split(".")[0] for key, _old, _new in changed}
@@ -355,6 +365,13 @@ class Orchestrator:
         with self._claims_lock:
             self._claims.pop(title_id, None)
 
+    def forget(self, title_id):
+        #----- under the claims lock, so no pick can take the row between the test and the delete.
+        with self._claims_lock:
+            if title_id in self._claims:
+                raise ValueError("a worker is on this title, it can be forgotten once the worker stops")
+            self.store.forget(title_id)
+
     def queue_view(self):
         #----- every claimed row is held in claim order and cannot move;  the waiting rows are numbered from 1.
         with self._claims_lock:
@@ -448,6 +465,12 @@ class Orchestrator:
                 except Exception:
                     log.exception("job reclaim failed")
                 self._reclaimed_at = time.time()
+            #----- starts a replacement for any worker thread that has died.
+            if not self.stop_event.is_set():
+                try:
+                    self._ensure_workers()
+                except Exception:
+                    log.exception("worker restart failed")
             self.stop_event.wait(self.settings.get("poll_interval"))
 
     #----- Reclaiming the encode area
@@ -625,7 +648,11 @@ class Orchestrator:
             half(title_id)
         except Exception as exc:
             log.exception("title %s failed", title_id)
-            self.store.advance(title_id, state.FAILED, str(exc), reason=str(exc))
+            #----- the row can be gone by now, and an exception raised here would end the worker thread.
+            try:
+                self.store.advance(title_id, state.FAILED, str(exc), reason=str(exc))
+            except Exception:
+                log.exception("title %s failure could not be recorded", title_id)
 
     #----- The chain
     def _assess(self, title_id):

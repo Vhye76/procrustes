@@ -40,7 +40,7 @@ Three further values sit outside the pipeline.
 | QUARANTINED | rejected | Refused, beaten by the incumbent, or superseded in 'complete/' by a later arrival that beat it.  The file is in 'complete/.quarantine'.  Remove it from there and the record closes on the next poll. |
 | FAILED | failed | A mechanical failure:  an unreadable probe, a remux or encoder that exited non-zero, or a publish that could not write.  Nothing was moved or deleted, and no output exists, so Force through cannot apply and is not offered;  Retry and Discard are. |
 
-A row marked "files gone" refers to a title whose files you have since removed by hand.  The watcher closes such a record on its next poll;  the Forget button does the same at once.  Forget only removes a database row;  it never deletes a file.
+A row marked "files gone" refers to a title whose files you have since removed by hand.  The watcher closes such a record on its next poll;  the Forget button does the same at once, and is refused while a worker is on the title.  Forget only removes a database row;  it never deletes a file.
 
 ## Application Layout
 
@@ -222,7 +222,7 @@ Every setting under Encoding except the passthrough codec list and the Dolby Vis
 | Access | auth_enabled | on | a login in front of every page and API route;  off opens both to anyone who can reach the port.  Written only from User Settings |
 | Access | session_hours | 168 | hours a login stays valid;  signing out ends it sooner |
 
-A change applies to the next title that reaches the stage reading it.  A title already routed keeps the encoder parameters it was routed with, stored in its decision and shown on its detail, so a queue does not change shape under a running configuration;  Retry re-assesses a title under the current settings.  A change to max_jobs, gpu_slots or cpu_slots resizes the pools live:  a pool grows at once, and a pool that shrinks lets its surplus thread finish the title it is on before it exits.
+A change applies to the next title that reaches the stage reading it.  A title already routed keeps the encoder parameters it was routed with, stored in its decision and shown on its detail, so a queue does not change shape under a running configuration;  Retry re-assesses a title under the current settings.  A change to max_jobs, gpu_slots or cpu_slots resizes the pools live:  a pool grows at once, and a pool that shrinks lets its surplus thread finish the title it is on before it exits.  A worker thread that stops on an unexpected error is logged and started again on the next poll.
 
 The page posts every changed value in one request and nothing is written unless every value is valid;  a rejected value is named beside its field.  'Reset' beside a stored value, or on a whole group, returns it to the default.
 

@@ -542,7 +542,7 @@ class WebUI:
                 raise ValueError(
                     "title still has files on disk, remove them before forgetting it"
                 )
-            self.store.forget(title_id)
+            self.orchestrator.forget(title_id)
             log.info("operator forgot title %s, its files are already gone", title_id)
             return {"ok": True, "action": "forgotten"}
 
