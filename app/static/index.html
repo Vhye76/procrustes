@@ -760,7 +760,7 @@ function identifyPanel(t) {
         `<span>${esc(name)}${required ? "" : " (optional)"}</span>
          <input type="text" id="idn-${k}" style="width:${width}px" oninput="idnManual()">`).join("")}</span>
     </label>`;
-  h += `<div class="go"><button id="idn-go" onclick="identify()" disabled>Confirm and force through</button></div></div>`;
+  h += `<div class="go"><button id="idn-go" onclick="identify()" disabled>Identify and Retry</button></div></div>`;
   return h;
 }
 

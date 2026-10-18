@@ -391,18 +391,25 @@ def _video_bitrate(s):
         return None
 
 
-def count_video_frames(path):
-    data = ffprobe_json(
-        path,
-        ["-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets"],
-    )
-    streams = data.get("streams") or []
-    if not streams:
+def video_packet_totals(path):
+    rc, out, err = _run([
+        FFPROBE, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "packet=size", "-of", "csv=p=0", str(path),
+    ])
+    if rc != 0:
+        raise ProbeError("ffprobe failed on %s: %s" % (path, (err or "").strip()[-400:]))
+    packets = 0
+    total = 0
+    for line in out.splitlines():
+        try:
+            size = int(line.strip().rstrip(","))
+        except ValueError:
+            continue
+        packets += 1
+        total += size
+    if not packets:
         return None
-    try:
-        return int(streams[0].get("nb_read_packets"))
-    except (TypeError, ValueError):
-        return None
+    return {"packets": packets, "bytes": total}
 
 
 def _dolby_vision(s):

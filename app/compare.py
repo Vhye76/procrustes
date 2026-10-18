@@ -217,11 +217,23 @@ def measure(path, crop=None, keep_langs=None):
 
     container = probemod.probe(path, keep_langs=keep_langs).container
     video = container.get("video") or {}
-    if not video.get("frame_count"):
+    if not video.get("frame_count") or not video.get("bitrate"):
+        totals = None
         try:
-            video["frame_count"] = probemod.count_video_frames(path)
+            totals = probemod.video_packet_totals(path)
         except probemod.ProbeError as exc:
-            log.debug("frame count unavailable on %s: %s", path, exc)
+            log.debug("video packets unreadable on %s: %s", path, exc)
+        if totals:
+            if not video.get("frame_count"):
+                video["frame_count"] = totals["packets"]
+            if not video.get("bitrate"):
+                duration = video.get("duration") or container.get("container_duration")
+                if duration:
+                    video["bitrate"] = int(round(totals["bytes"] * 8 / float(duration)))
+                log.debug(
+                    "video packets on %s: %d packets, %d bytes over %s s, bitrate %s",
+                    path, totals["packets"], totals["bytes"], duration, video.get("bitrate"),
+                )
     structure = None
     ratio = None
     try:

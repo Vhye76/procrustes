@@ -583,15 +583,15 @@ class WebUI:
                 raise ValueError("identify applies to a held title only")
             chosen = _chosen_identity(row.get("kind"), body)
             summary = " ".join("%s=%s" % (k, v) for k, v in chosen.items() if v not in (None, ""))
-            self.store.update(title_id, pinned=chosen, overridden=1)
+            self.store.update(title_id, pinned=chosen)
             self.orchestrator.release_from_hold(title_id)
             self.store.advance(
                 title_id, state.DETECTED,
-                "operator identified the title as %s and overrode the gates" % summary,
+                "operator identified the title as %s and asked for a retry" % summary,
             )
             self.store.place(title_id)
-            log.info("operator identified title %s as %s and overrode the gates", title_id, summary)
-            return {"ok": True, "action": "identified, overridden and requeued", "titles": [title_id]}
+            log.info("operator identified title %s as %s and asked for a retry", title_id, summary)
+            return {"ok": True, "action": "identified and requeued", "titles": [title_id]}
         raise ValueError("action must be one of keep, retry, override, discard, forget, identify")
 
     def start(self):

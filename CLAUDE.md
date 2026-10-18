@@ -235,7 +235,7 @@ _publish    a destination collision publishes beside it under a unique name, nev
 _remux      the mp4-path duration drift is a recorded note, as the avi path is
 ```
 
-FOUR STOP POINTS STAY OUT OF REACH, AND THAT IS PHYSICAL RATHER THAN POLICY.  An unreadable probe, a non-zero ffmpeg or mkvmerge in the remux, a non-zero encoder, and an I/O failure at publish each mean no output file exists.  Those land in FAILED, which force cannot apply to:  the decision endpoint refuses 'override' on a FAILED title and the UI offers Retry instead of Force.  Every HELD title is forceable except an identification hold, which section 11's confirm leaves:  the identify decision sets 'overridden' beside the identity, so every gate the title meets afterwards is bypassed.
+FOUR STOP POINTS STAY OUT OF REACH, AND THAT IS PHYSICAL RATHER THAN POLICY.  An unreadable probe, a non-zero ffmpeg or mkvmerge in the remux, a non-zero encoder, and an I/O failure at publish each mean no output file exists.  Those land in FAILED, which force cannot apply to:  the decision endpoint refuses 'override' on a FAILED title and the UI offers Retry instead of Force.  Every HELD title is forceable except an identification hold, which section 11's Identify and Retry leaves:  the identify decision pins the identity and requeues the title without 'overridden', so every gate the title meets afterwards runs, the comparison included.
 
 A held title's reasons are stored as a list on the row and rendered as a list in the detail dialog, with the one-line 'reason' as the joined summary.  Every gate a forced title bypassed is written into its stage history.  A clear LOSS and a failed verification are forceable alike;  nothing writes to a library and promotion stays manual.
 
@@ -282,7 +282,7 @@ Cropdetect runs at COMPARED on both sides, on letterbox candidates only.  GATE 2
 
 COMPARATIVE HERE.  Gate 6 compares two files and sets no floor.  The one bitrate floor is section 7's per-class Minimum Standards rule, on the same weighted figure;  section 14's rule that size figures do not measure an encode is unchanged.
 
-THE FIGURE IS THE VIDEO TRACK'S OWN BPS, ON BOTH SIDES.  'probe._video_bitrate' reads the 'BPS' or 'BPS-eng' stream tag first, falls back to NUMBER_OF_BYTES times 8 over the track's own DURATION, and finally to ffprobe's stream 'bit_rate', which Matroska frequently omits.
+THE FIGURE IS THE VIDEO TRACK'S OWN BPS, ON BOTH SIDES.  'probe._video_bitrate' reads the 'BPS' or 'BPS-eng' stream tag first, falls back to NUMBER_OF_BYTES times 8 over the track's own DURATION, and finally to ffprobe's stream 'bit_rate', which Matroska frequently omits.  A side with none of the three is measured in 'compare.measure' from its video packet sizes, in the same pass that counts its frames, over the video duration or the container duration when the stream has none.  The fallback is the comparison's alone:  the section 7 floor and the report read the tags.
 
 RAW BITRATE ACROSS CODECS IS NOT A QUALITY COMPARISON, so the figures are weighted first:
 
@@ -449,13 +449,13 @@ The rung that produced an identity is recorded in the stage detail.
 
 ### Operator selection:  best match or manual entry
 
-THE BACKSTOP FOR EVERY CASE THE RUNGS CANNOT SETTLE, AND THE ONLY WAY PAST AN IDENTIFICATION HOLD.  A held title whose reasons carry an IDENTIFIED entry, a provider failure included ('RetryLater' carries the stage it was raised at), shows 'Best match', 'Enter manually', one button, 'Confirm and force through', and Discard.  'webui.annotate' marks it 'identification_held' and not 'forceable';  the decision endpoint refuses 'override', 'retry' and 'keep' on it, and the list dialog's bulk Retry and Force act only on the other rows.
+THE BACKSTOP FOR EVERY CASE THE RUNGS CANNOT SETTLE, AND THE ONLY WAY PAST AN IDENTIFICATION HOLD.  A held title whose reasons carry an IDENTIFIED entry, a provider failure included ('RetryLater' carries the stage it was raised at), shows 'Best match', 'Enter manually', one button, 'Identify and Retry', and Discard.  'webui.annotate' marks it 'identification_held' and not 'forceable';  the decision endpoint refuses 'override', 'retry' and 'keep' on it, and the list dialog's bulk Retry and Force act only on the other rows.
 
 THE BEST MATCH IS BUILT WHEN THE HOLD IS WRITTEN, inside 'Client.fresh', by 'provider.hold_candidates', and stored in 'candidates_json' as 'guess' beside the rung and names searched.  Its seeds are every record the ladder scored plus the TMDb search hits on the searched readings, each fetched for its title, year and ids, uncapped.  One entry is the pipeline's resolved record when it is complete, otherwise the complete identity scoring highest against the searched readings within a year of the reading's year, preselected when it stands alone.  A disagreement or tie lists every complete record it named, none preselected.  A provider that cannot be reached leaves the list empty, never fails the hold.
 
 MANUAL ENTRY TAKES THE WHOLE IDENTITY FROM THE OPERATOR.  A movie needs title and year, a show its name, year, season, episode and episode title;  the ids are optional.  The episode catalogue is not read for a manual show.
 
-THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'match', the chosen record's TMDB id, the id fields for the kind and 'year' for a best match, or 'name' and the manual fields;  a manual decision missing a required field answers 400.  The choice is stored as 'pinned_json', the row gets 'overridden', the history records both, and the row requeues to DETECTED.  A top rung 'operator' fires on a pinned row:  the record is fetched by 'match', the ids come from the selections, an operator-entered id that differs from TMDb's is kept and noted in the IDENTIFIED detail, and no year check applies.  A pinned row with no 'match' is the manual identity as entered, 'identified_from' 'manual'.
+THE DECISION IS 'action: "identify"' ON THE DECISION ENDPOINT, with 'match', the chosen record's TMDB id, the id fields for the kind and 'year' for a best match, or 'name' and the manual fields;  a manual decision missing a required field answers 400.  The choice is stored as 'pinned_json', the history records it, and the row requeues to DETECTED;  'overridden' is not written, so a later hold is an ordinary forceable hold.  A top rung 'operator' fires on a pinned row:  the record is fetched by 'match', the ids come from the selections, an operator-entered id that differs from TMDb's is kept and noted in the IDENTIFIED detail, and no year check applies.  A pinned row with no 'match' is the manual identity as entered, 'identified_from' 'manual'.
 
 THE EPISODE CATALOGUE IS ONE '/tv/<id>/season/<n>' CALL PER SEASON THE SERIES RECORD LISTS, SEASON 0 INCLUDED.  A special TMDb does not list falls back to source numbering, with the warning.
 
@@ -524,7 +524,7 @@ A BARE THREE- OR FOUR-DIGIT NUMBER IS SEASON AND EPISODE, 'SEE' OR 'SSEE', AND I
 
 A WEAK NUMBER IS MARKED AND ITS POSITION TRAVELS WITH IT.  Both forms, and the three-digit results of the leading bare-number rule, carry 'weak' with the number's 'start' and 'end';  'title_from_filename' takes the title from after it, and 'provider._clean_show_name' cuts the show name before it.  A leading-form name has no show name of its own, so its show comes from an ids folder above 'Season NN', rung 2 of the show ladder;  '_clean_show_name' never reads a 'Season NN' parent as a show name, so without that folder the title holds.
 
-A WEAK NUMBER FALLS BACK ONLY ONTO A LISTED ENTRY.  When no title matches and the catalogue lacks the number, 'identify' returns 'unlisted' and the title holds at IDENTIFIED with the show and the SxxEyy in the reason;  manual entry is its exit, since a best-match confirm meets the same miss.  A strong-marker name keeps the fallback onto an unlisted number with the file-name title.
+A WEAK NUMBER FALLS BACK ONLY ONTO A LISTED ENTRY.  When no title matches and the catalogue lacks the number, 'identify' returns 'unlisted' and the title holds at IDENTIFIED with the show and the SxxEyy in the reason;  manual entry is its exit, since Identify and Retry on the best match meets the same miss.  A strong-marker name keeps the fallback onto an unlisted number with the file-name title.
 
 THE OPENSUBTITLES HASH IS RECORDED, NOT LOOKED UP.  'probe.opensubtitles_hash' is the 64-bit sum of the first and last 64 KiB plus the size, on the container summary as 'oshash'.
 
