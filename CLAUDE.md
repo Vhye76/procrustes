@@ -493,14 +493,14 @@ Fuzzy fallback at a difflib cutoff of 0.82, because release filenames carry typo
 
 THE RELEASE TAG IS STRIPPED BEFORE THE TITLE IS MATCHED.  'titles.strip_release_tag' removes a trailing '(…)' or '[…]' group whose contents carry a release token or a release group name, repeatedly;  'Storm Front (2)' is untouched.  'titles.strip_release_group' removes a '-GROUP' suffix.  Both run inside 'title_from_filename'.  'PART_MARKERS' recognise the bare forms 'Part 2', 'Part Two', ', Part 2' and '- Part 2' at the end, 'part' or 'pt' with no letter or digit directly before it so 'Counterpart 2' is a title and 'Darkness_Rising_Part_3' is part 3, and '_index' maps '(base, part)' so a marked probe lands on its own part.  The segment title is a second probe:  'match_episode' takes 'extra' and 'provider.identify' passes it.
 
-THE RUNGS, AS 'episodes._match_episode' RUNS THEM, every comparison on 'titles.normalise_for_match' of both sides.  The exact rungs run twice, on the probe and then on the probe with release tokens removed and its part marker read again, because a dotted release name carries the marker inside the junk.
+THE RUNGS, AS 'episodes._match_episode' RUNS THEM, every comparison on 'titles.normalise_for_match' of both sides.  The exact rungs run three times, on the probe, on the probe cut at its first release token by 'titles.cut_release_fields', the name cleaner's rule, and on the probe with release tokens removed, each with its part marker read again, because a release name carries the marker inside the junk and an unlisted token or group left after it hides the marker from the token-stripped probe.  Containment reads the base and part number from the cut probe when it carries a marker, otherwise from the token-stripped probe.
 
 ```
 1  exact        the whole probe equals a catalogue title                          method exact, 1.0
 2  own part     the probe's base plus its part number equals a marked entry       method exact, 1.0
 3  base         the whole probe equals an entry's base, first of a marked pair    method exact, 1.0
 4  stripped     an unmarked probe minus separators equals a title or a base       method exact, 1.0
-   (1 to 4 again on the token-stripped probe)
+   (1 to 4 again on the cut probe, then on the token-stripped probe)
 5  containment  an entry's base starts the probe on whole words, longest wins,    method contains, share of probe words
                 taken at CONTAINED_MIN_SHARE of the probe's words or on the
                 file's own parsed number

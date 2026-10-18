@@ -977,7 +977,6 @@ class Provider:
 
 #----- the trailing delimiter is a lookahead so two adjacent years both match.
 YEAR_IN_NAME = re.compile(r"(?:^|[.\s(\[_-])(19\d{2}|20\d{2})(?=[)\].\s_-]|$)")
-JUNK = titles.RELEASE_TOKENS
 RELEASE_YEAR = "release year"
 TITLE_WORD = "title word"
 EDITION_REMOVED = "edition words removed"
@@ -1280,25 +1279,6 @@ def _edition_of(source, origin=None, removed=False):
     return None
 
 
-def _tidy(text):
-    text = re.sub(r"(?<=\s)-|-(?=\s)|^-|-$", " ", text)
-    text = re.sub(r"[(\[]\s*[)\]]", " ", text)
-    return re.sub(r"\s+", " ", text).strip(" ._-")
-
-
-def _cut_title(text):
-    text = text.replace(".", " ").replace("_", " ")
-    for m in JUNK.finditer(text):
-        head = text[: m.start()].strip(" ._-()[]")
-        if head:
-            text = text[: m.start()]
-            break
-        if re.search(r"\d", m.group(0)):
-            text = ""
-            break
-    return _tidy(text)
-
-
 def _delimited(text, m):
     return (
         m.start() < m.start(1)
@@ -1310,16 +1290,16 @@ def _delimited(text, m):
 def _readings(text):
     matches = list(YEAR_IN_NAME.finditer(text))
     if not matches:
-        title = _cut_title(text)
+        title = titles.cut_release_fields(text)
         return [(title, None, None)] if title else []
     m = matches[-1]
     year = int(m.group(1))
     delimited = _delimited(text, m)
-    before = _cut_title(text[: m.start()])
-    release = before or _cut_title(text[m.end() + (1 if delimited else 0):])
+    before = titles.cut_release_fields(text[: m.start()])
+    release = before or titles.cut_release_fields(text[m.end() + (1 if delimited else 0):])
     if len(matches) > 1 or delimited:
         return [(release, year, RELEASE_YEAR)] if release else []
-    word = _cut_title(text) if before else ("%s %s" % (m.group(1), release)).strip()
+    word = titles.cut_release_fields(text) if before else ("%s %s" % (m.group(1), release)).strip()
     readings = []
     if release:
         readings.append((release, year, RELEASE_YEAR))

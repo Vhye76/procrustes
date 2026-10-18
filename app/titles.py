@@ -193,6 +193,26 @@ def strip_release_tag(text):
         text = text[: m.start()].rstrip(" ._-")
 
 
+def tidy_name(text):
+    text = re.sub(r"(?<=\s)-|-(?=\s)|^-|-$", " ", text)
+    text = re.sub(r"[(\[]\s*[)\]]", " ", text)
+    return re.sub(r"\s+", " ", text).strip(" ._-")
+
+
+def cut_release_fields(text):
+    text = text.replace(".", " ").replace("_", " ")
+    for m in RELEASE_TOKENS.finditer(text):
+        head = text[: m.start()].strip(" ._-()[]")
+        if head:
+            text = text[: m.start()]
+            break
+        #----- a leading word token such as 'Proper' or 'Dual' can start a title;  one carrying a digit leaves no title.
+        if re.search(r"\d", m.group(0)):
+            text = ""
+            break
+    return tidy_name(text)
+
+
 def _edition_match(name, patterns):
     text = os.path.splitext(str(name))[0] if re.search(r"\.[A-Za-z0-9]{2,4}$", str(name)) else str(name)
     years = list(_LAST_YEAR.finditer(text))

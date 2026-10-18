@@ -388,7 +388,7 @@ def _shared_words(a, b):
     return set(titles.normalise_for_match(a).split()) & set(titles.normalise_for_match(b).split())
 
 
-#----- rungs in order:  exact rungs on the raw probe, the same on the token-stripped probe, containment, then difflib.
+#----- rungs in order:  exact rungs on the raw probe, the same on the cut probe and the token-stripped probe, containment, then difflib.
 def _match_episode(name, index, cutoff=FUZZY_CUTOFF, probe=None, numbered=None, refused=None):
     exact, base, parts, keys = index
     probe_title = title_from_filename(name) if probe is None else titles.strip_release_tag(probe)
@@ -397,12 +397,23 @@ def _match_episode(name, index, cutoff=FUZZY_CUTOFF, probe=None, numbered=None, 
     if entry is not None:
         return entry, "exact", 1.0
 
+    #----- cut at the first release token:  an unlisted '6CH' or '-GROUP' left after "(2)" hides the marker from the token-stripped probe.
+    cut_text = titles.cut_release_fields(probe_title)
+    cut_base, cut_number = None, None
+    if cut_text:
+        entry, _cut_key, cut_base, cut_number = _exact_rungs(cut_text, exact, base, parts)
+        if entry is not None:
+            return entry, "exact", 1.0
+
     #----- release tokens out, then the marker is read again:  "Darkness.Rising.Part.3.1080p.BluRay" is part 3.
     cleaned_text = titles.RELEASE_TOKENS.sub(" ", probe_title).strip(" ._-")
     entry, cleaned_key, cleaned_base, number = _exact_rungs(cleaned_text, exact, base, parts)
     if entry is not None:
         return entry, "exact", 1.0
 
+    #----- a marker only the cut probe reads still keeps a part the catalogue lacks off the first part.
+    if cut_number is not None:
+        cleaned_base, number = cut_base, cut_number
     hit, share = _contained(cleaned_base if number is not None else cleaned_key, base)
     if hit:
         if number is not None:
