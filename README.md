@@ -176,9 +176,9 @@ Every setting under Encoding except the passthrough codec list and the Dolby Vis
 
 | Group | Setting | Default | Meaning |
 |---|---|---|---|
-| Pipeline | max_jobs | 3 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
-| Pipeline | gpu_slots | 1 | GPU encode threads, av1_qsv and hevc_qsv |
-| Pipeline | cpu_slots | 1 | CPU encode threads, each at the encoder thread count divided by this;  two gain little except on SD |
+| Pipeline | max_jobs | 5 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
+| Pipeline | gpu_slots | 2 | GPU encode threads, av1_qsv and hevc_qsv |
+| Pipeline | cpu_slots | 2 | CPU encode threads, each at the encoder thread count divided by this;  two gain little except on SD |
 | Pipeline | encode_headroom | 3.0 | multiple of source size required to admit a job |
 | Pipeline | encode_threads | 0 | 0 autodetects from the cgroup CPU quota |
 | Pipeline | poll_interval | 15 | import watch interval in seconds;  the page refuses a value at or above mtime_quiet |
@@ -197,7 +197,7 @@ Every setting under Encoding except the passthrough codec list and the Dolby Vis
 | Encoding | x265_dv_vbv_kbps | 40000 | VBV pair on a Dolby Vision encode |
 | Encoding | svtav1_preset, svtav1_crf, svtav1_params, svtav1_pix_fmt | 4, 24, tune=0:film-grain=8, yuv420p10le | libsvtav1 |
 | Encoding | qsv_preset, qsv_global_quality | veryslow, 26 | av1_qsv |
-| Encoding | hevc_devices | cpu | per kind;  cpu, gpu or both:  the pools an HEVC encode may run on |
+| Encoding | hevc_devices | both | per kind;  cpu, gpu or both:  the pools an HEVC encode may run on |
 | Encoding | hevc_qsv_preset, hevc_qsv_global_quality | veryslow, 22 | hevc_qsv;  the quality figure is not x265's CRF scale |
 | Probes | grain_threshold | 0.18 / 0.18 | denoise delta above which a source counts as grainy |
 | Probes | grain_sample_seconds, grain_sample_position | 20, 0.45 | the sample the grain and field probes decode |
@@ -241,7 +241,7 @@ A rule is either repairable or not.  A repairable rule is one the pipeline corre
 | PAL speed-up | absent | | no | yes |
 | Kept-language audio | present | | no | yes |
 | Extras name | absent | | no | yes |
-| SD, 720p, 1080p, 2160p video bitrate | at least | 1500, 3000, 6000, 20000 kbps | no | yes |
+| SD, 720p, 1080p, 2160p video bitrate | at least | 1000, 2000, 4000, 8000 kbps | no | yes |
 | File size | at most | 10 GB, ignored | no | yes |
 | Episodes in file | absent | | no | library only |
 | Dolby Vision record | absent | | no | no, held elsewhere |
@@ -265,7 +265,7 @@ Evaluated in order, first match wins.
 7  otherwise                               libx265 aq-mode=3, or hevc_qsv per hevc_devices
 ```
 
-Gates 6 and 7 route to a pool rather than to one encoder.  'hevc_devices', per kind, is 'cpu' (libx265, the default), 'gpu' (hevc_qsv on the media engine) or 'both':  a 'both' title is eligible for either pool, whichever thread is free first claims it, and that pool's encoder is bound at the claim, so a CPU and a GPU encode of HEVC run side by side and the queue drains at the sum of their rates.  The title's tile reads 'libx265 on cpu or hevc_qsv on gpu' until it is claimed and the encoder that ran afterwards.  A Dolby Vision title is eligible for the CPU alone.  The GPU output is the same HEVC Main 10 stream at the same geometry;  it is larger for the same picture, because the fixed-function encoder searches less per block than x265 does, and 'hevc_qsv_global_quality' is the setting that prices that trade.  A GPU encode, hevc_qsv or av1_qsv, keeps the filter chain it built for the first frame:  a source whose colour tags change partway through encodes normally, and one whose frame size, pixel format or aspect ratio changes partway through is not handled on the GPU path.
+Gates 6 and 7 route to a pool rather than to one encoder.  'hevc_devices', per kind, is 'cpu' (libx265), 'gpu' (hevc_qsv on the media engine) or 'both' (the default):  a 'both' title is eligible for either pool, whichever thread is free first claims it, and that pool's encoder is bound at the claim, so a CPU and a GPU encode of HEVC run side by side and the queue drains at the sum of their rates.  The title's tile reads 'libx265 on cpu or hevc_qsv on gpu' until it is claimed and the encoder that ran afterwards.  A Dolby Vision title is eligible for the CPU alone.  The GPU output is the same HEVC Main 10 stream at the same geometry;  it is larger for the same picture, because the fixed-function encoder searches less per block than x265 does, and 'hevc_qsv_global_quality' is the setting that prices that trade.  A GPU encode, hevc_qsv or av1_qsv, keeps the filter chain it built for the first frame:  a source whose colour tags change partway through encodes normally, and one whose frame size, pixel format or aspect ratio changes partway through is not handled on the GPU path.
 
 x265 is the default because no Apple TV decodes AV1 in hardware.  AV1 is fully built and selectable per kind on the settings page, but the calibration batch has not been run, so the AV1 rate control values are starting points rather than settled ones.
 

@@ -24,7 +24,7 @@ QSV_PRESET = "veryslow"
 QSV_GLOBAL_QUALITY = 26
 HEVC_QSV_PRESET = "veryslow"
 HEVC_QSV_GLOBAL_QUALITY = 22
-HEVC_DEVICES = "cpu"
+HEVC_DEVICES = "both"
 
 RENDER_NODE = os.environ.get("RENDER_NODE", "/dev/dri/renderD128")
 

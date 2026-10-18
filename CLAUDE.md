@@ -199,7 +199,7 @@ BOTH KINDS
   not a 25 fps PAL speed-up of film material
   baked-in letterbox no worse than 20 px
   not a sample or extras file
-  weighted video bitrate at least 1500 / 3000 / 6000 / 20000 kbps for SD / 720p / 1080p / 2160p
+  weighted video bitrate at least 1000 / 2000 / 4000 / 8000 kbps for SD / 720p / 1080p / 2160p
 
 MOVIES
   display resolution at least 1920x800, computed width * SAR / height
@@ -861,8 +861,8 @@ PUBLISHING IS ATOMIC.  'paths.publish_file' reserves the destination with 'O_CRE
 ### Pools
 
 ```
-GPU encode threads   1     av1_qsv and hevc_qsv;  the A310 has one media engine, queueing more at it gains nothing
-CPU encode threads   1     x265 preset slow and svt-av1 preset 4 both saturate the allotted cores
+GPU encode threads   2     av1_qsv and hevc_qsv
+CPU encode threads   2     x265 preset slow and svt-av1 preset 4 both saturate the allotted cores
 passthrough threads  1     fixed;  the I/O-only path, bounded by the disk rather than a core
 ```
 
@@ -931,7 +931,7 @@ THE GATE ALSO ASSERTS THE LIBX265 WRAPPER HAS '-dolbyvision', per section 14, so
 
 ### Runtime GPU probe
 
-At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice, and VAProfileHEVCMain10 with the same entrypoint is recorded beside it as 'hevc_available'.  A failed probe does NOT crash:  it marks the GPU degraded and routes av1_qsv titles to libsvtav1, and a missing HEVC profile sends 'hevc_devices' of 'gpu' or 'both' to the CPU;  at the defaults it changes nothing.  Every encode logs which encoder actually ran.
+At startup, 'vainfo' must report VAProfileAV1Profile0 with VAEntrypointEncSlice, and VAProfileHEVCMain10 with the same entrypoint is recorded beside it as 'hevc_available'.  A failed probe does NOT crash:  it marks the GPU degraded and routes av1_qsv titles to libsvtav1, and a missing HEVC profile sends 'hevc_devices' of 'gpu' or 'both' to the CPU;  at the defaults the AV1 fallback changes nothing and the HEVC fallback leaves HEVC titles on the CPU pool alone.  Every encode logs which encoder actually ran.
 
 ## 23.  Versioning and release tags
 

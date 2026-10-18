@@ -9,7 +9,7 @@ CLASS_KEYS = tuple(
     "class_%s_%s" % (cls, side) for cls in (HD720, HD1080, UHD) for side in ("width", "height")
 )
 
-MIN_KBPS = {SD: 1500, HD720: 3000, HD1080: 6000, UHD: 20000}
+MIN_KBPS = {SD: 1000, HD720: 2000, HD1080: 4000, UHD: 8000}
 MAX_SIZE_GB = 10
 STATS_RATIO_MIN = 0.5
 STATS_RATIO_MAX = 1.5
