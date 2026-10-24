@@ -85,7 +85,8 @@ MEASURED = (
     ("audio_default_count", "default audio tracks", None),
     ("bit_depth", "bit depth", 5),
     ("pix_fmt", "pixel format", None),
-    ("video_bitrate", "video bitrate", 6),
+    ("video_bitrate", "video bitrate", None),
+    ("weighted_video_bitrate", "weighted video bitrate", 6),
     ("pedigree", "source pedigree", 8),
     ("frame_rate", "frame rate", None),
     ("frame_count", "frame count", None),
@@ -142,7 +143,7 @@ def _named_forced_count(subtitles):
 
 
 def attributes(container, path=None, crop=None, tag_structure=None, statistics_ratio=None,
-               keep_langs=None):
+               keep_langs=None, efficiency=None):
     keep_langs = tuple(keep_langs or KEEP_LANGS)
     video = container.get("video") or {}
     audio = container.get("audio") or []
@@ -164,6 +165,7 @@ def attributes(container, path=None, crop=None, tag_structure=None, statistics_r
         "bit_depth": int(video.get("bit_depth") or 8),
         "pix_fmt": video.get("pix_fmt"),
         "video_bitrate": video.get("bitrate"),
+        "weighted_video_bitrate": normalised_bitrate(video.get("bitrate"), video.get("codec"), efficiency),
         "frame_rate": round(float(video.get("frame_rate") or 0.0), 5) or None,
         "frame_count": int(video.get("frame_count") or 0) or None,
         "duration_s": round(float(duration), 3) if duration else None,
@@ -212,7 +214,7 @@ def _variable_aspect(secondary):
     return "%dx%d in %.0f%% of samples" % (secondary["width"], secondary["height"], secondary["share"] * 100)
 
 
-def measure(path, crop=None, keep_langs=None):
+def measure(path, crop=None, keep_langs=None, efficiency=None):
     from . import probe as probemod, tags as tagsmod
 
     container = probemod.probe(path, keep_langs=keep_langs).container
@@ -246,7 +248,7 @@ def measure(path, crop=None, keep_langs=None):
         log.debug("byte-sum ratio unreadable on %s: %s", path, exc)
     return attributes(
         container, path, crop=crop, tag_structure=structure, statistics_ratio=ratio,
-        keep_langs=keep_langs,
+        keep_langs=keep_langs, efficiency=efficiency,
     )
 
 

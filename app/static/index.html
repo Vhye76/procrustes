@@ -823,6 +823,8 @@ function cell(v, attribute) {
   if (v === false) return '<td class="val">no</td>';
   //----- the one byte-valued attribute in the measured set reads as GB like every other size.
   if (attribute === "size_bytes") return `<td class="val">${esc(gb(v))}</td>`;
+  if (attribute === "video_bitrate" || attribute === "weighted_video_bitrate")
+    return `<td class="val">${esc(Math.round(Number(v) / 1000) + " kbps")}</td>`;
   return `<td class="val">${esc(v)}</td>`;
 }
 

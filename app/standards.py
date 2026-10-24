@@ -110,9 +110,10 @@ def values(container, kind, path=None, profile=None, crop=None, tag_structure=No
     out = compare.attributes(
         container, path, crop=crop, tag_structure=tag_structure,
         statistics_ratio=statistics_ratio, keep_langs=keep_langs,
+        efficiency=profile.get("codec_efficiency"),
     )
     bitrate = video.get("bitrate")
-    weighted = compare.normalised_bitrate(bitrate, video.get("codec"), profile.get("codec_efficiency"))
+    weighted = out["weighted_video_bitrate"]
     pixels = out.get("display_pixels") or 0
     rate = out.get("frame_rate") or 0
     runtime = runtime_seconds(container)

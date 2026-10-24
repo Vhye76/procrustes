@@ -949,6 +949,8 @@ class Orchestrator:
         incumbents, misses = self._find_incumbents(identity, kind, skip=row.get("origin_path"))
         keep_langs = self.settings.get("keep_langs")
         tolerance = self.settings.get("edition_runtime_tolerance_s")
+        profile = self.settings.profile(kind)
+        efficiency = profile.get("codec_efficiency")
         incoming = None
         crops = {}
         verdicts = []
@@ -959,7 +961,7 @@ class Orchestrator:
             log.info("title %s %s", title_id, verdicts[0])
         else:
             verdicts.extend(misses)
-            incoming = compare.measure(source, keep_langs=keep_langs)
+            incoming = compare.measure(source, keep_langs=keep_langs, efficiency=efficiency)
         for incumbent_path, route, root_name, other_cut in incumbents:
             where = "%s, %s" % (root_name, route)
             log.info(
@@ -974,7 +976,9 @@ class Orchestrator:
             new_crop, old_crop = self._crop_pair(
                 title_id, (source, container), (incumbent_path, incumbent_container), crops
             )
-            incumbent = compare.measure(incumbent_path, crop=old_crop, keep_langs=keep_langs)
+            incumbent = compare.measure(
+                incumbent_path, crop=old_crop, keep_langs=keep_langs, efficiency=efficiency
+            )
             incoming_attrs = compare.with_crop(incoming, new_crop)
             #----- a claimed edition is checked against the folder's plain file before it can skip the comparison.
             if other_cut and identity.get("edition"):
@@ -1004,7 +1008,7 @@ class Orchestrator:
                         % (where, identity["edition"], figures)
                     )
                     continue
-            result = compare.compare(incoming_attrs, incumbent, profile=self.settings.profile(kind))
+            result = compare.compare(incoming_attrs, incumbent, profile=profile)
             self.store.update(title_id, comparison=result.as_dict())
             if result.is_loss:
                 raise QuarantineError(
@@ -1029,7 +1033,7 @@ class Orchestrator:
         sibling = self.store.sibling_in_flight(row)
         if sibling is not None:
             if incoming is None:
-                incoming = compare.measure(source, keep_langs=keep_langs)
+                incoming = compare.measure(source, keep_langs=keep_langs, efficiency=efficiency)
             pair = self._compare_sibling(title_id, source, container, incoming, crops, sibling, kind)
             detail = (
                 "title %s (%s) carries the same identity and is at %s; %s; retry once it has "
@@ -1054,10 +1058,14 @@ class Orchestrator:
         except probemod.ProbeError as exc:
             return "the pair could not be measured: %s" % exc
         new_crop, old_crop = self._crop_pair(title_id, (source, container), (path, sibling_container), crops)
+        profile = self.settings.profile(kind)
         result = compare.compare(
             compare.with_crop(incoming, new_crop),
-            compare.measure(path, crop=old_crop, keep_langs=self.settings.get("keep_langs")),
-            profile=self.settings.profile(kind),
+            compare.measure(
+                path, crop=old_crop, keep_langs=self.settings.get("keep_langs"),
+                efficiency=profile.get("codec_efficiency"),
+            ),
+            profile=profile,
         )
         #----- informational only:  a pair verdict never quarantines, the operator settles the pair.
         self.store.update(title_id, sibling_comparison=result.as_dict())
@@ -1686,7 +1694,9 @@ class Orchestrator:
                 notes.append("hdr declaration intact")
             if any((s.get("language") or "und").lower() in profile["keep_langs"] for s in subtitle_baseline):
                 notes.append("subtitle tracks intact")
-        self.store.update(title_id, output_probe=compare.measure(work, keep_langs=profile["keep_langs"]))
+        self.store.update(title_id, output_probe=compare.measure(
+            work, keep_langs=profile["keep_langs"], efficiency=profile.get("codec_efficiency"),
+        ))
         if problems:
             if self._forced(title_id, state.VERIFIED, problems):
                 return

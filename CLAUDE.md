@@ -272,7 +272,7 @@ Gate 8 is a tiebreak rather than a vote.  Source pedigree is inferred from relea
 
 Gates 2, 3 and 6 need both sides to be measurable.  When one side is missing the gate casts no vote and the skip is recorded in the notes.  A deferred gate 2 casts no vote either.
 
-THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SEVEN IT GATES ON.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such.
+THE COMPARISON CARRIES EVERY ATTRIBUTE THE PIPELINE MEASURES, NOT ONLY THE SEVEN IT GATES ON.  'compare.MEASURED' is the list and it is what the UI renders;  a row that differs with no gate against it is marked as such.  Gate 6's row is the weighted figure, 'weighted_video_bitrate', directly under the raw 'video_bitrate', which carries no gate;  both are computed by 'compare.attributes' from the profile's 'codec_efficiency', so every 'compare.measure' call passes it, 'output_probe' included.  The store and the API carry bits per second;  the Compare dialog reads both rows as whole kbps.
 
 AN INCONCLUSIVE HOLD NAMES THE INCUMBENT, AND SAYS WHEN ITS TITLE DIFFERS, since a library numbered one behind the catalogue puts a different episode at the matched number.  'orchestrator._ambiguous_detail' puts the incumbent's file name on the hold reason, the COMPARED record and the log line, and says first when its segment title differs from the incoming title under the section 9 transform.
 
