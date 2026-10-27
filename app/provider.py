@@ -12,6 +12,7 @@ import urllib.request
 
 from . import VERSION
 from . import episodes as episodemod
+from . import probe as probemod
 from . import tags as tagsmod
 from . import titles
 
@@ -872,6 +873,7 @@ class Provider:
                     "season": int(episode.get("season_number", number)),
                     "episode": int(episode["episode_number"]),
                     "title": str(episode.get("name") or "").strip(),
+                    "runtime": int(episode.get("runtime") or 0) or None,
                 })
         log.debug("tmdb %s: %d episode(s) across %d season(s)", tmdb_id, len(catalogue), len(numbers))
         return catalogue
@@ -949,8 +951,21 @@ class Provider:
                 }
             how = "fallback-numbering"
 
-        episode_last, episode_title, shared = episodemod.episode_range(source, entry, catalogue, max_range_span)
+        duration = None
+        if isinstance(container, dict):
+            duration = probemod.usable_duration(container.get("video"), container) or None
+        episode_last, episode_title, shared = episodemod.episode_range(
+            source, entry, catalogue, max_range_span, duration=duration,
+        )
         notes = list(resolved.get("notes") or [])
+        named = episodemod.parse_path(source, max_range_span=max_range_span)
+        if episode_last is None and named is not None:
+            named_last = episodemod.last_episode(named, entry["title"])
+            if named_last > named["first"]:
+                notes.append(
+                    "named S%02dE%02d-E%02d, published as S%02dE%02d alone"
+                    % (named["season"], named["first"], named_last, entry["season"], entry["episode"])
+                )
         if not shared:
             notes.append(
                 "covers S%02dE%02d-E%02d, episodes with differing titles, named for the first"
@@ -1147,9 +1162,10 @@ def _carries(ids, pinned, candidate):
 def _name_score(title, wanted, name, contained=CONTAINED_SCORE):
     if titles.matches(name, title):
         return 1.0
-    other = titles.normalise_for_match(name)
+    other = titles.match_key(name)
     if not other or not wanted:
         return 0.0
+    wanted = titles.match_key(wanted)
     if other == wanted:
         return 1.0
     #----- 'Return of the Jedi' inside 'Star Wars: Episode VI – Return of the Jedi'.

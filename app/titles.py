@@ -387,6 +387,14 @@ def normalise_for_match(s):
     return _collapse(s).lower()
 
 
+#----- a bare 'the' keeps its key, so an article-only title still compares as itself.
+def match_key(s):
+    key = normalise_for_match(s)
+    if key.startswith("the ") and len(key) > 4:
+        return key[4:]
+    return key
+
+
 #----- Naming
 def _require(**fields):
     missing = [name for name, value in fields.items() if value is None or value == ""]

@@ -278,11 +278,11 @@ def _index(catalogue):
     parts = {}
     keys = []
     for entry in catalogue:
-        key = titles.normalise_for_match(entry["title"])
+        key = titles.match_key(entry["title"])
         exact.setdefault(key, entry)
         keys.append(key)
         plain, number = parse_marker(entry["title"])
-        stripped = titles.normalise_for_match(plain)
+        stripped = titles.match_key(plain)
         current = base.get(stripped)
         if current is None or _order(entry) < _order(current):
             base[stripped] = entry
@@ -354,9 +354,9 @@ def match_episode(name, catalogue, cutoff=FUZZY_CUTOFF, extra=None, show=None):
 
 #----- the four exact rungs:  whole title, own part, base as first of a pair, marker-stripped.
 def _exact_rungs(text, exact, base, parts):
-    key = titles.normalise_for_match(text)
+    key = titles.match_key(text)
     plain, number = parse_marker(text)
-    stripped = titles.normalise_for_match(plain)
+    stripped = titles.match_key(plain)
     if key in exact:
         return exact[key], key, stripped, number
     if number is not None and (stripped, number) in parts:
@@ -385,7 +385,7 @@ def _without_show(title, show):
 
 
 def _shared_words(a, b):
-    return set(titles.normalise_for_match(a).split()) & set(titles.normalise_for_match(b).split())
+    return set(titles.match_key(a).split()) & set(titles.match_key(b).split())
 
 
 #----- rungs in order:  exact rungs on the raw probe, the same on the cut probe and the token-stripped probe, containment, then difflib.
@@ -446,7 +446,7 @@ def _match_episode(name, index, cutoff=FUZZY_CUTOFF, probe=None, numbered=None, 
 
 
 #----- Ranges
-def episode_range(source, entry, catalogue, max_range_span=MAX_RANGE_SPAN):
+def episode_range(source, entry, catalogue, max_range_span=MAX_RANGE_SPAN, duration=None):
     single = (None, to_part_suffix(entry["title"]), True)
     parsed = parse_path(source, max_range_span=max_range_span)
     if parsed is None or parsed["last"] == parsed["first"]:
@@ -469,6 +469,19 @@ def episode_range(source, entry, catalogue, max_range_span=MAX_RANGE_SPAN):
     bases = {parse_marker(by_key[(season, n)]["title"])[0] for n in range(first + 1, last + 1)}
     if bases == {anchor_base}:
         return last, anchor_base, True
+    #----- a release that counts one catalogue episode twice runs as the first entry alone, not as the range's sum.
+    runtimes = [by_key.get((season, n), entry).get("runtime") for n in range(first, last + 1)]
+    if duration and all(runtimes):
+        alone = runtimes[0] * 60.0
+        together = sum(runtimes) * 60.0
+        if abs(duration - alone) < abs(duration - together):
+            log.info(
+                "%s names S%02dE%02d-E%02d but runs %d min, against %d min for E%02d alone and %d min"
+                " for the range, publishing as E%02d alone",
+                os.path.basename(str(source)), season, first, last, round(duration / 60.0),
+                runtimes[0], first, sum(runtimes), first,
+            )
+            return single
     log.info(
         "%s covers S%02dE%02d-E%02d with differing titles, publishing under %r",
         os.path.basename(str(source)), season, first, last, entry["title"],

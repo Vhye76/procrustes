@@ -1050,23 +1050,21 @@ class Orchestrator:
         return []
 
     def _compare_sibling(self, title_id, source, container, incoming, crops, sibling, kind):
-        path = sibling.get("source_path")
+        #----- the sibling's own worker can move its source to 'hold/' while this one measures.
+        path = (self.store.get(sibling["id"]) or sibling).get("source_path")
         if not path or not os.path.exists(path):
             return "the pair could not be measured, the sibling's source is not on disk"
+        keep_langs = self.settings.get("keep_langs")
+        profile = self.settings.profile(kind)
         try:
-            sibling_container = probemod.probe(path, keep_langs=self.settings.get("keep_langs")).container
+            sibling_container = probemod.probe(path, keep_langs=keep_langs).container
+            new_crop, old_crop = self._crop_pair(title_id, (source, container), (path, sibling_container), crops)
+            measured = compare.measure(
+                path, crop=old_crop, keep_langs=keep_langs, efficiency=profile.get("codec_efficiency"),
+            )
         except probemod.ProbeError as exc:
             return "the pair could not be measured: %s" % exc
-        new_crop, old_crop = self._crop_pair(title_id, (source, container), (path, sibling_container), crops)
-        profile = self.settings.profile(kind)
-        result = compare.compare(
-            compare.with_crop(incoming, new_crop),
-            compare.measure(
-                path, crop=old_crop, keep_langs=self.settings.get("keep_langs"),
-                efficiency=profile.get("codec_efficiency"),
-            ),
-            profile=profile,
-        )
+        result = compare.compare(compare.with_crop(incoming, new_crop), measured, profile=profile)
         #----- informational only:  a pair verdict never quarantines, the operator settles the pair.
         self.store.update(title_id, sibling_comparison=result.as_dict())
         reason = (result.reason or "").replace("incumbent", "sibling").replace("incoming", "this arrival")
@@ -1755,6 +1753,9 @@ class Orchestrator:
                 detail = "destination existed, forced through beside it as %s" % os.path.basename(destination)
                 log.warning("title %s %s", title_id, detail)
         self.store.advance(title_id, state.PUBLISHED, detail, output_path=destination)
+        #----- measured at VERIFIED on the work file;  the figures are the published file's, the path is not.
+        if row.get("output_probe"):
+            self.store.update(title_id, output_probe=dict(row["output_probe"], path=destination))
 
     #----- A beaten complete/ file makes way for the winner
     def _retire_beaten(self, title_id, beaten):
