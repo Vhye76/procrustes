@@ -400,6 +400,12 @@ function render(view) {
     el.addEventListener("change", () => { el.parentNode.lastChild.textContent = " " + (el.checked ? "on" : "off"); });
   });
   changed();
+  //----- the fields exist only after this render, so the page follows a link to a field itself.
+  const target = location.hash ? document.getElementById(location.hash.slice(1)) : null;
+  if (target) {
+    target.scrollIntoView({ block: "center" });
+    target.focus();
+  }
 }
 
 //----- Reading the form back into the shapes the API takes

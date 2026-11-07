@@ -12,6 +12,7 @@ log = logging.getLogger("settings")
 KINDS = ("movie", "tv")
 
 GROUPS = (
+    ("tmdb", "TMDb", "settings"),
     ("pipeline", "Pipeline", "settings"),
     ("encoding", "Encoding", "settings"),
     ("probes", "Probes", "settings"),
@@ -94,6 +95,10 @@ def _kinds(value):
 
 #----- The registry;  a default that replaced a module constant is that constant, so the two cannot drift.
 SETTINGS = (
+    Setting("tmdb_api_key", "tmdb", "TMDb API key",
+            "The API Key or the API Read Access Token from a TMDb account;  nothing in the pipeline runs without it.",
+            "str", "", secret=True, check=providermod.check_key),
+
     Setting("max_jobs", "pipeline", "Assessment workers",
             "Threads taking a title through probe, standards, identification, comparison and routing.",
             "int", 5, minimum=1, maximum=64),
@@ -315,9 +320,6 @@ SETTINGS = (
     Setting("range_duration_ratio", "matching", "Range duration ratio",
             "A single-numbered library episode this many times its season's median length, with no next episode beside it, is listed as two episodes in one file.",
             "float", audit.RANGE_DURATION_RATIO, minimum=1.2, maximum=3.0, step=0.1),
-    Setting("tmdb_api_key", "matching", "TMDb API key",
-            "The API Key or the API Read Access Token from a TMDb account;  nothing in the pipeline runs without it.",
-            "str", "", secret=True, check=providermod.check_key),
     Setting("provider_throttle_s", "matching", "Provider throttle",
             "Seconds between requests to TMDb.",
             "float", providermod.THROTTLE_SECONDS, minimum=0.0, maximum=60.0, step=0.05),

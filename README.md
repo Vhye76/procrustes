@@ -176,6 +176,7 @@ Every setting under Encoding except the passthrough codec list and the Dolby Vis
 
 | Group | Setting | Default | Meaning |
 |---|---|---|---|
+| TMDb | tmdb_api_key | unset | the TMDb API Key or API Read Access Token;  checked against TMDb on save, and nothing in the pipeline runs until it is set |
 | Pipeline | max_jobs | 5 | assessment workers:  probe, screen, identify, compare and route, ahead of any encode |
 | Pipeline | gpu_slots | 2 | GPU encode threads, av1_qsv and hevc_qsv |
 | Pipeline | cpu_slots | 2 | CPU encode threads, each at the encoder thread count divided by this;  two gain little except on SD |
@@ -217,7 +218,6 @@ Every setting under Encoding except the passthrough codec list and the Dolby Vis
 | Matching | title_cutoff, contained_score | 0.82, 0.9 | the episode and search matcher's scores |
 | Matching | max_range_span | 3 | widest 'E01-E03' range read as a range |
 | Matching | range_duration_ratio | 1.8 | a single-numbered library episode this many times its season's median, with no next episode beside it, is listed as two episodes in one file |
-| Matching | tmdb_api_key | unset | the TMDb API Key or API Read Access Token;  checked against TMDb on save, and nothing in the pipeline runs until it is set |
 | Matching | provider_throttle_s, provider_timeout_s | 0.25, 30 | spacing and timeout of TMDb requests |
 | Access | auth_enabled | on | a login in front of every page and API route;  off opens both to anyone who can reach the port.  Written only from User Settings |
 | Access | session_hours | 168 | hours a login stays valid;  signing out ends it sooner |
@@ -330,7 +330,7 @@ HDR is compared on presence at gate 1, and on declaration in the table.  A Matro
 
 ## Identification and the internet
 
-A provider ID is never guessed.  TMDb is the one provider, matching Jellyfin's default:  identities, ids, release years, episode numbers and titles and cover art all come from its API, in English.  It needs a TMDb API key, the API Key or the API Read Access Token from a TMDb account's API page, entered on the Application Settings page;  the key is checked against TMDb when it is saved, and until one is set nothing moves:  no arrival is detected, no title is assessed or encoded, the library audit waits, held titles take no decision, and the dashboard shows 'NO TMDB KEY'.  The key is sent with each request and never written into the cache or the log.  Movies use tmdbid and imdbid;  television uses tvdbid and tmdbid, the tvdb id being TMDb's own mapping, so the folder names keep the form below.  Every answer is cached on disk under 'config/cache', which is consulted before any request is made.
+A provider ID is never guessed.  TMDb is the one provider, matching Jellyfin's default:  identities, ids, release years, episode numbers and titles and cover art all come from its API, in English.  It needs a TMDb API key, the API Key or the API Read Access Token from a TMDb account's API page, entered in the TMDb group at the top of the Application Settings page;  the key is checked against TMDb when it is saved, and until one is set nothing moves:  no arrival is detected, no title is assessed or encoded, the library audit waits, held titles take no decision, and the dashboard shows 'NO TMDB KEY' in red, a link to the key field.  The key is sent with each request and never written into the cache or the log.  Movies use tmdbid and imdbid;  television uses tvdbid and tmdbid, the tvdb id being TMDb's own mapping, so the folder names keep the form below.  Every answer is cached on disk under 'config/cache', which is consulted before any request is made.
 
 A name with no year that resolves to two TMDb records at the same score, an original and a remake sharing one title, holds with both listed rather than taking the first;  a year in the name settles it.  Every probed file also records its OpenSubtitles hash, for a lookup by hand;  the pipeline does not query the service.
 
@@ -421,7 +421,7 @@ POST /api/audit/<id>/import       copy that file into import/ for repair, in the
 POST /api/held/<id>/decision      {"action": "retry" | "override" | "discard" | "forget"}
 ```
 
-The header on every page carries two groups of pills.  Left, after the page name:  the output codec per kind, the GPU state, free space in the encode area, whether a library is mounted, and free space on the movie library and the TV library, each shown only while that library is mounted.  Right, beside the menu button:  DRY RUN while DRY_RUN is set, NO TMDB KEY on the dashboard while no key is saved, and AUTH OFF while authentication is off.  A size on a page is whole GB, rounded down.  The menu behind the hamburger carries Application Settings, User Settings, Media Standards and Sign out;  each page's menu links the others.
+The header on every page carries two groups of pills.  Left, after the page name:  the output codec per kind, the GPU state, free space in the encode area, whether a library is mounted, and free space on the movie library and the TV library, each shown only while that library is mounted.  Right, beside the menu button:  DRY RUN while DRY_RUN is set, NO TMDB KEY on the dashboard while no key is saved, in red and linking to the key field at the top of Application Settings, and AUTH OFF while authentication is off.  A size on a page is whole GB, rounded down.  The menu behind the hamburger carries Application Settings, User Settings, Media Standards and Sign out;  each page's menu links the others.
 
 User Settings opens with the Access group:  the authentication switch, which asks for the current password or a fresh code before it turns off, and the session lifetime.  Below it, for the signed-in account:  the login mode as three options with any option the account cannot satisfy yet greyed out and the reason beside it, a password change, the authenticator with Enrol (a QR code and the secret as text, confirmed by the first code) or Remove, and the user list with Add and Remove.
 

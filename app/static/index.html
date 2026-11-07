@@ -25,6 +25,8 @@
   .pill.ok { color: var(--ok); border-color: #235b3a; }
   .pill.bad { color: var(--bad); border-color: #5b2323; }
   .pill.warn { color: var(--warn); border-color: #5b4a23; }
+  a.pill { text-decoration: none; }
+  a.pill.bad:hover { border-color: var(--bad); }
 
   /*----- The header groups and the menu */
   #hdr-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
@@ -210,7 +212,7 @@
   <div id="hdr-right">
     <span class="pill" id="dry"></span>
     <span class="pill warn" id="authoff" style="display:none">AUTH OFF</span>
-    <span class="pill warn" id="nokey" style="display:none">NO TMDB KEY</span>
+    <a class="pill bad" id="nokey" href="/settings#f-tmdb_api_key" title="Set the TMDb API key" style="display:none">NO TMDB KEY</a>
     <div id="menu">
       <button id="menu-btn" aria-expanded="false" aria-controls="menu-list" title="Menu">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
