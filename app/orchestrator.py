@@ -1157,14 +1157,16 @@ class Orchestrator:
         return found
 
     @classmethod
-    def _id_match(cls, identity, name, keys):
+    #----- returns (route, conflict);  a differing TMDB id conflicts even when another id agrees.
+    def _read_folder_ids(cls, identity, name, keys):
         folder_ids = cls._folder_ids(name)
-        for key in keys:
-            want = identity.get(key)
-            have = folder_ids.get(key)
-            if want and have and str(want).lower() == have:
-                return "%sid-%s" % (key, want)
-        return None
+        shared = [key for key in keys if identity.get(key) and folder_ids.get(key)]
+        agreeing = [key for key in shared if str(identity[key]).lower() == folder_ids[key]]
+        if "tmdb" in shared and "tmdb" not in agreeing:
+            return None, True
+        if agreeing:
+            return "%sid-%s" % (agreeing[0], identity[agreeing[0]]), False
+        return None, bool(shared)
 
     @staticmethod
     #----- the same cut, or the folder's plain file as the candidate a claimed edition is checked against.
@@ -1205,13 +1207,13 @@ class Orchestrator:
             if name.startswith(".") or not os.path.isdir(folder):
                 continue
             scanned += 1
-            matched = self._id_match(identity, name, ("tmdb", "imdb"))
+            matched, conflict = self._read_folder_ids(identity, name, ("tmdb", "imdb"))
             if matched:
                 found, why, other_cut = self._movie_file(folder, identity)
                 if found:
                     return found, "matched on %s%s" % (matched, ", " + why if why else ""), other_cut
                 return None, "folder matched on %s but %s" % (matched, why), False
-            if by_name is None and name.startswith(prefix):
+            if by_name is None and not conflict and name.startswith(prefix):
                 by_name = folder
         if by_name is not None:
             found, why, other_cut = self._movie_file(by_name, identity)
@@ -1222,7 +1224,7 @@ class Orchestrator:
         return None, "scanned %d folder(s), none matched" % scanned, False
 
     def _find_tv_incumbent(self, root, identity):
-        show = titles.to_filename(identity.get("show") or "")
+        prefix = "%s (%s)" % (titles.to_filename(identity.get("show") or ""), identity.get("show_year"))
         season = identity.get("season")
         #----- a library file may be named with the range code or the single code.
         codes = [titles.episode_code(season, identity.get("episode"), identity.get("episode_last"))]
@@ -1236,13 +1238,13 @@ class Orchestrator:
             if name.startswith(".") or not os.path.isdir(folder):
                 continue
             scanned += 1
-            matched = self._id_match(identity, name, ("tvdb", "tmdb"))
+            matched, conflict = self._read_folder_ids(identity, name, ("tvdb", "tmdb"))
             if matched:
                 found, code = self._episode_file(folder, season, codes)
                 if found:
                     return found, "matched on %s as %s" % (matched, code)
                 return None, "show matched on %s, %s not present" % (matched, codes[0])
-            if by_name is None and name.startswith(show + " ("):
+            if by_name is None and not conflict and name.startswith(prefix):
                 by_name = folder
         if by_name is not None:
             found, code = self._episode_file(by_name, season, codes)

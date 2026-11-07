@@ -236,9 +236,10 @@ def parse_marker(title):
     return text, None
 
 
+#----- a title that is only a marker, 'Part 1', has an empty base and stays as it is.
 def to_part_suffix(title):
     base, number = parse_marker(title)
-    if number is None:
+    if number is None or not base:
         return str(title)
     return "%s, Part %d" % (base, number)
 
@@ -467,7 +468,8 @@ def episode_range(source, entry, catalogue, max_range_span=MAX_RANGE_SPAN, durat
             return single
     anchor_base = parse_marker(entry["title"])[0]
     bases = {parse_marker(by_key[(season, n)]["title"])[0] for n in range(first + 1, last + 1)}
-    if bases == {anchor_base}:
+    #----- marker-only entries share an empty base, which is no title.
+    if anchor_base and bases == {anchor_base}:
         return last, anchor_base, True
     #----- a release that counts one catalogue episode twice runs as the first entry alone, not as the range's sum.
     runtimes = [by_key.get((season, n), entry).get("runtime") for n in range(first, last + 1)]

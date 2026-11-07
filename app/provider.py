@@ -511,7 +511,7 @@ class Provider:
         return resolved
 
     #----- Only a name that finds nothing complete is searched again without its leading abbreviations;
-    #----- subtitle equality applies to that second search alone.
+    #----- subtitle equality and the initials test apply to that second search alone.
     def _search_readings(self, readings, kind, rung=None):
         resolved = self._best_reading(readings, kind)
         if resolved is not None:
@@ -531,14 +531,18 @@ class Provider:
                 dropped.append((short, year, ABBREVIATION_DROPPED, removed))
         if not dropped:
             return None
+        #----- searched name to the words removed from it;  a name two readings share keeps the first reading's words.
+        initials = {n: r for n, _y, _l, r in reversed(dropped)}
         self._local.searched = _searched_record(
-            self._local.searched, rung, [(n, y, l) for n, y, l, _r in dropped]
+            self._local.searched, rung, [(n, y, l) for n, y, l, _r in dropped], initials=initials,
         )
         log.info(
             "no complete identity from the name as read, searching again without %s",
             ", ".join("%r" % r for _n, _y, _l, r in dropped),
         )
-        retry = self._best_reading([(n, y, l) for n, y, l, _r in dropped], kind, subtitles=True)
+        retry = self._best_reading(
+            [(n, y, l) for n, y, l, _r in dropped], kind, subtitles=True, initials=initials,
+        )
         return _dropped_outcome(retry, dropped, kind, "searched as %r with %r dropped as an abbreviation")
 
     def _trailing_dropped(self, readings, kind, rung=None):
@@ -574,12 +578,14 @@ class Provider:
                 return retry
         return None
 
-    def _best_reading(self, readings, kind, subtitles=False):
+    def _best_reading(self, readings, kind, subtitles=False, initials=None):
         results = []
         for name, year, label in readings:
             self._local.reading = label
             try:
-                score, resolved = self._resolve_by_search(name, year, kind, subtitles=subtitles)
+                score, resolved = self._resolve_by_search(
+                    name, year, kind, subtitles=subtitles, initials=(initials or {}).get(name),
+                )
             finally:
                 self._local.reading = None
             if resolved is None:
@@ -639,12 +645,24 @@ class Provider:
         )
         return resolved
 
-    def _resolve_by_search(self, title, year, kind, subtitles=False):
+    def _resolve_by_search(self, title, year, kind, subtitles=False, initials=None):
         candidates = [c for c in (self.candidate(kind, tmdb) for tmdb in self.search(kind, title)) if c]
+        if initials:
+            candidates = [c for c in candidates if self._spelled(c, title, initials)]
         return self._resolve_from(
             "search:%s" % title, candidates, title, titles.normalise_for_match(title), year, set(), kind,
             cutoff=self.title_cutoff(), subtitles=subtitles,
         )
+
+    def _spelled(self, candidate, title, initials):
+        if _spells_initials(initials, _names_of(candidate)):
+            return True
+        candidate.update(
+            score=0.0, term="search:%s" % title, unspelled=True, outcome="does not spell %r" % initials,
+        )
+        log.debug("search %r: tmdb %s %r does not spell %r", title, candidate["id"], candidate.get("label"), initials)
+        self._remember(candidate)
+        return False
 
     def _resolve_from(self, term, candidates, title, wanted, year, seen, kind, cutoff, pinned=None,
                       subtitles=False):
@@ -813,17 +831,19 @@ class Provider:
                 return out
             known = {}
             for candidate in scored:
-                if candidate["id"] not in known:
+                #----- a record the abbreviation search refused is no seed, or it would rank against the full name.
+                if candidate["id"] not in known and not candidate.get("unspelled"):
                     known[candidate["id"]] = _seed_identity(candidate, kind)
             if resolved_tmdb and _complete_identity(known.get(resolved_tmdb), kind):
                 out["guess"] = [_guess_entry(known[resolved_tmdb], kind)]
                 return out
-            for name in _reading_names(searched):
-                for tmdb in self.search(kind, name):
+            for reading in _searched_readings(searched):
+                initials = reading.get("initials")
+                for tmdb in self.search(kind, reading["name"]):
                     if tmdb in known:
                         continue
                     candidate = self.candidate(kind, tmdb)
-                    if candidate:
+                    if candidate and (not initials or _spells_initials(initials, _names_of(candidate))):
                         known[tmdb] = _seed_identity(candidate, kind)
             out["guess"] = self._best_guess(list(known.values()), searched, kind)
         except ProviderError as exc:
@@ -841,6 +861,9 @@ class Provider:
             for reading in readings:
                 year = reading.get("year")
                 if year and abs(int(identity["year"]) - int(year)) > 1:
+                    continue
+                initials = reading.get("initials")
+                if initials and not _spells_initials(initials, identity.get("names") or []):
                     continue
                 score = _candidate_score(
                     reading["name"], titles.normalise_for_match(reading["name"]),
@@ -885,7 +908,8 @@ class Provider:
             return self.identify_movie(source, container, row.get("origin_path"), pinned)
 
         resolved = self.identify_show(source, row.get("origin_path"), pinned)
-        if resolved is None or resolved["missing"]:
+        #----- the episode result built below carries no 'disagree' and an empty 'missing', so each returns here to reach the hold.
+        if resolved is None or resolved["missing"] or resolved.get("disagree"):
             return resolved
         if resolved.get("manual"):
             return {
@@ -1090,8 +1114,11 @@ def _readings_tie(best, other, kind):
     return best[1].get("tmdb") != other[1].get("tmdb")
 
 
-def _searched_record(record, rung, readings):
+def _searched_record(record, rung, readings, initials=None):
     entries = [{"name": n, "year": y, "label": l, "rung": rung} for n, y, l in readings]
+    for entry in entries:
+        if (initials or {}).get(entry["name"]):
+            entry["initials"] = initials[entry["name"]]
     if record is None:
         return {
             "rung": rung,
@@ -1209,13 +1236,15 @@ def _guess_entry(identity, kind):
     return entry
 
 
-def _reading_names(searched):
-    names = []
+def _searched_readings(searched):
+    readings = []
+    seen = set()
     for reading in searched.get("readings") or [searched]:
         name = reading.get("name")
-        if name and name not in names:
-            names.append(name)
-    return names
+        if name and name not in seen:
+            seen.add(name)
+            readings.append(reading)
+    return readings
 
 
 #----- Every value of a manual identity is the operator's;  nothing is read from the provider or the file.
@@ -1255,18 +1284,33 @@ def _expand_initials(wanted, name):
     for word in words:
         run = None
         if word not in other and titles.is_abbreviation(word):
-            size = len(word)
-            for start in range(0, len(other) - size + 1):
-                window = other[start:start + size]
-                if "".join(w[0] for w in window) == word:
-                    run = window
-                    break
+            run = _initial_run(word, other)
         if run:
             out.extend(run)
             changed = True
         else:
             out.append(word)
     return " ".join(out) if changed else None
+
+
+def _initial_run(word, other):
+    size = len(word)
+    for start in range(0, len(other) - size + 1):
+        window = other[start:start + size]
+        if "".join(w[0] for w in window) == word:
+            return window
+    return None
+
+
+#----- each removed word may spell its run in a different name.
+def _spells_initials(removed, names):
+    words = titles.normalise_for_match(removed).split()
+    others = [titles.normalise_for_match(name).split() for name in names if name]
+    return bool(words) and all(any(_initial_run(word, other) for other in others) for word in words)
+
+
+def _names_of(candidate):
+    return [n for n in [candidate.get("label")] + list(candidate.get("aliases") or []) if n]
 
 
 def _drop_abbreviations(name):
